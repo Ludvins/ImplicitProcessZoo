@@ -1,0 +1,12 @@
+
+*.pyc
+.venv
+data
+*.pdf
+/checkpoints
+/figures
+/results
+/results_old
+/slides
+/archive
+/logs
