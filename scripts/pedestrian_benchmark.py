@@ -8,6 +8,7 @@ Example:
 """
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -22,7 +23,7 @@ from src.utils.dataset import Pedestrian_Dataset
 from src.utils.metrics import MetricsRegression, TrajectoryMetrics
 from src.utils.utils import infinite_loader
 from src.priors.generative_functions import (
-    BayesianLSTM, BayesLinear, SimplerBayesLinear, GP,
+    BayesianLSTM, BayesLinear, GP,
 )
 from src.flows import CouplingFlow, SplineCouplingFlow, SplineCoupling1x1Flow
 from src.vip import VIP
@@ -30,11 +31,23 @@ from src.ftip import FTIP
 from src.mfvi import MFVI
 from src.fbnn import FBNN
 from src.tfsvi import TFSVI
+from src.ap_fsvi import APFSVI
+from scripts.benchmark_utils import (
+    add_wandb_args,
+    finish_wandb_run,
+    init_wandb_run,
+    print_comparison,
+    save_comparison,
+    wandb_log_eval,
+    wandb_log_result,
+    wandb_log_train_step,
+    wandb_run_name,
+)
 
 
+MODELS = ["vip", "ftip", "mfvi", "fbnn", "tfsvi", "ap_fsvi"]
 LAYER_MODELS = {
     "BayesLinear": BayesLinear,
-    "SimplerBayesLinear": SimplerBayesLinear,
 }
 
 
@@ -239,7 +252,7 @@ def _build_lstm_gen_fn(args, train_adapter, num_samples, fix_random_noise=True,
         lstm_hidden=args.lstm_hidden,
         lstm_layers=args.lstm_layers,
         head_dims=args.head_dims,
-        layer_model=LAYER_MODELS[args.layer_model],
+        layer_model=BayesLinear,
         dropout=args.dropout,
         device=device,
         fix_random_noise=fix_random_noise,
@@ -272,6 +285,55 @@ def build_model(args, train_adapter, model_type=None):
 
     device = torch.device(args.device)
     dtype = torch.float64 if args.dtype == "float64" else torch.float32
+    if model_type == "ap_fsvi":
+        gen_args = copy.copy(args)
+        gen_args.layer_model = "BayesLinear"
+        if args.ap_fsvi_hidden_dims is not None:
+            gen_args.head_dims = args.ap_fsvi_hidden_dims
+        gen_fn = _build_lstm_gen_fn(
+            gen_args,
+            train_adapter,
+            num_samples=args.ap_fsvi_num_samples,
+            fix_random_noise=False,
+        )
+        return APFSVI(
+            generative_function=gen_fn,
+            input_dim=train_adapter.input_dim,
+            output_dim=train_adapter.output_dim,
+            likelihood="regression",
+            num_data=len(train_adapter),
+            num_samples=args.ap_fsvi_num_samples,
+            num_prior_samples=(
+                args.ap_fsvi_num_prior_samples or args.ap_fsvi_num_samples
+            ),
+            num_measurement=args.ap_fsvi_num_measurement,
+            adaptive_measure_points=args.ap_fsvi_adaptive_measure_points,
+            adaptive_measure_steps=args.ap_fsvi_adaptive_measure_steps,
+            adaptive_measure_lr=args.ap_fsvi_adaptive_measure_lr,
+            adaptive_measure_domain_limit=(
+                args.ap_fsvi_adaptive_measure_domain_limit
+            ),
+            beta=args.ap_fsvi_beta,
+            beta_start=args.ap_fsvi_beta_start,
+            beta_warmup_steps=args.ap_fsvi_beta_warmup_steps,
+            data_pretrain_steps=args.ap_fsvi_data_pretrain_steps,
+            data_loss=args.ap_fsvi_data_loss,
+            measurement_weights=args.ap_fsvi_measurement_weights,
+            near_data_noise=args.ap_fsvi_near_data_noise,
+            domain_std=args.ap_fsvi_domain_std,
+            function_discrepancy=args.ap_fsvi_discrepancy,
+            discrepancy_num_projections=args.ap_fsvi_discrepancy_projections,
+            sinkhorn_epsilon=args.ap_fsvi_sinkhorn_epsilon,
+            sinkhorn_iterations=args.ap_fsvi_sinkhorn_iterations,
+            y_mean=train_adapter.targets_mean,
+            y_std=train_adapter.targets_std,
+            log_variance_init=args.ap_fsvi_log_variance_init,
+            max_grad_norm=args.ap_fsvi_max_grad_norm,
+            device=device,
+            dtype=dtype,
+            seed=args.seed,
+        )
+
     if model_type == "mfvi":
         # MC over weight samples per forward, so noise is regenerated every
         # call (fix_random_noise=False).
@@ -418,9 +480,15 @@ def _build_flow(args, input_dim, device, dtype):
 # ---------------------------------------------------------------------------
 
 # Models that produce S posterior function samples per call rather than
-# (mean, std). All three denormalize via model.y_mean / model.y_std and
+# (mean, std). They denormalize via model.y_mean / model.y_std and
 # treat model.log_variance as a scalar observation-noise (regression).
-_SAMPLE_BASED_TYPES = ("mfvi", "fbnn", "tfsvi")
+_SAMPLE_BASED_TYPES = ("mfvi", "fbnn", "tfsvi", "ap_fsvi")
+
+
+def _eval_samples_for(args, model_type):
+    if model_type == "ap_fsvi":
+        return args.ap_fsvi_num_eval_samples
+    return args.eval_samples
 
 
 def _sample_based_predict(model, model_type, x, num_samples):
@@ -481,7 +549,9 @@ def evaluate_regression(model, dataset, args, model_type=None, batch_size=None,
                     std = std.unsqueeze(1).expand_as(mean)
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=light)
             elif model_type in _SAMPLE_BASED_TYPES:
-                mean, std = _sample_based_predict(model, model_type, xb, args.eval_samples)
+                mean, std = _sample_based_predict(
+                    model, model_type, xb, _eval_samples_for(args, model_type)
+                )
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=light)
             else:
                 mean, std = model(xb)
@@ -590,7 +660,9 @@ def evaluate_trajectory(model, dataset, args, model_type=None, batch_size=None):
             if model_type == "ftip":
                 mean, std = model.forward_with_coefficients(xb, a)
             elif model_type in _SAMPLE_BASED_TYPES:
-                mean, _ = _sample_based_predict(model, model_type, xb, args.eval_samples)
+                mean, _ = _sample_based_predict(
+                    model, model_type, xb, _eval_samples_for(args, model_type)
+                )
                 std = None
             else:
                 # Diagonal (independent-per-output-dim) VIP predictive:
@@ -638,7 +710,7 @@ def evaluate_light(model, dataset, args, model_type=None, batch_size=2048):
             elif model_type in _SAMPLE_BASED_TYPES:
                 # Light eval uses fewer MC samples to keep training-time
                 # monitoring cheap.
-                S_light = max(50, args.eval_samples // 4)
+                S_light = max(50, _eval_samples_for(args, model_type) // 4)
                 mean, std = _sample_based_predict(model, model_type, xb, S_light)
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=True)
             else:
@@ -711,16 +783,19 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
             target = target.to(device, non_blocking=True)
             loss = model._train_step(optimizer, inputs, target)
             losses.append(loss.item())
+            step = i + 1
+            wandb_log_train_step(args, step, loss, optimizer, model, model_type)
 
-            if scheduler is not None and (i + 1) % iters_per_epoch == 0:
+            if scheduler is not None and step % iters_per_epoch == 0:
                 scheduler.step()
 
-            if (i + 1) % args.eval_every == 0:
+            if step % args.eval_every == 0:
                 tr = evaluate_light(model, train_test_dataset, args, model_type=model_type)
                 val = evaluate_light(model, validation_dataset, args, model_type=model_type)
-                metrics_history["iterations"].append(i + 1)
+                metrics_history["iterations"].append(step)
                 metrics_history["train"].append(tr)
                 metrics_history["validation"].append(val)
+                wandb_log_eval(step, tr, val)
                 last_val_nll = val["NLL"]
                 last_val_rmse = val["RMSE"]
                 last_tr_nll = tr["NLL"]
@@ -742,15 +817,19 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
                 loss = model._train_step(optimizer, inputs, target)
                 losses.append(loss.item())
                 it += 1
+                wandb_log_train_step(args, it, loss, optimizer, model, model_type)
 
                 if it % args.eval_every == 0:
+                    train_metrics = evaluate_light(
+                        model, train_test_dataset, args, model_type=model_type
+                    )
+                    validation_metrics = evaluate_light(
+                        model, validation_dataset, args, model_type=model_type
+                    )
                     metrics_history["iterations"].append(it)
-                    metrics_history["train"].append(
-                        evaluate_light(model, train_test_dataset, args, model_type=model_type)
-                    )
-                    metrics_history["validation"].append(
-                        evaluate_light(model, validation_dataset, args, model_type=model_type)
-                    )
+                    metrics_history["train"].append(train_metrics)
+                    metrics_history["validation"].append(validation_metrics)
+                    wandb_log_eval(it, train_metrics, validation_metrics)
 
             if scheduler is not None:
                 scheduler.step()
@@ -765,9 +844,25 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
         diagnostics["prior_regularizers"] = [
             float(v) for v in model.prior_regularizers
         ]
+    if hasattr(model, "data_terms"):
+        diagnostics["data_terms"] = [float(v) for v in model.data_terms]
+    if hasattr(model, "betas"):
+        diagnostics["betas"] = [float(v) for v in model.betas]
     if model_type == "ftip":
         diagnostics["base_KLs"] = [float(v) for v in model.base_KLs]
         diagnostics["flow_ldj"] = [float(v) for v in model.flow_ldj]
+    if hasattr(model, "log_variance"):
+        log_variance = model.log_variance.detach().flatten().cpu()
+        noise_std = torch.exp(0.5 * log_variance)
+        diagnostics["final_log_variance"] = [float(v) for v in log_variance]
+        diagnostics["final_noise_std_normalized"] = [float(v) for v in noise_std]
+        if hasattr(model, "y_std"):
+            y_std = model.y_std.detach().flatten().cpu()
+            if y_std.numel() == 1:
+                y_std = y_std.expand_as(noise_std)
+            diagnostics["final_noise_std_original"] = [
+                float(v) for v in noise_std * y_std
+            ]
 
     return losses, metrics_history, diagnostics
 
@@ -778,6 +873,20 @@ def _build_result(model_type, model, args, train_loader,
     """Train a model, evaluate it, and return the result dict."""
     if lr is None:
         lr = args.lr
+    wandb_run = init_wandb_run(
+        args,
+        name=wandb_run_name("Pedestrian", model=model_type, seed=args.seed),
+        group="pedestrian",
+        tags=["pedestrian", model_type, args.target_mode],
+        config={
+            "dataset": "pedestrian",
+            "model": model_type,
+            "lr": lr,
+            "epochs": epochs if epochs is not None else args.epochs,
+            "iterations": iterations if iterations is not None else args.iterations,
+            "desc": desc,
+        },
+    )
 
     t0 = time.time()
     losses, metrics_history, diagnostics = train_with_metrics(
@@ -820,6 +929,41 @@ def _build_result(model_type, model, args, train_loader,
         hyperparameters["flow_depth"] = args.flow_depth
         hyperparameters["num_samples"] = args.num_samples
         hyperparameters["eval_samples"] = args.eval_samples
+    if model_type == "ap_fsvi":
+        hyperparameters["ap_fsvi_layer_model"] = "BayesLinear"
+        hyperparameters["ap_fsvi_num_samples"] = args.ap_fsvi_num_samples
+        hyperparameters["ap_fsvi_num_prior_samples"] = (
+            args.ap_fsvi_num_prior_samples or args.ap_fsvi_num_samples
+        )
+        hyperparameters["ap_fsvi_num_eval_samples"] = args.ap_fsvi_num_eval_samples
+        hyperparameters["ap_fsvi_num_measurement"] = args.ap_fsvi_num_measurement
+        hyperparameters["ap_fsvi_adaptive_measure_points"] = (
+            args.ap_fsvi_adaptive_measure_points
+        )
+        hyperparameters["ap_fsvi_adaptive_measure_steps"] = (
+            args.ap_fsvi_adaptive_measure_steps
+        )
+        hyperparameters["ap_fsvi_adaptive_measure_lr"] = (
+            args.ap_fsvi_adaptive_measure_lr
+        )
+        hyperparameters["ap_fsvi_adaptive_measure_domain_limit"] = (
+            args.ap_fsvi_adaptive_measure_domain_limit
+        )
+        hyperparameters["ap_fsvi_beta"] = args.ap_fsvi_beta
+        hyperparameters["ap_fsvi_beta_start"] = args.ap_fsvi_beta_start
+        hyperparameters["ap_fsvi_beta_warmup_steps"] = args.ap_fsvi_beta_warmup_steps
+        hyperparameters["ap_fsvi_data_pretrain_steps"] = args.ap_fsvi_data_pretrain_steps
+        hyperparameters["ap_fsvi_data_loss"] = args.ap_fsvi_data_loss
+        hyperparameters["ap_fsvi_discrepancy"] = args.ap_fsvi_discrepancy
+        hyperparameters["ap_fsvi_discrepancy_projections"] = args.ap_fsvi_discrepancy_projections
+        hyperparameters["ap_fsvi_sinkhorn_epsilon"] = args.ap_fsvi_sinkhorn_epsilon
+        hyperparameters["ap_fsvi_sinkhorn_iterations"] = args.ap_fsvi_sinkhorn_iterations
+        hyperparameters["ap_fsvi_log_variance_init"] = args.ap_fsvi_log_variance_init
+        hyperparameters["ap_fsvi_measurement_weights"] = args.ap_fsvi_measurement_weights
+        hyperparameters["ap_fsvi_near_data_noise"] = args.ap_fsvi_near_data_noise
+        hyperparameters["ap_fsvi_domain_std"] = args.ap_fsvi_domain_std
+        hyperparameters["ap_fsvi_hidden_dims"] = args.ap_fsvi_hidden_dims
+        hyperparameters["ap_fsvi_max_grad_norm"] = args.ap_fsvi_max_grad_norm
 
     result = {
         "dataset": "pedestrian",
@@ -842,6 +986,8 @@ def _build_result(model_type, model, args, train_loader,
                      f"  minFDE={m[f'minFDE_{args.best_of_k}']:.4f}")
         print(line)
     print(f"  Time: {train_time:.1f}s")
+    wandb_log_result(result)
+    finish_wandb_run(wandb_run)
 
     return result, model
 
@@ -1101,17 +1247,21 @@ def run(args):
         # _train_step instead, so populate them upfront here.
         if args.model == "fbnn":
             model._fill_reservoir(train_loader)
+        elif args.model == "ap_fsvi":
+            model._fill_reservoir(train_loader)
         elif args.model == "tfsvi":
             all_X = [inputs for inputs, _ in train_loader]
             model._train_inputs = torch.cat(all_X, dim=0).to(
                 torch.float64 if args.dtype == "float64" else torch.float32
-            )
+            )
         if args.model == "mfvi":
             single_lr = args.mfvi_lr
         elif args.model == "fbnn":
             single_lr = args.fbnn_lr
         elif args.model == "tfsvi":
             single_lr = args.tfsvi_lr
+        elif args.model == "ap_fsvi":
+            single_lr = args.ap_fsvi_lr
         else:
             single_lr = args.lr
         result, _ = _build_result(
@@ -1168,10 +1318,11 @@ def parse_args():
 
     # Model
     p.add_argument("--model",
-                   choices=["vip", "ftip", "mfvi", "fbnn", "tfsvi"],
+                   choices=MODELS + ["all"],
                    default="ftip")
-    p.add_argument("--layer_model", choices=list(LAYER_MODELS.keys()), default="SimplerBayesLinear")
+    p.add_argument("--layer_model", choices=list(LAYER_MODELS.keys()), default="BayesLinear")
     p.add_argument("--dropout", type=float, default=0.0)
+    add_wandb_args(p)
     p.add_argument("--regression_coeffs", type=int, default=40)
     p.add_argument("--bb_alpha", type=float, default=1.0)
     p.add_argument("--use_prior_regularizer", action="store_true", default=False)
@@ -1253,6 +1404,50 @@ def parse_args():
     p.add_argument("--tfsvi_bb_alpha", type=float, default=1.0)
     p.add_argument("--tfsvi_lr", type=float, default=1e-3)
 
+    # AP-FSVI
+    p.add_argument("--ap_fsvi_num_samples", type=int, default=32)
+    p.add_argument("--ap_fsvi_num_prior_samples", type=int, default=None)
+    p.add_argument("--ap_fsvi_num_eval_samples", type=int, default=200)
+    p.add_argument("--ap_fsvi_num_measurement", type=int, default=64)
+    p.add_argument("--ap_fsvi_adaptive_measure_points", action="store_true",
+                   default=False)
+    p.add_argument("--ap_fsvi_adaptive_measure_steps", type=int, default=3)
+    p.add_argument("--ap_fsvi_adaptive_measure_lr", type=float, default=0.05)
+    p.add_argument("--ap_fsvi_adaptive_measure_domain_limit", type=float,
+                   default=None)
+    p.add_argument("--ap_fsvi_beta", type=float, default=0.05)
+    p.add_argument("--ap_fsvi_beta_start", type=float, default=0.0)
+    p.add_argument("--ap_fsvi_beta_warmup_steps", type=int, default=5000)
+    p.add_argument("--ap_fsvi_data_pretrain_steps", type=int, default=1000)
+    p.add_argument("--ap_fsvi_data_loss",
+                   choices=["expected_nll", "predictive_nll"],
+                   default="expected_nll")
+    p.add_argument("--ap_fsvi_discrepancy", type=str, default="mmd",
+                   choices=[
+                       "mmd",
+                       "energy",
+                       "sliced_wasserstein",
+                       "stein",
+                       "sinkhorn",
+                       "prior_whitened_gaussian_kl",
+                       "prior_whitened_sliced_kl",
+                       "spectral_sliced_kl",
+                       "spectral_projected_kl",
+                       "sample_sliced_kl",
+                   ])
+    p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=64)
+    p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0)
+    p.add_argument("--ap_fsvi_sinkhorn_iterations", type=int, default=50)
+    p.add_argument("--ap_fsvi_log_variance_init", type=float, default=-2.0)
+    p.add_argument("--ap_fsvi_measurement_weights", type=float, nargs=3,
+                   default=[0.2, 0.2, 0.6],
+                   metavar=("DATA", "NEAR", "DOMAIN"))
+    p.add_argument("--ap_fsvi_near_data_noise", type=float, default=0.1)
+    p.add_argument("--ap_fsvi_domain_std", type=float, default=2.5)
+    p.add_argument("--ap_fsvi_hidden_dims", type=int, nargs="+", default=None)
+    p.add_argument("--ap_fsvi_max_grad_norm", type=float, default=None)
+    p.add_argument("--ap_fsvi_lr", type=float, default=1e-3)
+
     # Evaluation
     p.add_argument("--best_of_k", type=int, default=20)
 
@@ -1262,11 +1457,31 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output_dir", default="./results/pedestrian_3way_pedsplit")
 
-    return p.parse_args()
+    args = p.parse_args()
+    args.layer_model = "BayesLinear"
+    return args
 
 
 if __name__ == "__main__":
     args = parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    run(args)
+    if args.model == "all":
+        all_results = []
+        for model_type in MODELS:
+            model_args = copy.copy(args)
+            model_args.model = model_type
+            all_results.extend(run(model_args))
+        print_comparison(all_results, split="test", primary="RMSE")
+        json_path, csv_path = save_comparison(
+            all_results,
+            args.output_dir,
+            f"pedestrian_seed{args.seed}",
+            split="test",
+        )
+        if json_path is not None:
+            print(f"\nComparison saved to {json_path}")
+            print(f"Comparison CSV saved to {csv_path}")
+    else:
+        results = run(args)
+        print_comparison(results, split="test", primary="RMSE")

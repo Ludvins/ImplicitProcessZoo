@@ -75,7 +75,7 @@ class Test_Dataset(Dataset):
         return len(self.inputs)
 
 
-uci_base = "https://archive.ics.uci.edu/ml/machine-learning-databases/"
+uci_base = "http://archive.ics.uci.edu/ml/machine-learning-databases/"
 data_base = "./data"
 
 
@@ -330,6 +330,40 @@ class Heterocedastic_Dataset(CustomDataset):
         sin = np.sin(x)
 
         y = 7 * sin + epsilon * sin + 10
+
+        self.inputs = x[..., np.newaxis]
+        self.targets = y[..., np.newaxis]
+
+
+class Gap_Dataset(CustomDataset):
+    """1D regression with a missing central interval.
+
+    Observations live on [-4, -1] union [1, 4], while plots/evaluation grids can
+    inspect the unobserved gap [-1, 1]. This is useful for visually comparing
+    whether posterior predictive uncertainty expands where there is no data.
+    """
+
+    gap_bounds = (-1.0, 1.0)
+    plot_domain = (-4.5, 4.5)
+
+    @staticmethod
+    def true_function(x):
+        return 2.5 * np.sin(1.35 * x) + 0.35 * x + 0.35 * np.cos(3.0 * x)
+
+    def __init__(self):
+        self.type = "regression"
+        self.output_dim = 1
+        rng = np.random.default_rng(0)
+
+        n_left = 1000
+        n_right = 1000
+        left = rng.uniform(-4.0, self.gap_bounds[0], size=n_left)
+        right = rng.uniform(self.gap_bounds[1], 4.0, size=n_right)
+        x = np.concatenate([left, right])
+        rng.shuffle(x)
+
+        noise = 0.25 * rng.normal(size=x.shape[0])
+        y = self.true_function(x) + noise
 
         self.inputs = x[..., np.newaxis]
         self.targets = y[..., np.newaxis]
@@ -798,7 +832,7 @@ class Year_Dataset(CustomDataset):
                     zfile.extractall("./data/")
 
             data = pd.read_csv(
-                "/data/YearPredictionMSD.txt", header=None, delimiter=","
+                "./data/YearPredictionMSD.txt", header=None, delimiter=","
             ).values
 
         self.len_data = data.shape[0]
@@ -1261,6 +1295,7 @@ def get_dataset(dataset_name):
         "synthetic": Synthetic_Dataset,
         "constant": Constant_Dataset,
         "linear": Linear_Dataset,
+        "gap": Gap_Dataset,
         "heterocedastic": Heterocedastic_Dataset,
         "skewed": Skewed_Dataset,
         "boston": Boston_Dataset,
@@ -1280,6 +1315,8 @@ def get_dataset(dataset_name):
         "MNIST2": MNIST_regression_Dataset,
         "Rectangles": Rectangles_Dataset,
         "Year": Year_Dataset,
+        "year": Year_Dataset,
+        "yearpredictionmsd": Year_Dataset,
         "Airline": Airline_Dataset,
         "HIGGS": HIGGS_Dataset,
         "SUSY": SUSY_Dataset,

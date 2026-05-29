@@ -41,10 +41,15 @@ def multiclass_logp(F, Y, num_classes, epsilon):
     Parameters
     ----------
     F : (..., N, K) logits
-    Y : (N, 1) or (N,) class indices
+    Y : (N, 1), (N,) class indices, or (N, K) one-hot labels
     num_classes, epsilon : unused, kept for API compatibility
     """
-    y_idx = Y.long().squeeze(-1)                            # (N,)
+    if Y.dim() >= 2 and Y.shape[-1] == num_classes:
+        log_probs = torch.nn.functional.log_softmax(F, dim=-1)
+        while Y.dim() < log_probs.dim():
+            Y = Y.unsqueeze(0)
+        return log_probs * Y.to(device=F.device, dtype=F.dtype)
+    y_idx = Y.long().squeeze(-1)                             # (N,)
     log_probs = torch.nn.functional.log_softmax(F, dim=-1)  # (..., N, K)
     # Broadcast index to match log_probs leading dims
     idx = y_idx.unsqueeze(-1)                                # (N, 1)

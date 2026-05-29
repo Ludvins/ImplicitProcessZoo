@@ -445,7 +445,7 @@ class BayesianCNN(GenerativeFunction):
         num_samples,
         input_dim,
         output_dim,
-        layer_model=SimplerBayesLinear,
+        layer_model=BayesLinear,
         head_dims=None,
         dropout=0.0,
         device=None,
@@ -849,7 +849,7 @@ class BayesianResNet(GenerativeFunction):
         num_samples,
         input_dim,
         output_dim,
-        layer_model=SimplerBayesLinear,
+        layer_model=BayesLinear,
         head_dims=None,
         dropout=0.0,
         backbone="resnet18",
@@ -946,7 +946,7 @@ class BayesianLSTM(GenerativeFunction):
         lstm_hidden=64,
         lstm_layers=1,
         head_dims=None,
-        layer_model=SimplerBayesLinear,
+        layer_model=BayesLinear,
         dropout=0.0,
         device=None,
         fix_random_noise=True,
@@ -1247,6 +1247,8 @@ class ExactGP(GenerativeFunction):
         self.gaussian_sampler.reset_seed()
         self._cached_z = None
         self._cached_z_shape = None
+        self._cached_cholesky_key = None
+        self._cached_cholesky = None
 
     def _rbf(self, X):
         """Pairwise RBF kernel matrix on a single batch of points."""
@@ -1256,6 +1258,42 @@ class ExactGP(GenerativeFunction):
         sq = Xs + Xs.transpose(-2, -1) - 2 * X @ X.transpose(-2, -1)
         sq = torch.clamp(sq, min=0.0)
         return amp ** 2 * torch.exp(-0.5 * sq / (length ** 2))
+
+    def _cholesky_cache_key(self, X):
+        """Return a safe cache key for repeated, non-adaptive GP inputs."""
+        if X.requires_grad:
+            return None
+        if self.log_kernel_amp.requires_grad or self.log_kernel_length.requires_grad:
+            return None
+        return (
+            id(X),
+            X.data_ptr(),
+            tuple(X.shape),
+            tuple(X.stride()),
+            X.storage_offset(),
+            X.dtype,
+            X.device.type,
+            X.device.index,
+            getattr(X, "_version", 0),
+            getattr(self.log_kernel_amp, "_version", 0),
+            getattr(self.log_kernel_length, "_version", 0),
+            self.jitter,
+        )
+
+    def _cholesky(self, X):
+        key = self._cholesky_cache_key(X)
+        if key is not None and key == self._cached_cholesky_key:
+            return self._cached_cholesky
+        K = self._rbf(X)
+        K = K + self.jitter * torch.eye(X.shape[0], dtype=self.dtype, device=K.device)
+        L = torch.linalg.cholesky(K)
+        if key is not None:
+            self._cached_cholesky_key = key
+            self._cached_cholesky = L
+        else:
+            self._cached_cholesky_key = None
+            self._cached_cholesky = None
+        return L
 
     def forward(self, inputs, num_samples=None):
         """Exact GP samples at ``inputs``.
@@ -1284,9 +1322,7 @@ class ExactGP(GenerativeFunction):
         # functions f_s = L z_s the "same draw" across iterations —
         # even as the kernel hyperparameters are learned, the sample
         # paths move only through L, not through z.
-        K = self._rbf(inputs)
-        K = K + self.jitter * torch.eye(N, dtype=self.dtype, device=K.device)
-        L = torch.linalg.cholesky(K)
+        L = self._cholesky(inputs)
         if self.fix_random_noise:
             if self._cached_z is None or self._cached_z_shape != shape:
                 self._cached_z = self.gaussian_sampler(shape)

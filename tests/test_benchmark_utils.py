@@ -1,0 +1,57 @@
+import pytest
+
+from scripts.benchmark_utils import training_decomposition
+
+
+class DummyModel:
+    pass
+
+
+def test_training_decomposition_for_kl_model():
+    model = DummyModel()
+    model.bb_alphas = [10.0, 8.0]
+    model.KLs = [1.0, 1.5]
+    model.prior_regularizers = [0.25]
+
+    values = training_decomposition(model, model_type="vip")
+
+    assert values["train/data_fit"] == 8.0
+    assert values["train/kl"] == 1.5
+    assert values["train/elbo_kl"] == 1.5
+    assert values["train/prior_regularizer"] == 0.25
+    assert values["train/evidence_regularizer"] == 0.25
+    assert values["train/regularizer"] == 1.75
+    assert values["train/objective_regularizer"] == 1.75
+    assert values["train/regularizer_total"] == 1.75
+    assert values["train/reconstructed_loss"] == 9.75
+
+
+def test_training_decomposition_for_ap_fsvi():
+    model = DummyModel()
+    model.data_terms = [4.0]
+    model.KLs = [3.0]
+    model.function_terms = [3.0]
+    model.betas = [0.2]
+
+    values = training_decomposition(model, model_type="ap_fsvi")
+
+    assert values["train/data_fit"] == 4.0
+    assert values["train/ap_fsvi_discrepancy"] == 3.0
+    assert values["train/ap_fsvi_beta"] == 0.2
+    assert values["train/regularizer"] == pytest.approx(0.6)
+    assert values["train/reconstructed_loss"] == pytest.approx(4.6)
+
+
+def test_training_decomposition_for_ftip_flow_components():
+    model = DummyModel()
+    model.bb_alphas = [2.0]
+    model.KLs = [0.7]
+    model.base_KLs = [0.9]
+    model.flow_ldj = [-0.2]
+
+    values = training_decomposition(model, model_type="ftip")
+
+    assert values["train/data_fit"] == 2.0
+    assert values["train/kl"] == 0.7
+    assert values["train/ftip_base_kl"] == 0.9
+    assert values["train/ftip_flow_ldj"] == -0.2
