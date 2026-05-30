@@ -324,14 +324,7 @@ class FBNN(torch.nn.Module):
         # are cached and reused.  This means each of the S samples defines a
         # consistent function across all input locations (measurement + batch),
         # which is required for the SSGE score estimates to be coherent.
-        if hasattr(generative_function, "layers"):
-            for layer in generative_function.layers:
-                if hasattr(layer, "fix_random_noise") and not layer.fix_random_noise:
-                    raise ValueError(
-                        "FBNN requires generative_function with "
-                        "fix_random_noise=True so that function samples are "
-                        "consistent across input locations."
-                    )
+        self._ensure_fixed_noise(self.generative_function)
 
         # Optionally freeze prior parameters. The original fBNN paper learns
         # the GP kernel hyper-parameters jointly with the posterior, so callers
@@ -343,13 +336,8 @@ class FBNN(torch.nn.Module):
 
         # BNN priors also need fix_random_noise=True so that the prior
         # score reference distribution is deterministic across iterations.
-        if not self.is_gp_prior and hasattr(prior_function, "layers"):
-            for layer in prior_function.layers:
-                if hasattr(layer, "fix_random_noise") and not layer.fix_random_noise:
-                    raise ValueError(
-                        "FBNN requires prior_function with "
-                        "fix_random_noise=True for deterministic prior samples."
-                    )
+        if not self.is_gp_prior:
+            self._ensure_fixed_noise(self.prior_function)
 
         self.ssge = SSGE(num_eigs=num_eigs, nugget=nugget)
 
@@ -368,13 +356,35 @@ class FBNN(torch.nn.Module):
     # Sample count management
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _ensure_fixed_noise(module):
+        """Make Bayesian submodules use coherent cached noise samples."""
+        for child in module.modules():
+            if not hasattr(child, "fix_random_noise"):
+                continue
+            child.fix_random_noise = True
+            if hasattr(child, "get_noise"):
+                child.noise = child.get_noise(first_call=True)
+
     def _set_num_samples(self, S):
-        old = self.generative_function.num_samples
-        self.generative_function.num_samples = S
-        for layer in self.generative_function.layers:
-            layer.num_samples = S
-            if hasattr(layer, "fix_random_noise") and layer.fix_random_noise and S != old:
-                layer.noise = layer.get_noise(first_call=True)
+        """Set the posterior sample count on any Bayesian generator.
+
+        The original helper assumed an MLP-style ``.layers`` attribute. CNN
+        generators keep their stochastic modules under ``.head`` or as nested
+        convolutional layers, so traverse ``modules()`` instead.
+        """
+        for module in self.generative_function.modules():
+            if not hasattr(module, "num_samples"):
+                continue
+            old = module.num_samples
+            if old == S:
+                continue
+            module.num_samples = S
+            if (
+                getattr(module, "fix_random_noise", False)
+                and hasattr(module, "get_noise")
+            ):
+                module.noise = module.get_noise(first_call=True)
 
     # ------------------------------------------------------------------
     # Prediction methods
