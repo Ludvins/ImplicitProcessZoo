@@ -32,6 +32,16 @@ from src.fbnn import FBNN
 from src.tfsvi import TFSVI
 from src.mfvi import MFVI
 from src.map_baseline import DeterministicMAP
+from scripts.benchmark_utils import (
+    add_wandb_args,
+    finish_wandb_run,
+    init_wandb_run,
+    pretty_discrepancy_name,
+    wandb_log_eval,
+    wandb_log_result,
+    wandb_log_train_step,
+    wandb_run_name,
+)
 
 UCI_REGRESSION_DATASETS = [
     "boston", "energy", "concrete", "naval", "power",
@@ -398,6 +408,7 @@ def parse_args():
                         "spectral_sliced_kl",
                         "spectral_projected_kl",
                         "sample_sliced_kl",
+                        "sample_sliced_gaussian_kl",
                     ],
                     help="AP-FSVI function-space discrepancy.")
     p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=64,
@@ -467,6 +478,7 @@ def parse_args():
                     help="Disable cosine annealing.")
     p.add_argument("--compile", action="store_true", default=False,
                     help="Use torch.compile for faster training (requires Triton).")
+    add_wandb_args(p)
     args = p.parse_args()
 
     # Resolve mutually-exclusive flags
@@ -1027,18 +1039,25 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
             target = target.to(device, non_blocking=True)
             loss = model._train_step(optimizer, inputs, target)
             losses.append(loss.item())
+            wandb_log_train_step(
+                args, i + 1, loss, optimizer=optimizer, model=model,
+                model_type=model_type,
+            )
 
             if scheduler is not None and (i + 1) % iters_per_epoch == 0:
                 scheduler.step()
 
             if (i + 1) % args.eval_every == 0:
                 metrics_history["iterations"].append(i + 1)
-                metrics_history["train"].append(
-                    evaluate_light(model, train_test_dataset, args, model_type=model_type)
+                train_eval = evaluate_light(
+                    model, train_test_dataset, args, model_type=model_type
                 )
-                metrics_history["validation"].append(
-                    evaluate_light(model, validation_dataset, args, model_type=model_type)
+                validation_eval = evaluate_light(
+                    model, validation_dataset, args, model_type=model_type
                 )
+                metrics_history["train"].append(train_eval)
+                metrics_history["validation"].append(validation_eval)
+                wandb_log_eval(i + 1, train_eval, validation_eval)
 
             loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
     else:
@@ -1052,15 +1071,22 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
                 loss = model._train_step(optimizer, inputs, target)
                 losses.append(loss.item())
                 it += 1
+                wandb_log_train_step(
+                    args, it, loss, optimizer=optimizer, model=model,
+                    model_type=model_type,
+                )
 
                 if it % args.eval_every == 0:
                     metrics_history["iterations"].append(it)
-                    metrics_history["train"].append(
-                        evaluate_light(model, train_test_dataset, args, model_type=model_type)
+                    train_eval = evaluate_light(
+                        model, train_test_dataset, args, model_type=model_type
                     )
-                    metrics_history["validation"].append(
-                        evaluate_light(model, validation_dataset, args, model_type=model_type)
+                    validation_eval = evaluate_light(
+                        model, validation_dataset, args, model_type=model_type
                     )
+                    metrics_history["train"].append(train_eval)
+                    metrics_history["validation"].append(validation_eval)
+                    wandb_log_eval(it, train_eval, validation_eval)
 
             if scheduler is not None:
                 scheduler.step()
@@ -1106,14 +1132,33 @@ def _layer_tag(args, model_type=None):
     return "_bayes"
 
 
+def _variant_tag(args, model_type):
+    """Filename tag for variants that share the same top-level model name."""
+    if model_type != "ap_fsvi":
+        return ""
+    discrepancy = getattr(args, "ap_fsvi_discrepancy", "mmd")
+    tag = f"_{discrepancy}"
+    if discrepancy in (
+        "sample_sliced_kl",
+        "sample_sliced_gaussian_kl",
+        "prior_whitened_sliced_kl",
+        "spectral_projected_kl",
+        "spectral_sliced_kl",
+    ):
+        mode = getattr(args, "ap_fsvi_sample_projection_mode", "random")
+        tag = f"{tag}_{mode}"
+    return tag
+
+
 def _ckpt_path(args, dataset_name, model_type):
     """Build a checkpoint path."""
     alpha_tag = f"_alpha{args.bb_alpha}"
     layer_tag = _layer_tag(args, model_type)
     flow_tag = _flow_tag(args, model_type)
+    variant_tag = _variant_tag(args, model_type)
     return os.path.join(
         args.output_dir,
-        f"{model_type}_{dataset_name}{alpha_tag}{layer_tag}{flow_tag}_seed{args.seed}.pt",
+        f"{model_type}_{dataset_name}{alpha_tag}{layer_tag}{flow_tag}{variant_tag}_seed{args.seed}.pt",
     )
 
 
@@ -1257,6 +1302,8 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
               f"H(in)={ood_metrics['entropy_id_mean']:.4f}+/-{ood_metrics['entropy_id_std']:.4f}  "
               f"H(ood)={ood_metrics['entropy_ood_mean']:.4f}+/-{ood_metrics['entropy_ood_std']:.4f}")
 
+    wandb_log_result(result)
+
     # Save checkpoint
     if args.save_checkpoint:
         os.makedirs(args.output_dir, exist_ok=True)
@@ -1267,7 +1314,50 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
     return result, model
 
 
+def _wandb_run_metadata(args, dataset_name):
+    suffix = None
+    group_parts = ["uci_120k_cluster", dataset_name, args.model]
+    if args.model == "ap_fsvi":
+        suffix = pretty_discrepancy_name(args.ap_fsvi_discrepancy)
+        group_parts.append(args.ap_fsvi_discrepancy)
+        if args.ap_fsvi_discrepancy in (
+            "sample_sliced_kl",
+            "sample_sliced_gaussian_kl",
+            "prior_whitened_sliced_kl",
+            "spectral_projected_kl",
+            "spectral_sliced_kl",
+        ):
+            suffix = f"{suffix}/{args.ap_fsvi_sample_projection_mode}"
+            group_parts.append(args.ap_fsvi_sample_projection_mode)
+
+    name = wandb_run_name(
+        "UCI 120k",
+        dataset=dataset_name,
+        model=args.model,
+        suffix=suffix,
+        seed=args.seed,
+    )
+    tags = ["uci", "120k", dataset_name, args.model]
+    if args.model == "ap_fsvi":
+        tags.extend([args.ap_fsvi_discrepancy, args.ap_fsvi_sample_projection_mode])
+    group = "_".join(str(part) for part in group_parts)
+    return name, group, tags
+
+
 def run_single(dataset_name, args):
+    """Run benchmark on a single dataset. Returns a list of result dicts."""
+    wandb_name, wandb_group, wandb_tags = _wandb_run_metadata(args, dataset_name)
+    wandb_run = init_wandb_run(
+        args, name=wandb_name, group=wandb_group, tags=wandb_tags
+    )
+
+    try:
+        return _run_single(dataset_name, args)
+    finally:
+        finish_wandb_run(wandb_run)
+
+
+def _run_single(dataset_name, args):
     """Run benchmark on a single dataset. Returns a list of result dicts."""
     use_warm_start = args.model == "ftip" and args.auto_warm_start
 
@@ -1452,9 +1542,10 @@ def main():
             alpha_tag = f"_alpha{run_args.bb_alpha}"
             layer_tag = _layer_tag(run_args, run_args.model)
             flow_tag = _flow_tag(run_args, run_args.model)
+            variant_tag = _variant_tag(run_args, run_args.model)
             out_path = os.path.join(
                 run_args.output_dir,
-                f"{run_args.model}_{ds}{alpha_tag}{layer_tag}{flow_tag}_seed{run_args.seed}.json",
+                f"{run_args.model}_{ds}{alpha_tag}{layer_tag}{flow_tag}{variant_tag}_seed{run_args.seed}.json",
             )
             if os.path.exists(out_path):
                 print(f"\n  Skipping {run_args.model}/{ds} seed={run_args.seed}: {out_path} already exists")
