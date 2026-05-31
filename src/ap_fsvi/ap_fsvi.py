@@ -29,6 +29,7 @@ class FunctionDiscrepancy:
         "spectral_sliced_kl",
         "spectral_projected_kl",
         "sample_sliced_kl",
+        "sample_sliced_knn_kl",
         "sample_sliced_gaussian_kl",
         "sample_sliced_quantile_transport_kl",
     )
@@ -52,6 +53,7 @@ class FunctionDiscrepancy:
         spectral_eigenvalue_power=1.0,
         spectral_cov_shrinkage=0.05,
         spectral_knn_k=3,
+        sample_knn_k=3,
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
         quantile_transport_k=3,
@@ -73,6 +75,9 @@ class FunctionDiscrepancy:
         self.spectral_eigenvalue_power = spectral_eigenvalue_power
         self.spectral_cov_shrinkage = spectral_cov_shrinkage
         self.spectral_knn_k = spectral_knn_k
+        if sample_knn_k <= 0:
+            raise ValueError("sample_knn_k must be positive.")
+        self.sample_knn_k = int(sample_knn_k)
         self.sample_gaussian_shrinkage = sample_gaussian_shrinkage
         if quantile_transport_k <= 0:
             raise ValueError("quantile_transport_k must be positive.")
@@ -102,6 +107,7 @@ class FunctionDiscrepancy:
         spectral_eigenvalue_power=1.0,
         spectral_cov_shrinkage=0.05,
         spectral_knn_k=3,
+        sample_knn_k=3,
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
         quantile_transport_k=3,
@@ -124,6 +130,7 @@ class FunctionDiscrepancy:
             spectral_eigenvalue_power=spectral_eigenvalue_power,
             spectral_cov_shrinkage=spectral_cov_shrinkage,
             spectral_knn_k=spectral_knn_k,
+            sample_knn_k=sample_knn_k,
             sample_gaussian_shrinkage=sample_gaussian_shrinkage,
             sample_projection_mode=sample_projection_mode,
             quantile_transport_k=quantile_transport_k,
@@ -137,6 +144,7 @@ class FunctionDiscrepancy:
             "sliced_wasserstein",
             "sinkhorn",
             "sample_sliced_kl",
+            "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
             "sample_sliced_quantile_transport_kl",
         )
@@ -190,6 +198,8 @@ class FunctionDiscrepancy:
             return self._sinkhorn_divergence(z, w)
         if self.kind == "sample_sliced_kl":
             return self._sample_sliced_kl(z, w)
+        if self.kind == "sample_sliced_knn_kl":
+            return self._sample_sliced_knn_kl(z, w)
         if self.kind == "sample_sliced_gaussian_kl":
             return self._sample_sliced_gaussian_kl(z, w)
         if self.kind == "sample_sliced_quantile_transport_kl":
@@ -371,6 +381,40 @@ class FunctionDiscrepancy:
         # Same dimensional scaling as prior_whitened_sliced_kl. This remains a
         # projected/sample-only KL surrogate, but avoids requiring beta to
         # compensate for averaging over one-dimensional projections.
+        return (z.shape[-1] * (log_q - log_p).mean()).clamp_min(0.0)
+
+    def _sample_sliced_knn_kl(self, z, w):
+        """Sliced KL with one-dimensional kNN spacing density estimates."""
+        if self.num_projections <= 0:
+            raise ValueError("num_projections must be positive.")
+        z, w = _diagonal_standardize_by_reference(z, w, self.min_bandwidth)
+        directions = _sample_sliced_projection_directions(
+            z,
+            w,
+            self.num_projections,
+            mode=self.sample_projection_mode,
+            min_bandwidth=self.min_bandwidth,
+            cache=self._fixed_projection_cache,
+        )
+        z_proj = z @ directions
+        w_proj = w @ directions
+        if z_proj.shape[0] < 2 or w_proj.shape[0] < 1:
+            return self._sample_sliced_gaussian_kl(z, w)
+
+        log_q = _knn_log_density_1d(
+            z_proj,
+            z_proj,
+            k=self.sample_knn_k,
+            min_width=self.min_bandwidth,
+            leave_one_out=True,
+        )
+        log_p = _knn_log_density_1d(
+            z_proj,
+            w_proj.detach(),
+            k=self.sample_knn_k,
+            min_width=self.min_bandwidth,
+            leave_one_out=False,
+        )
         return (z.shape[-1] * (log_q - log_p).mean()).clamp_min(0.0)
 
     def _sample_sliced_gaussian_kl(self, z, w):
@@ -701,6 +745,7 @@ class APFSVI(torch.nn.Module):
         spectral_eigenvalue_power=1.0,
         spectral_cov_shrinkage=0.05,
         spectral_knn_k=3,
+        sample_knn_k=3,
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
         quantile_transport_k=3,
@@ -905,6 +950,7 @@ class APFSVI(torch.nn.Module):
             spectral_eigenvalue_power=spectral_eigenvalue_power,
             spectral_cov_shrinkage=spectral_cov_shrinkage,
             spectral_knn_k=spectral_knn_k,
+            sample_knn_k=sample_knn_k,
             sample_gaussian_shrinkage=sample_gaussian_shrinkage,
             sample_projection_mode=sample_projection_mode,
             quantile_transport_k=quantile_transport_k,
@@ -1252,6 +1298,7 @@ class APFSVI(torch.nn.Module):
         prior_values = self._regularizer_values(prior_values)
         if self.function_discrepancy in (
             "sample_sliced_kl",
+            "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
             "sample_sliced_quantile_transport_kl",
         ):
@@ -1289,6 +1336,7 @@ class APFSVI(torch.nn.Module):
             spectral_eigenvalue_power=self.divergence.spectral_eigenvalue_power,
             spectral_cov_shrinkage=self.divergence.spectral_cov_shrinkage,
             spectral_knn_k=self.divergence.spectral_knn_k,
+            sample_knn_k=self.divergence.sample_knn_k,
             sample_projection_mode=self.divergence.sample_projection_mode,
             quantile_transport_k=self.divergence.quantile_transport_k,
         )
@@ -1395,7 +1443,9 @@ class APFSVI(torch.nn.Module):
             spectral_eigenvalue_power=self.divergence.spectral_eigenvalue_power,
             spectral_cov_shrinkage=self.divergence.spectral_cov_shrinkage,
             spectral_knn_k=self.divergence.spectral_knn_k,
+            sample_knn_k=self.divergence.sample_knn_k,
             sample_projection_mode=self.divergence.sample_projection_mode,
+            quantile_transport_k=self.divergence.quantile_transport_k,
         )
 
     def _project_adaptive_measurement_points(self, X):
@@ -1606,6 +1656,17 @@ def _normalize_discrepancy_kind(kind):
         "sample_gaussian_sliced_kl": "sample_sliced_gaussian_kl",
         "sample-gaussian-sliced-kl": "sample_sliced_gaussian_kl",
         "ssgkl": "sample_sliced_gaussian_kl",
+        "sample_sliced_knn_kl": "sample_sliced_knn_kl",
+        "sample-sliced-knn-kl": "sample_sliced_knn_kl",
+        "sliced_knn_kl": "sample_sliced_knn_kl",
+        "sliced-knn-kl": "sample_sliced_knn_kl",
+        "sample_knn_kl": "sample_sliced_knn_kl",
+        "sample-knn-kl": "sample_sliced_knn_kl",
+        "sample_sliced_spacing_kl": "sample_sliced_knn_kl",
+        "sample-sliced-spacing-kl": "sample_sliced_knn_kl",
+        "sliced_spacing_kl": "sample_sliced_knn_kl",
+        "sliced-spacing-kl": "sample_sliced_knn_kl",
+        "ssknnkl": "sample_sliced_knn_kl",
         "sample_sliced_quantile_transport_kl": "sample_sliced_quantile_transport_kl",
         "sample-sliced-quantile-transport-kl": "sample_sliced_quantile_transport_kl",
         "sliced_quantile_transport_kl": "sample_sliced_quantile_transport_kl",
@@ -2372,6 +2433,34 @@ def _local_quantile_slopes(source_sorted, target_sorted, k, min_width):
     dx = (source_sorted[right] - source_sorted[left]).abs().clamp_min(min_width)
     dy = (target_sorted[right] - target_sorted[left]).abs().clamp_min(min_width)
     return (dy / dx).clamp_min(min_width)
+
+
+def _knn_log_density_1d(query, reference, k, min_width, leave_one_out=False):
+    """One-dimensional kNN ball-density estimate for each projection column."""
+    if query.ndim != 2 or reference.ndim != 2:
+        raise ValueError("kNN density inputs must have shape [N, P].")
+    if query.shape[1] != reference.shape[1]:
+        raise ValueError("query/reference projection counts must match.")
+    ref_count = reference.shape[0]
+    if ref_count == 0:
+        raise ValueError("kNN density reference set must be non-empty.")
+    if leave_one_out:
+        if query.shape != reference.shape:
+            raise ValueError("leave_one_out=True requires matching query/reference shapes.")
+        if ref_count < 2:
+            return torch.zeros_like(query)
+        normalizer = ref_count - 1
+    else:
+        normalizer = ref_count
+
+    k = min(max(int(k), 1), normalizer)
+    distances = (query.unsqueeze(1) - reference.unsqueeze(0)).abs()
+    if leave_one_out:
+        mask = torch.eye(ref_count, dtype=torch.bool, device=query.device).unsqueeze(-1)
+        distances = distances.masked_fill(mask, torch.inf)
+    radius = torch.topk(distances, k, dim=1, largest=False).values[:, -1, :]
+    radius = radius.clamp_min(min_width)
+    return math.log(k) - math.log(normalizer) - math.log(2.0) - radius.log()
 
 
 def _spacing_log_density_1d(query, reference_sorted, k, min_width):

@@ -409,6 +409,7 @@ def parse_args():
                         "spectral_sliced_kl",
                         "spectral_projected_kl",
                         "sample_sliced_kl",
+                        "sample_sliced_knn_kl",
                         "sample_sliced_gaussian_kl",
                         "sample_sliced_quantile_transport_kl",
                     ],
@@ -418,6 +419,8 @@ def parse_args():
     p.add_argument("--ap_fsvi_sample_projection_mode", type=str, default="random",
                     choices=["random", "fixed_random", "prior_pca", "discrepancy_pca", "fixed_orthogonal"],
                     help="Projection rule for AP-FSVI sample_sliced_kl.")
+    p.add_argument("--ap_fsvi_sample_knn_k", type=int, default=3,
+                    help="Neighbor count for AP-FSVI sample_sliced_knn_kl.")
     p.add_argument("--ap_fsvi_quantile_transport_k", type=int, default=3,
                     help="Local spacing window for AP-FSVI sliced quantile-transport KL.")
     p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0,
@@ -670,6 +673,7 @@ def build_model(args, train_dataset, model_type=None):
             function_discrepancy=_arg("ap_fsvi_discrepancy", "mmd"),
             discrepancy_num_projections=_arg("ap_fsvi_discrepancy_projections", 64),
             sample_projection_mode=_arg("ap_fsvi_sample_projection_mode", "random"),
+            sample_knn_k=_arg("ap_fsvi_sample_knn_k", 3),
             quantile_transport_k=_arg("ap_fsvi_quantile_transport_k", 3),
             sinkhorn_epsilon=_arg("ap_fsvi_sinkhorn_epsilon", 1.0),
             sinkhorn_iterations=_arg("ap_fsvi_sinkhorn_iterations", 50),
@@ -1146,6 +1150,7 @@ def _variant_tag(args, model_type):
     tag = f"_{discrepancy}"
     if discrepancy in (
         "sample_sliced_kl",
+        "sample_sliced_knn_kl",
         "sample_sliced_gaussian_kl",
         "prior_whitened_sliced_kl",
         "spectral_projected_kl",
@@ -1291,6 +1296,7 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "ap_fsvi_discrepancy": args.ap_fsvi_discrepancy,
             "ap_fsvi_discrepancy_projections": args.ap_fsvi_discrepancy_projections,
             "ap_fsvi_sample_projection_mode": args.ap_fsvi_sample_projection_mode,
+            "ap_fsvi_sample_knn_k": args.ap_fsvi_sample_knn_k,
             "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
             "ap_fsvi_sinkhorn_epsilon": args.ap_fsvi_sinkhorn_epsilon,
             "ap_fsvi_sinkhorn_iterations": args.ap_fsvi_sinkhorn_iterations,
@@ -1352,6 +1358,7 @@ def _wandb_run_metadata(args, dataset_name):
         group_parts.append(args.ap_fsvi_discrepancy)
         if args.ap_fsvi_discrepancy in (
             "sample_sliced_kl",
+            "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
             "prior_whitened_sliced_kl",
             "spectral_projected_kl",
