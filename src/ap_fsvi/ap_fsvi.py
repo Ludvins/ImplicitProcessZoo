@@ -30,6 +30,7 @@ class FunctionDiscrepancy:
         "spectral_projected_kl",
         "sample_sliced_kl",
         "sample_sliced_gaussian_kl",
+        "sample_sliced_quantile_transport_kl",
     )
 
     def __init__(
@@ -53,6 +54,7 @@ class FunctionDiscrepancy:
         spectral_knn_k=3,
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
+        quantile_transport_k=3,
     ):
         self.kind = _normalize_discrepancy_kind(kind)
         self.bandwidth = bandwidth
@@ -72,6 +74,9 @@ class FunctionDiscrepancy:
         self.spectral_cov_shrinkage = spectral_cov_shrinkage
         self.spectral_knn_k = spectral_knn_k
         self.sample_gaussian_shrinkage = sample_gaussian_shrinkage
+        if quantile_transport_k <= 0:
+            raise ValueError("quantile_transport_k must be positive.")
+        self.quantile_transport_k = int(quantile_transport_k)
         self.sample_projection_mode = _normalize_sample_projection_mode(
             sample_projection_mode
         )
@@ -99,6 +104,7 @@ class FunctionDiscrepancy:
         spectral_knn_k=3,
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
+        quantile_transport_k=3,
     ):
         return cls(
             kind=kind,
@@ -120,6 +126,7 @@ class FunctionDiscrepancy:
             spectral_knn_k=spectral_knn_k,
             sample_gaussian_shrinkage=sample_gaussian_shrinkage,
             sample_projection_mode=sample_projection_mode,
+            quantile_transport_k=quantile_transport_k,
         )
 
     @property
@@ -131,6 +138,7 @@ class FunctionDiscrepancy:
             "sinkhorn",
             "sample_sliced_kl",
             "sample_sliced_gaussian_kl",
+            "sample_sliced_quantile_transport_kl",
         )
 
     def __call__(
@@ -184,6 +192,8 @@ class FunctionDiscrepancy:
             return self._sample_sliced_kl(z, w)
         if self.kind == "sample_sliced_gaussian_kl":
             return self._sample_sliced_gaussian_kl(z, w)
+        if self.kind == "sample_sliced_quantile_transport_kl":
+            return self._sample_sliced_quantile_transport_kl(z, w)
         raise ValueError(f"Unknown function discrepancy: {self.kind!r}")
 
     def _mmd(self, z, w):
@@ -400,6 +410,54 @@ class FunctionDiscrepancy:
             + p_var.log()
             - q_var.log()
         )
+        return (z.shape[-1] * kl.mean()).clamp_min(0.0)
+
+    def _sample_sliced_quantile_transport_kl(self, z, w):
+        """Sliced KL using 1-D quantile transport and spacing densities.
+
+        For each projection, build the monotone transport map from posterior
+        projected samples to prior projected samples by matching sorted
+        quantiles. The density ratio is then estimated from the transport
+        slope plus a spacing-density correction under the prior samples.
+        """
+        if self.num_projections <= 0:
+            raise ValueError("num_projections must be positive.")
+        z, w = _diagonal_standardize_by_reference(z, w, self.min_bandwidth)
+        directions = _sample_sliced_projection_directions(
+            z,
+            w,
+            self.num_projections,
+            mode=self.sample_projection_mode,
+            min_bandwidth=self.min_bandwidth,
+            cache=self._fixed_projection_cache,
+        )
+        z_proj = z @ directions
+        w_proj = w @ directions
+        if z_proj.shape[0] < 2 or w_proj.shape[0] < 2:
+            return self._sample_sliced_gaussian_kl(z, w)
+
+        z_sorted = torch.sort(z_proj, dim=0).values
+        w_sorted = torch.sort(w_proj.detach(), dim=0).values
+        transported = _interpolate_sorted(w_sorted, z_sorted.shape[0])
+        slope = _local_quantile_slopes(
+            z_sorted,
+            transported,
+            k=self.quantile_transport_k,
+            min_width=self.min_bandwidth,
+        )
+        log_p_transport = _spacing_log_density_1d(
+            transported,
+            w_sorted,
+            k=self.quantile_transport_k,
+            min_width=self.min_bandwidth,
+        )
+        log_p_z = _spacing_log_density_1d(
+            z_sorted,
+            w_sorted,
+            k=self.quantile_transport_k,
+            min_width=self.min_bandwidth,
+        )
+        kl = (log_p_transport - log_p_z + slope.log()).mean(dim=0)
         return (z.shape[-1] * kl.mean()).clamp_min(0.0)
 
     def _spectral_sliced_kl(
@@ -645,6 +703,7 @@ class APFSVI(torch.nn.Module):
         spectral_knn_k=3,
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
+        quantile_transport_k=3,
         fixed_measure_points=False,
         prior_kernel_amp=1.0,
         prior_kernel_length=1.0,
@@ -848,6 +907,7 @@ class APFSVI(torch.nn.Module):
             spectral_knn_k=spectral_knn_k,
             sample_gaussian_shrinkage=sample_gaussian_shrinkage,
             sample_projection_mode=sample_projection_mode,
+            quantile_transport_k=quantile_transport_k,
         )
         if self.likelihood_type == "regression":
             log_variance = torch.as_tensor(log_variance_init, dtype=dtype, device=device)
@@ -1193,6 +1253,7 @@ class APFSVI(torch.nn.Module):
         if self.function_discrepancy in (
             "sample_sliced_kl",
             "sample_sliced_gaussian_kl",
+            "sample_sliced_quantile_transport_kl",
         ):
             return _sample_sliced_point_scores(
                 values,
@@ -1229,6 +1290,7 @@ class APFSVI(torch.nn.Module):
             spectral_cov_shrinkage=self.divergence.spectral_cov_shrinkage,
             spectral_knn_k=self.divergence.spectral_knn_k,
             sample_projection_mode=self.divergence.sample_projection_mode,
+            quantile_transport_k=self.divergence.quantile_transport_k,
         )
         values = []
         for i in range(X_pool.shape[0]):
@@ -1544,6 +1606,13 @@ def _normalize_discrepancy_kind(kind):
         "sample_gaussian_sliced_kl": "sample_sliced_gaussian_kl",
         "sample-gaussian-sliced-kl": "sample_sliced_gaussian_kl",
         "ssgkl": "sample_sliced_gaussian_kl",
+        "sample_sliced_quantile_transport_kl": "sample_sliced_quantile_transport_kl",
+        "sample-sliced-quantile-transport-kl": "sample_sliced_quantile_transport_kl",
+        "sliced_quantile_transport_kl": "sample_sliced_quantile_transport_kl",
+        "sliced-quantile-transport-kl": "sample_sliced_quantile_transport_kl",
+        "sample_quantile_transport_kl": "sample_sliced_quantile_transport_kl",
+        "sample-quantile-transport-kl": "sample_sliced_quantile_transport_kl",
+        "sqtkl": "sample_sliced_quantile_transport_kl",
     }
     normalized = aliases.get(str(kind).lower())
     if normalized is None:
@@ -2283,6 +2352,72 @@ def _interpolate_sorted(values, n):
     hi = torch.ceil(pos).to(torch.long)
     weight = (pos - lo.to(values.dtype)).unsqueeze(-1)
     return values[lo] * (1.0 - weight) + values[hi] * weight
+
+
+def _local_quantile_slopes(source_sorted, target_sorted, k, min_width):
+    if source_sorted.ndim != 2 or target_sorted.ndim != 2:
+        raise ValueError("quantile slope inputs must have shape [N, P].")
+    if source_sorted.shape != target_sorted.shape:
+        raise ValueError("source and target quantiles must have matching shapes.")
+    n = source_sorted.shape[0]
+    if n < 2:
+        return torch.ones_like(source_sorted)
+    k = min(max(int(k), 1), max(1, (n - 1) // 2))
+    idx = torch.arange(n, device=source_sorted.device)
+    left = (idx - k).clamp_min(0)
+    right = (idx + k).clamp_max(n - 1)
+    same = right == left
+    right = torch.where(same & (right < n - 1), right + 1, right)
+    left = torch.where(same & (left > 0), left - 1, left)
+    dx = (source_sorted[right] - source_sorted[left]).abs().clamp_min(min_width)
+    dy = (target_sorted[right] - target_sorted[left]).abs().clamp_min(min_width)
+    return (dy / dx).clamp_min(min_width)
+
+
+def _spacing_log_density_1d(query, reference_sorted, k, min_width):
+    """Piecewise-linear 1-D spacing log density for each projection column."""
+    if query.ndim != 2 or reference_sorted.ndim != 2:
+        raise ValueError("spacing density inputs must have shape [N, P].")
+    if query.shape[1] != reference_sorted.shape[1]:
+        raise ValueError("query/reference projection counts must match.")
+    n_ref, num_proj = reference_sorted.shape
+    if n_ref < 2:
+        return torch.zeros_like(query)
+
+    k = min(max(int(k), 1), max(1, (n_ref - 1) // 2))
+    idx = torch.arange(n_ref, device=reference_sorted.device)
+    left = (idx - k).clamp_min(0)
+    right = (idx + k).clamp_max(n_ref - 1)
+    same = right == left
+    right = torch.where(same & (right < n_ref - 1), right + 1, right)
+    left = torch.where(same & (left > 0), left - 1, left)
+    width = (reference_sorted[right] - reference_sorted[left]).abs().clamp_min(
+        min_width
+    )
+    count = (right - left).to(dtype=reference_sorted.dtype).view(n_ref, 1)
+    log_density_grid = count.log() - math.log(n_ref) - width.log()
+
+    columns = []
+    for j in range(num_proj):
+        ref = reference_sorted[:, j].detach().contiguous()
+        grid = log_density_grid[:, j].detach().contiguous()
+        q = query[:, j].contiguous()
+        insert = torch.searchsorted(ref, q).clamp(1, n_ref - 1)
+        lo = insert - 1
+        hi = insert
+        ref_lo = ref[lo]
+        ref_hi = ref[hi]
+        denom = (ref_hi - ref_lo).abs().clamp_min(min_width)
+        weight = ((q - ref_lo) / denom).clamp(0.0, 1.0)
+        log_density = grid[lo] * (1.0 - weight) + grid[hi] * weight
+
+        scale = ref.std(unbiased=False).clamp_min(min_width)
+        lower_excess = (ref[0] - q).clamp_min(0.0)
+        upper_excess = (q - ref[-1]).clamp_min(0.0)
+        tail_excess = torch.maximum(lower_excess, upper_excess)
+        log_density = log_density - 0.5 * (tail_excess / scale).square()
+        columns.append(log_density)
+    return torch.stack(columns, dim=1)
 
 
 def _sinkhorn_cost(x, y, epsilon, iterations):

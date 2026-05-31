@@ -32,6 +32,16 @@ from src.fbnn import FBNN
 from src.tfsvi import TFSVI
 from src.mfvi import MFVI
 from src.map_baseline import DeterministicMAP
+from scripts.benchmark_utils import (
+    add_wandb_args,
+    finish_wandb_run,
+    init_wandb_run,
+    pretty_discrepancy_name,
+    wandb_log_eval,
+    wandb_log_result,
+    wandb_log_train_step,
+    wandb_run_name,
+)
 
 UCI_REGRESSION_DATASETS = [
     "boston", "energy", "concrete", "naval", "power",
@@ -398,13 +408,17 @@ def parse_args():
                         "spectral_sliced_kl",
                         "spectral_projected_kl",
                         "sample_sliced_kl",
+                        "sample_sliced_gaussian_kl",
+                        "sample_sliced_quantile_transport_kl",
                     ],
                     help="AP-FSVI function-space discrepancy.")
     p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=64,
                     help="Projection count for sliced AP-FSVI discrepancies.")
     p.add_argument("--ap_fsvi_sample_projection_mode", type=str, default="random",
-                    choices=["random", "prior_pca", "discrepancy_pca"],
+                    choices=["random", "fixed_random", "prior_pca", "discrepancy_pca", "fixed_orthogonal"],
                     help="Projection rule for AP-FSVI sample_sliced_kl.")
+    p.add_argument("--ap_fsvi_quantile_transport_k", type=int, default=3,
+                    help="Local spacing window for AP-FSVI sliced quantile-transport KL.")
     p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0,
                     help="AP-FSVI Sinkhorn entropy regularization.")
     p.add_argument("--ap_fsvi_sinkhorn_iterations", type=int, default=50,
@@ -467,6 +481,7 @@ def parse_args():
                     help="Disable cosine annealing.")
     p.add_argument("--compile", action="store_true", default=False,
                     help="Use torch.compile for faster training (requires Triton).")
+    add_wandb_args(p)
     args = p.parse_args()
 
     # Resolve mutually-exclusive flags
@@ -654,6 +669,7 @@ def build_model(args, train_dataset, model_type=None):
             function_discrepancy=_arg("ap_fsvi_discrepancy", "mmd"),
             discrepancy_num_projections=_arg("ap_fsvi_discrepancy_projections", 64),
             sample_projection_mode=_arg("ap_fsvi_sample_projection_mode", "random"),
+            quantile_transport_k=_arg("ap_fsvi_quantile_transport_k", 3),
             sinkhorn_epsilon=_arg("ap_fsvi_sinkhorn_epsilon", 1.0),
             sinkhorn_iterations=_arg("ap_fsvi_sinkhorn_iterations", 50),
             log_variance_init=_arg("ap_fsvi_log_variance_init", -5.0),
@@ -1027,18 +1043,23 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
             target = target.to(device, non_blocking=True)
             loss = model._train_step(optimizer, inputs, target)
             losses.append(loss.item())
+            step = i + 1
+            wandb_log_train_step(args, step, loss, optimizer, model, model_type)
 
-            if scheduler is not None and (i + 1) % iters_per_epoch == 0:
+            if scheduler is not None and step % iters_per_epoch == 0:
                 scheduler.step()
 
-            if (i + 1) % args.eval_every == 0:
-                metrics_history["iterations"].append(i + 1)
-                metrics_history["train"].append(
-                    evaluate_light(model, train_test_dataset, args, model_type=model_type)
+            if step % args.eval_every == 0:
+                train_metrics = evaluate_light(
+                    model, train_test_dataset, args, model_type=model_type
                 )
-                metrics_history["validation"].append(
-                    evaluate_light(model, validation_dataset, args, model_type=model_type)
+                validation_metrics = evaluate_light(
+                    model, validation_dataset, args, model_type=model_type
                 )
+                metrics_history["iterations"].append(step)
+                metrics_history["train"].append(train_metrics)
+                metrics_history["validation"].append(validation_metrics)
+                wandb_log_eval(step, train_metrics, validation_metrics)
 
             loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
     else:
@@ -1052,15 +1073,19 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
                 loss = model._train_step(optimizer, inputs, target)
                 losses.append(loss.item())
                 it += 1
+                wandb_log_train_step(args, it, loss, optimizer, model, model_type)
 
                 if it % args.eval_every == 0:
+                    train_metrics = evaluate_light(
+                        model, train_test_dataset, args, model_type=model_type
+                    )
+                    validation_metrics = evaluate_light(
+                        model, validation_dataset, args, model_type=model_type
+                    )
                     metrics_history["iterations"].append(it)
-                    metrics_history["train"].append(
-                        evaluate_light(model, train_test_dataset, args, model_type=model_type)
-                    )
-                    metrics_history["validation"].append(
-                        evaluate_light(model, validation_dataset, args, model_type=model_type)
-                    )
+                    metrics_history["train"].append(train_metrics)
+                    metrics_history["validation"].append(validation_metrics)
+                    wandb_log_eval(it, train_metrics, validation_metrics)
 
             if scheduler is not None:
                 scheduler.step()
@@ -1106,6 +1131,29 @@ def _layer_tag(args, model_type=None):
     return "_bayes"
 
 
+def _uci_wandb_suffix(args, model_type):
+    if model_type == "ap_fsvi":
+        discrepancy = pretty_discrepancy_name(args.ap_fsvi_discrepancy)
+        beta = f"{args.ap_fsvi_beta:g}"
+        return f"{discrepancy} | Beta={beta} | {args.ap_fsvi_prior.upper()} prior"
+    if model_type == "fbnn":
+        return f"{args.fbnn_prior.upper()} prior"
+    if model_type == "ftip":
+        return f"{args.flow_type} d={args.flow_depth}"
+    return None
+
+
+def _uci_wandb_group(dataset_name, model_type, args):
+    if args.wandb_group:
+        return args.wandb_group
+    group = f"uci_{dataset_name}_{model_type}"
+    if model_type == "ap_fsvi":
+        group += f"_{args.ap_fsvi_discrepancy}_{args.ap_fsvi_prior}"
+    if model_type == "fbnn":
+        group += f"_{args.fbnn_prior}"
+    return group
+
+
 def _ckpt_path(args, dataset_name, model_type):
     """Build a checkpoint path."""
     alpha_tag = f"_alpha{args.bb_alpha}"
@@ -1130,6 +1178,28 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
                 model.nelbo = torch.compile(model.nelbo)
         except Exception:
             print("  [warn] torch.compile unavailable, running without it")
+
+    run = init_wandb_run(
+        args,
+        name=wandb_run_name(
+            "UCI",
+            dataset=dataset_name,
+            model=model_type,
+            suffix=_uci_wandb_suffix(args, model_type),
+            seed=args.seed,
+        ),
+        group=_uci_wandb_group(dataset_name, model_type, args),
+        tags=[
+            "uci",
+            dataset_name,
+            model_type,
+            args.layer_model,
+        ],
+        config={
+            "dataset_name": dataset_name,
+            "model_type": model_type,
+        },
+    )
 
     t0 = time.time()
     losses, metrics_history, diagnostics = train_with_metrics(
@@ -1217,6 +1287,7 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "ap_fsvi_discrepancy": args.ap_fsvi_discrepancy,
             "ap_fsvi_discrepancy_projections": args.ap_fsvi_discrepancy_projections,
             "ap_fsvi_sample_projection_mode": args.ap_fsvi_sample_projection_mode,
+            "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
             "ap_fsvi_sinkhorn_epsilon": args.ap_fsvi_sinkhorn_epsilon,
             "ap_fsvi_sinkhorn_iterations": args.ap_fsvi_sinkhorn_iterations,
             "ap_fsvi_log_variance_init": args.ap_fsvi_log_variance_init,
@@ -1263,6 +1334,9 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
         ckpt = _ckpt_path(args, dataset_name, model_type)
         torch.save(model.state_dict(), ckpt)
         print(f"  Checkpoint: {ckpt}")
+
+    wandb_log_result(result)
+    finish_wandb_run(run)
 
     return result, model
 

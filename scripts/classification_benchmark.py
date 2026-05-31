@@ -81,6 +81,11 @@ AP_VARIANTS = {
         "discrepancy": "sample_sliced_gaussian_kl",
         "sample_projection_mode": "random",
     },
+    "sample_sliced_quantile_transport_random": {
+        "display": "Sliced Quantile-Transport KL",
+        "discrepancy": "sample_sliced_quantile_transport_kl",
+        "sample_projection_mode": "random",
+    },
     "spectral_projected": {
         "display": "Spectral Projected KL",
         "discrepancy": "spectral_projected_kl",
@@ -93,6 +98,10 @@ AP_VARIANT_ALIASES = {
     "sample_sliced_kl": "sample_sliced_random",
     "sample_sliced_gaussian": "sample_sliced_gaussian_random",
     "sample_sliced_gaussian_kl": "sample_sliced_gaussian_random",
+    "sample_sliced_quantile_transport": "sample_sliced_quantile_transport_random",
+    "sample_sliced_quantile_transport_kl": "sample_sliced_quantile_transport_random",
+    "sliced_quantile_transport_kl": "sample_sliced_quantile_transport_random",
+    "sqtkl": "sample_sliced_quantile_transport_random",
     "spectral_projected_kl": "spectral_projected",
 }
 
@@ -284,6 +293,12 @@ def parse_args():
     )
     p.add_argument("--ap_fsvi_spectral_cov_shrinkage", type=float, default=0.05)
     p.add_argument("--ap_fsvi_sample_gaussian_shrinkage", type=float, default=0.05)
+    p.add_argument(
+        "--ap_fsvi_quantile_transport_k",
+        type=int,
+        default=3,
+        help="Local spacing window for AP-FSVI sliced quantile-transport KL.",
+    )
     p.add_argument(
         "--ap_fsvi_measurement_weights",
         type=float,
@@ -745,6 +760,7 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             function_discrepancy=spec["discrepancy"],
             discrepancy_num_projections=args.ap_fsvi_discrepancy_projections,
             sample_projection_mode=spec["sample_projection_mode"],
+            quantile_transport_k=args.ap_fsvi_quantile_transport_k,
             spectral_estimator=args.ap_fsvi_spectral_estimator,
             spectral_cov_shrinkage=args.ap_fsvi_spectral_cov_shrinkage,
             sample_gaussian_shrinkage=args.ap_fsvi_sample_gaussian_shrinkage,
@@ -1223,6 +1239,7 @@ def result_hyperparameters(args, model_type, ap_variant):
                 "ap_fsvi_spectral_estimator": args.ap_fsvi_spectral_estimator,
                 "ap_fsvi_spectral_cov_shrinkage": args.ap_fsvi_spectral_cov_shrinkage,
                 "ap_fsvi_sample_gaussian_shrinkage": args.ap_fsvi_sample_gaussian_shrinkage,
+                "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
                 "ap_fsvi_measurement_weights": args.ap_fsvi_measurement_weights,
                 "ap_fsvi_near_data_noise": args.ap_fsvi_near_data_noise,
                 "ap_fsvi_domain_std": args.ap_fsvi_domain_std,
