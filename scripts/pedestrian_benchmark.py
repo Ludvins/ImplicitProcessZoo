@@ -323,6 +323,7 @@ def build_model(args, train_adapter, model_type=None):
             domain_std=args.ap_fsvi_domain_std,
             function_discrepancy=args.ap_fsvi_discrepancy,
             discrepancy_num_projections=args.ap_fsvi_discrepancy_projections,
+            quantile_transport_k=args.ap_fsvi_quantile_transport_k,
             sinkhorn_epsilon=args.ap_fsvi_sinkhorn_epsilon,
             sinkhorn_iterations=args.ap_fsvi_sinkhorn_iterations,
             y_mean=train_adapter.targets_mean,
@@ -1434,8 +1435,11 @@ def parse_args():
                        "spectral_sliced_kl",
                        "spectral_projected_kl",
                        "sample_sliced_kl",
+                       "sample_sliced_gaussian_kl",
+                       "sample_sliced_quantile_transport_kl",
                    ])
     p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=64)
+    p.add_argument("--ap_fsvi_quantile_transport_k", type=int, default=3)
     p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0)
     p.add_argument("--ap_fsvi_sinkhorn_iterations", type=int, default=50)
     p.add_argument("--ap_fsvi_log_variance_init", type=float, default=-2.0)

@@ -49,6 +49,7 @@ DISCREPANCY_DISPLAY_NAMES = {
     "prior_whitened_sliced_kl": "Prior-Whitened Sliced KL",
     "sample_sliced_kl": "Sample Sliced KL",
     "sample_sliced_gaussian_kl": "Sample Sliced Gaussian KL",
+    "sample_sliced_quantile_transport_kl": "Sliced Quantile-Transport KL",
     "spectral_projected_kl": "Spectral Projected KL",
     "spectral_sliced_kl": "Spectral Sliced KL",
     "sliced_wasserstein": "Sliced Wasserstein",

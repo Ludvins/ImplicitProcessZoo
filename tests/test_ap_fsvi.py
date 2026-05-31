@@ -463,6 +463,7 @@ class TestAPFSVILoss:
             "sinkhorn",
             "sample_sliced_kl",
             "sample_sliced_gaussian_kl",
+            "sample_sliced_quantile_transport_kl",
         ],
     )
     def test_sample_discrepancies_detect_shift(self, kind):
@@ -701,6 +702,22 @@ class TestAPFSVILoss:
         assert torch.isfinite(shifted_value)
         assert shifted_value > matching_value
 
+    def test_sample_sliced_quantile_transport_kl_detects_shift(self):
+        torch.manual_seed(SEED)
+        prior = torch.randn(128, 8, 1, dtype=DTYPE, device=DEVICE)
+        shifted = prior + 0.75
+        discrepancy = FunctionDiscrepancy(
+            kind="sample_sliced_quantile_transport_kl",
+            num_projections=16,
+            quantile_transport_k=3,
+        )
+        matching_value = discrepancy(prior, prior_values=prior)
+        shifted_value = discrepancy(shifted, prior_values=prior)
+        assert torch.isfinite(matching_value)
+        assert torch.isfinite(shifted_value)
+        assert matching_value < 1e-6
+        assert shifted_value > matching_value
+
     def test_sinkhorn_defaults_to_non_debiased(self):
         discrepancy = FunctionDiscrepancy(kind="sinkhorn")
         assert discrepancy.sinkhorn_debiased is False
@@ -741,6 +758,7 @@ class TestAPFSVILoss:
             "spectral_projected_kl",
             "sample_sliced_kl",
             "sample_sliced_gaussian_kl",
+            "sample_sliced_quantile_transport_kl",
         ],
     )
     def test_function_discrepancy_options_train(self, regression_data, kind):

@@ -305,7 +305,8 @@ def parse_args():
     p.add_argument("--learnable_affine", action="store_true", default=True,
                     help="Make the affine warm-start layer trainable.")
     p.add_argument("--no_learnable_affine", action="store_true",
-                    help="Fix the affine warm-start layer (not trainable).")
+                    help="Fix the affine warm-start layer (not trainable).")
+
 
     # --- FBNN-specific ---
     p.add_argument("--fbnn_prior", type=str, default="gp",
@@ -409,13 +410,16 @@ def parse_args():
                         "spectral_projected_kl",
                         "sample_sliced_kl",
                         "sample_sliced_gaussian_kl",
+                        "sample_sliced_quantile_transport_kl",
                     ],
                     help="AP-FSVI function-space discrepancy.")
     p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=64,
                     help="Projection count for sliced AP-FSVI discrepancies.")
     p.add_argument("--ap_fsvi_sample_projection_mode", type=str, default="random",
-                    choices=["random", "prior_pca", "discrepancy_pca"],
+                    choices=["random", "fixed_random", "prior_pca", "discrepancy_pca", "fixed_orthogonal"],
                     help="Projection rule for AP-FSVI sample_sliced_kl.")
+    p.add_argument("--ap_fsvi_quantile_transport_k", type=int, default=3,
+                    help="Local spacing window for AP-FSVI sliced quantile-transport KL.")
     p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0,
                     help="AP-FSVI Sinkhorn entropy regularization.")
     p.add_argument("--ap_fsvi_sinkhorn_iterations", type=int, default=50,
@@ -666,6 +670,7 @@ def build_model(args, train_dataset, model_type=None):
             function_discrepancy=_arg("ap_fsvi_discrepancy", "mmd"),
             discrepancy_num_projections=_arg("ap_fsvi_discrepancy_projections", 64),
             sample_projection_mode=_arg("ap_fsvi_sample_projection_mode", "random"),
+            quantile_transport_k=_arg("ap_fsvi_quantile_transport_k", 3),
             sinkhorn_epsilon=_arg("ap_fsvi_sinkhorn_epsilon", 1.0),
             sinkhorn_iterations=_arg("ap_fsvi_sinkhorn_iterations", 50),
             log_variance_init=_arg("ap_fsvi_log_variance_init", -5.0),
@@ -802,7 +807,8 @@ def build_model(args, train_dataset, model_type=None):
             freeze_prior=args.fbnn_freeze_prior,
             device=device,
             dtype=dtype,
-        )
+        )
+
     if model_type == "vip":
         model = VIP(**common)
     else:
@@ -1176,6 +1182,28 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
         except Exception:
             print("  [warn] torch.compile unavailable, running without it")
 
+    run = init_wandb_run(
+        args,
+        name=wandb_run_name(
+            "UCI",
+            dataset=dataset_name,
+            model=model_type,
+            suffix=_uci_wandb_suffix(args, model_type),
+            seed=args.seed,
+        ),
+        group=_uci_wandb_group(dataset_name, model_type, args),
+        tags=[
+            "uci",
+            dataset_name,
+            model_type,
+            args.layer_model,
+        ],
+        config={
+            "dataset_name": dataset_name,
+            "model_type": model_type,
+        },
+    )
+
     t0 = time.time()
     losses, metrics_history, diagnostics = train_with_metrics(
         model, train_loader, train_test_dataset, test_dataset, args,
@@ -1238,7 +1266,8 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
         hyperparameters["fbnn_num_context"] = args.fbnn_num_context
         hyperparameters["fbnn_context_std"] = args.fbnn_context_std
         hyperparameters["fbnn_lambda_kl"] = args.fbnn_lambda_kl
-        hyperparameters["fbnn_num_eval_samples"] = args.fbnn_num_eval_samples
+        hyperparameters["fbnn_num_eval_samples"] = args.fbnn_num_eval_samples
+
 
     if model_type == "ap_fsvi":
         hyperparameters.update({
@@ -1262,6 +1291,7 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "ap_fsvi_discrepancy": args.ap_fsvi_discrepancy,
             "ap_fsvi_discrepancy_projections": args.ap_fsvi_discrepancy_projections,
             "ap_fsvi_sample_projection_mode": args.ap_fsvi_sample_projection_mode,
+            "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
             "ap_fsvi_sinkhorn_epsilon": args.ap_fsvi_sinkhorn_epsilon,
             "ap_fsvi_sinkhorn_iterations": args.ap_fsvi_sinkhorn_iterations,
             "ap_fsvi_log_variance_init": args.ap_fsvi_log_variance_init,
