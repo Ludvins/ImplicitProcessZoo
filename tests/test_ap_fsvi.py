@@ -1,5 +1,6 @@
 """Tests for AP-FSVI (Adaptive Projective Function-Space VI)."""
 
+import sys
 from argparse import Namespace
 
 import pytest
@@ -225,6 +226,29 @@ class TestAPFSVIConstruction:
             type(layer) is BayesLinear
             for layer in model.generative_function.layers
         )
+
+    def test_uci_ap_fsvi_defaults_use_selected_sample_sliced_candidate(
+        self, monkeypatch
+    ):
+        from scripts.uci_benchmark import parse_args
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["uci_benchmark.py", "--model", "ap_fsvi", "--dataset", "boston"],
+        )
+
+        args = parse_args()
+
+        assert args.ap_fsvi_prior == "bnn"
+        assert args.ap_fsvi_discrepancy == "sample_sliced_kl"
+        assert args.ap_fsvi_sample_projection_mode == "random"
+        assert args.ap_fsvi_num_samples == 32
+        assert args.ap_fsvi_num_prior_samples == 64
+        assert args.ap_fsvi_num_measurement == 64
+        assert args.ap_fsvi_discrepancy_projections == 128
+        assert args.ap_fsvi_beta == pytest.approx(1.0)
+        assert args.ap_fsvi_adaptive_measure_points is False
 
     def test_uci_builder_can_use_matching_standard_bnn_prior(self):
         from scripts.uci_benchmark import build_model

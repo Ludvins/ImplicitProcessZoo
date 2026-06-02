@@ -276,8 +276,8 @@ def parse_args():
     p.add_argument(
         "--ap_fsvi_num_samples",
         type=int,
-        default=None,
-        help="AP-FSVI posterior samples per step. Defaults to --num_samples.",
+        default=32,
+        help="AP-FSVI posterior samples per step.",
     )
     p.add_argument("--ap_fsvi_num_prior_samples", type=int, default=64)
     p.add_argument("--ap_fsvi_num_measurement", type=int, default=64)
@@ -293,7 +293,7 @@ def parse_args():
     p.add_argument(
         "--ap_fsvi_discrepancy_projections",
         type=int,
-        default=64,
+        default=128,
         help="Projection/mode count for sliced or spectral AP-FSVI variants.",
     )
     p.add_argument(

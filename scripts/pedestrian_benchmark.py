@@ -1409,7 +1409,7 @@ def parse_args():
 
     # AP-FSVI
     p.add_argument("--ap_fsvi_num_samples", type=int, default=32)
-    p.add_argument("--ap_fsvi_num_prior_samples", type=int, default=None)
+    p.add_argument("--ap_fsvi_num_prior_samples", type=int, default=64)
     p.add_argument("--ap_fsvi_num_eval_samples", type=int, default=200)
     p.add_argument("--ap_fsvi_num_measurement", type=int, default=64)
     p.add_argument("--ap_fsvi_adaptive_measure_points", action="store_true",
@@ -1418,14 +1418,14 @@ def parse_args():
     p.add_argument("--ap_fsvi_adaptive_measure_lr", type=float, default=0.05)
     p.add_argument("--ap_fsvi_adaptive_measure_domain_limit", type=float,
                    default=None)
-    p.add_argument("--ap_fsvi_beta", type=float, default=0.05)
+    p.add_argument("--ap_fsvi_beta", type=float, default=1.0)
     p.add_argument("--ap_fsvi_beta_start", type=float, default=0.0)
     p.add_argument("--ap_fsvi_beta_warmup_steps", type=int, default=5000)
     p.add_argument("--ap_fsvi_data_pretrain_steps", type=int, default=1000)
     p.add_argument("--ap_fsvi_data_loss",
                    choices=["expected_nll", "predictive_nll"],
                    default="expected_nll")
-    p.add_argument("--ap_fsvi_discrepancy", type=str, default="mmd",
+    p.add_argument("--ap_fsvi_discrepancy", type=str, default="sample_sliced_kl",
                    choices=[
                        "mmd",
                        "energy",
@@ -1441,7 +1441,7 @@ def parse_args():
                        "sample_sliced_gaussian_kl",
                        "sample_sliced_quantile_transport_kl",
                    ])
-    p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=64)
+    p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=128)
     p.add_argument("--ap_fsvi_sample_knn_k", type=int, default=3)
     p.add_argument("--ap_fsvi_quantile_transport_k", type=int, default=3)
     p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0)
