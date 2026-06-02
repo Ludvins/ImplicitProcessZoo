@@ -31,6 +31,7 @@ from src.ap_fsvi import APFSVI
 from src.fbnn import FBNN
 from src.tfsvi import TFSVI
 from src.mfvi import MFVI
+from src.nf_ip import NFIP
 from src.map_baseline import DeterministicMAP
 from scripts.benchmark_utils import (
     add_wandb_args,
@@ -74,7 +75,16 @@ LAYER_MODELS = {
     "BayesLinear": BayesLinear,
 }
 
-REGRESSION_MODELS = ["vip", "ftip", "fbnn", "tfsvi", "mfvi", "ap_fsvi", "map"]
+REGRESSION_MODELS = [
+    "vip",
+    "ftip",
+    "fbnn",
+    "tfsvi",
+    "mfvi",
+    "ap_fsvi",
+    "nf_ip",
+    "map",
+]
 
 
 def generate_ood_points(test_dataset, n_ood=None, seed=42):
@@ -440,6 +450,81 @@ def parse_args():
     p.add_argument("--ap_fsvi_max_grad_norm", type=float, default=None,
                     help="Optional AP-FSVI gradient clipping norm.")
 
+    # --- NF-IP-specific ---
+    p.add_argument("--nf_ip_num_context", type=int, default=16,
+                    help="Fixed context-set size for the NF-IP finite KL.")
+    p.add_argument("--nf_ip_num_samples", type=int, default=64,
+                    help="Posterior function samples per NF-IP training step.")
+    p.add_argument("--nf_ip_num_prior_samples", type=int, default=256,
+                    help="Initial prior context samples used for flow standardization.")
+    p.add_argument("--nf_ip_num_eval_samples", type=int, default=200,
+                    help="Posterior samples used at NF-IP evaluation time.")
+    p.add_argument("--nf_ip_beta", type=float, default=1.0,
+                    help="Weight on the NF-IP context KL.")
+    p.add_argument("--nf_ip_beta_start", type=float, default=1.0,
+                    help="Initial NF-IP beta for warmup.")
+    p.add_argument("--nf_ip_beta_warmup_steps", type=int, default=0,
+                    help="Linear NF-IP beta warmup steps.")
+    p.add_argument("--nf_ip_data_pretrain_steps", type=int, default=0,
+                    help="Steps with NF-IP beta forced to zero.")
+    p.add_argument("--nf_ip_data_loss", choices=["expected_nll", "predictive_nll"],
+                    default="expected_nll",
+                    help="NF-IP data term estimator.")
+    p.add_argument("--nf_ip_context_weights", type=float, nargs=3,
+                    default=[0.2, 0.2, 0.6],
+                    metavar=("DATA", "NEAR", "DOMAIN"),
+                    help="Data/near-data/domain weights for the fixed NF-IP context set.")
+    p.add_argument("--nf_ip_near_data_noise", type=float, default=0.1,
+                    help="Std of near-data NF-IP context perturbations.")
+    p.add_argument("--nf_ip_domain_std", type=float, default=2.5,
+                    help="Std for NF-IP Gaussian domain context points.")
+    p.add_argument("--nf_ip_flow_depth", type=int, default=4,
+                    help="Number of RQ-spline coupling layers in each NF-IP density flow.")
+    p.add_argument("--nf_ip_flow_hidden_dim", type=int, default=128,
+                    help="Hidden width for NF-IP flow coupling networks.")
+    p.add_argument("--nf_ip_flow_num_bins", type=int, default=8,
+                    help="Bins per NF-IP RQ-spline coupling layer.")
+    p.add_argument("--nf_ip_flow_bound", type=float, default=3.0,
+                    help="Spline domain half-width for NF-IP density flows.")
+    p.add_argument("--nf_ip_conditional_flow", action="store_true", default=False,
+                    help="Condition NF-IP density flows on the flattened context inputs.")
+    p.add_argument("--nf_ip_flow_condition_hidden_dim", type=int, default=None,
+                    help="Hidden width for the NF-IP conditional-flow context encoder.")
+    p.add_argument("--nf_ip_flow_condition_embedding_dim", type=int, default=None,
+                    help="Embedding size for the NF-IP conditional-flow context encoder.")
+    p.add_argument("--nf_ip_prior_fit_steps", type=int, default=500,
+                    help="Maximum prior-flow MLE updates before IP training.")
+    p.add_argument("--nf_ip_prior_fit_rtol", type=float, default=None,
+                    help="Relative validation-NLL improvement tolerance for prior-flow early stopping.")
+    p.add_argument("--nf_ip_prior_fit_patience", type=int, default=5,
+                    help="Prior-flow validation checks allowed below rtol before stopping.")
+    p.add_argument("--nf_ip_prior_fit_eval_every", type=int, default=50,
+                    help="Prior-flow validation interval in auxiliary flow updates.")
+    p.add_argument("--nf_ip_prior_fit_val_samples", type=int, default=4096,
+                    help="Fresh prior samples used as prior-flow validation set when rtol is active.")
+    p.add_argument("--nf_ip_posterior_flow_steps", type=int, default=2,
+                    help="Maximum posterior-flow MLE updates per NF-IP training step.")
+    p.add_argument("--nf_ip_posterior_flow_rtol", type=float, default=None,
+                    help="Relative validation-NLL improvement tolerance for posterior-flow early stopping.")
+    p.add_argument("--nf_ip_posterior_flow_patience", type=int, default=3,
+                    help="Posterior-flow validation checks allowed below rtol before stopping.")
+    p.add_argument("--nf_ip_posterior_flow_min_steps", type=int, default=1,
+                    help="Minimum posterior-flow updates before rtol early stopping can trigger.")
+    p.add_argument("--nf_ip_posterior_flow_eval_every", type=int, default=1,
+                    help="Posterior-flow validation interval in auxiliary flow updates.")
+    p.add_argument("--nf_ip_posterior_flow_val_fraction", type=float, default=0.25,
+                    help="Fraction of current posterior samples held out for posterior-flow rtol validation.")
+    p.add_argument("--nf_ip_flow_lr", type=float, default=1e-3,
+                    help="Learning rate for both NF-IP density-flow optimizers.")
+    p.add_argument("--nf_ip_flow_batch_size", type=int, default=128,
+                    help="Minibatch size for auxiliary NF-IP flow MLE updates.")
+    p.add_argument("--nf_ip_kl_floor", type=float, default=0.0,
+                    help="Lower clamp applied to the raw NF-IP context KL.")
+    p.add_argument("--nf_ip_log_variance_init", type=float, default=-5.0,
+                    help="Initial log observation variance for NF-IP.")
+    p.add_argument("--nf_ip_max_grad_norm", type=float, default=None,
+                    help="Optional NF-IP gradient clipping norm.")
+
     # --- MAP-specific ---
     p.add_argument("--map_l2", type=float, default=1e-4,
                     help="L2 weight penalty for deterministic MAP baseline.")
@@ -686,6 +771,79 @@ def build_model(args, train_dataset, model_type=None):
             seed=args.seed,
         )
 
+    if model_type == "nf_ip":
+        nf_samples = _arg("nf_ip_num_samples", 64)
+        gen_fn = BayesianNN(
+            input_dim=train_dataset.input_dim,
+            num_samples=nf_samples,
+            structure=args.hidden_dims,
+            activation=ACTIVATIONS[args.activation],
+            output_dim=train_dataset.output_dim,
+            layer_model=BayesLinear,
+            dropout=args.dropout,
+            fix_random_noise=False,
+            device=device,
+            seed=args.seed,
+            dtype=dtype,
+        )
+        return NFIP(
+            generative_function=gen_fn,
+            prior_function=None,
+            input_dim=train_dataset.input_dim,
+            output_dim=train_dataset.output_dim,
+            likelihood="regression",
+            num_data=len(train_dataset),
+            num_context=_arg("nf_ip_num_context", 16),
+            num_samples=nf_samples,
+            num_prior_samples=_arg("nf_ip_num_prior_samples", 256),
+            beta=_arg("nf_ip_beta", 1.0),
+            beta_start=_arg("nf_ip_beta_start", 1.0),
+            beta_warmup_steps=_arg("nf_ip_beta_warmup_steps", 0),
+            data_pretrain_steps=_arg("nf_ip_data_pretrain_steps", 0),
+            data_loss=_arg("nf_ip_data_loss", "expected_nll"),
+            context_weights=_arg("nf_ip_context_weights", [0.2, 0.2, 0.6]),
+            near_data_noise=_arg("nf_ip_near_data_noise", 0.1),
+            domain_std=_arg("nf_ip_domain_std", 2.5),
+            nf_flow_depth=_arg("nf_ip_flow_depth", 4),
+            nf_flow_hidden_dim=_arg("nf_ip_flow_hidden_dim", 128),
+            nf_conditional_flow=_arg("nf_ip_conditional_flow", False),
+            nf_flow_condition_hidden_dim=_arg(
+                "nf_ip_flow_condition_hidden_dim", None
+            ),
+            nf_flow_condition_embedding_dim=_arg(
+                "nf_ip_flow_condition_embedding_dim", None
+            ),
+            nf_flow_num_bins=_arg("nf_ip_flow_num_bins", 8),
+            nf_flow_bound=_arg("nf_ip_flow_bound", 3.0),
+            nf_prior_fit_steps=_arg("nf_ip_prior_fit_steps", 500),
+            nf_prior_fit_rtol=_arg("nf_ip_prior_fit_rtol", None),
+            nf_prior_fit_patience=_arg("nf_ip_prior_fit_patience", 5),
+            nf_prior_fit_eval_every=_arg("nf_ip_prior_fit_eval_every", 50),
+            nf_prior_fit_val_samples=_arg("nf_ip_prior_fit_val_samples", 4096),
+            nf_posterior_flow_steps=_arg("nf_ip_posterior_flow_steps", 2),
+            nf_posterior_flow_rtol=_arg("nf_ip_posterior_flow_rtol", None),
+            nf_posterior_flow_patience=_arg("nf_ip_posterior_flow_patience", 3),
+            nf_posterior_flow_min_steps=_arg(
+                "nf_ip_posterior_flow_min_steps", 1
+            ),
+            nf_posterior_flow_eval_every=_arg(
+                "nf_ip_posterior_flow_eval_every", 1
+            ),
+            nf_posterior_flow_val_fraction=_arg(
+                "nf_ip_posterior_flow_val_fraction", 0.25
+            ),
+            nf_flow_lr=_arg("nf_ip_flow_lr", 1e-3),
+            nf_flow_batch_size=_arg("nf_ip_flow_batch_size", 128),
+            nf_kl_floor=_arg("nf_ip_kl_floor", 0.0),
+            log_variance_init=_arg("nf_ip_log_variance_init", -5.0),
+            y_mean=train_dataset.targets_mean,
+            y_std=train_dataset.targets_std,
+            max_grad_norm=_arg("nf_ip_max_grad_norm", None),
+            device=device,
+            dtype=dtype,
+            seed=args.seed,
+        )
+
     gen_fn = BayesianNN(
         input_dim=train_dataset.input_dim,
         num_samples=args.regression_coeffs,
@@ -890,6 +1048,8 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
             S = args.tfsvi_num_eval_samples
         elif model_type == "mfvi":
             S = args.mfvi_num_eval_samples
+        elif model_type == "nf_ip":
+            S = args.nf_ip_num_eval_samples
         else:
             S = args.regression_coeffs
         S_crps = min(S, 100)
@@ -903,6 +1063,10 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
         fbnn_old_S = model.num_samples
         model._set_num_samples(args.fbnn_num_eval_samples)
         model.num_samples = args.fbnn_num_eval_samples
+    nf_ip_old_S = None
+    if model_type == "nf_ip":
+        nf_ip_old_S = model.num_samples
+        model.num_samples = args.nf_ip_num_eval_samples
     with torch.no_grad():
         # For FTIP: sample flow coefficients once (data-independent)
         a = model.sample_flow_coefficients(args.eval_samples) if model_type == "ftip" else None
@@ -927,6 +1091,8 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
     if fbnn_old_S is not None:
         model._set_num_samples(fbnn_old_S)
         model.num_samples = fbnn_old_S
+    if nf_ip_old_S is not None:
+        model.num_samples = nf_ip_old_S
     return metrics.get_dict()
 
 
@@ -984,6 +1150,12 @@ def evaluate_light(model, dataset, args, model_type=None, batch_size=2048):
             elif model_type == "mfvi":
                 S_light = min(64, args.mfvi_num_eval_samples)
                 mean, std = _tfsvi_pred_components(model, xb, S_light)
+                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=True)
+            elif model_type == "nf_ip":
+                old_S = model.num_samples
+                model.num_samples = min(64, args.nf_ip_num_eval_samples)
+                mean, std = model(xb)
+                model.num_samples = old_S
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=True)
             else:
                 mean, std = model(xb)
@@ -1113,6 +1285,34 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
     if model_type == "ftip":
         diagnostics["base_KLs"] = [float(v) for v in model.base_KLs]
         diagnostics["flow_ldj"] = [float(v) for v in model.flow_ldj]
+    if model_type == "nf_ip":
+        for attr in (
+            "nf_kl_raws",
+            "prior_flow_nlls",
+            "prior_flow_train_nlls",
+            "prior_flow_val_nlls",
+            "prior_flow_relative_improvements",
+            "prior_flow_update_counts",
+            "prior_flow_converged_flags",
+            "prior_flow_best_val_nlls",
+            "prior_flow_final_val_nlls",
+            "posterior_flow_nlls",
+            "posterior_flow_nlls_before",
+            "posterior_flow_nlls_after",
+            "posterior_flow_train_nlls",
+            "posterior_flow_val_nlls",
+            "posterior_flow_relative_improvements",
+            "posterior_flow_update_counts",
+            "posterior_flow_converged_flags",
+            "posterior_flow_fit_sample_counts",
+            "posterior_flow_val_sample_counts",
+            "context_optimization_kls_before",
+            "context_optimization_kls_after",
+            "context_optimization_update_counts",
+            "context_input_norms",
+        ):
+            if hasattr(model, attr):
+                diagnostics[attr] = [float(v) for v in getattr(model, attr)]
 
     return losses, metrics_history, diagnostics
 
@@ -1142,8 +1342,29 @@ def _layer_tag(args, model_type=None):
     return "_bayes"
 
 
+def _compact_float_tag(value):
+    if value is None:
+        return "none"
+    return f"{float(value):.0e}".replace("+", "").replace("-", "m")
+
+
 def _variant_tag(args, model_type):
     """Filename tag for variants that share the same top-level model name."""
+    if model_type == "nf_ip":
+        tag = (
+            f"_ctx{getattr(args, 'nf_ip_num_context', 16)}"
+            f"_s{getattr(args, 'nf_ip_num_samples', 64)}"
+            f"_pf{getattr(args, 'nf_ip_prior_fit_steps', 500)}"
+            f"_qf{getattr(args, 'nf_ip_posterior_flow_steps', 2)}"
+        )
+        prior_rtol = _compact_float_tag(getattr(args, "nf_ip_prior_fit_rtol", None))
+        posterior_rtol = _compact_float_tag(
+            getattr(args, "nf_ip_posterior_flow_rtol", None)
+        )
+        tag = f"{tag}_prt{prior_rtol}_qrt{posterior_rtol}"
+        if getattr(args, "nf_ip_conditional_flow", False):
+            tag = f"{tag}_cond"
+        return tag
     if model_type != "ap_fsvi":
         return ""
     discrepancy = getattr(args, "ap_fsvi_discrepancy", "mmd")
@@ -1171,6 +1392,57 @@ def _ckpt_path(args, dataset_name, model_type):
         args.output_dir,
         f"{model_type}_{dataset_name}{alpha_tag}{layer_tag}{flow_tag}{variant_tag}_seed{args.seed}.pt",
     )
+
+
+def _uci_wandb_suffix(args, model_type):
+    if model_type == "ap_fsvi":
+        suffix = pretty_discrepancy_name(args.ap_fsvi_discrepancy)
+        if args.ap_fsvi_discrepancy in (
+            "sample_sliced_kl",
+            "sample_sliced_knn_kl",
+            "sample_sliced_gaussian_kl",
+            "prior_whitened_sliced_kl",
+            "spectral_projected_kl",
+            "spectral_sliced_kl",
+        ):
+            suffix = f"{suffix}/{args.ap_fsvi_sample_projection_mode}"
+        return suffix
+    if model_type == "nf_ip":
+        prior_rtol = _compact_float_tag(args.nf_ip_prior_fit_rtol)
+        posterior_rtol = _compact_float_tag(args.nf_ip_posterior_flow_rtol)
+        suffix = (
+            f"S={args.nf_ip_num_samples}, "
+            f"prior={args.nf_ip_prior_fit_steps}/{prior_rtol}, "
+            f"post={args.nf_ip_posterior_flow_steps}/{posterior_rtol}"
+        )
+        if args.nf_ip_conditional_flow:
+            suffix = f"{suffix}, cond"
+        return suffix
+    return None
+
+
+def _uci_wandb_group(dataset_name, model_type, args):
+    parts = ["uci", dataset_name, model_type]
+    if model_type == "ap_fsvi":
+        parts.append(args.ap_fsvi_discrepancy)
+        if args.ap_fsvi_discrepancy in (
+            "sample_sliced_kl",
+            "sample_sliced_knn_kl",
+            "sample_sliced_gaussian_kl",
+            "prior_whitened_sliced_kl",
+            "spectral_projected_kl",
+            "spectral_sliced_kl",
+        ):
+            parts.append(args.ap_fsvi_sample_projection_mode)
+    elif model_type == "nf_ip":
+        parts.append(f"s{args.nf_ip_num_samples}")
+        parts.append(f"pf{args.nf_ip_prior_fit_steps}")
+        parts.append(f"qf{args.nf_ip_posterior_flow_steps}")
+        parts.append(f"prt{_compact_float_tag(args.nf_ip_prior_fit_rtol)}")
+        parts.append(f"qrt{_compact_float_tag(args.nf_ip_posterior_flow_rtol)}")
+        if args.nf_ip_conditional_flow:
+            parts.append("cond")
+    return "_".join(str(part) for part in parts)
 
 
 def _build_result(dataset_name, model_type, model, args, train_loader,
@@ -1284,6 +1556,55 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "ap_fsvi_domain_std": args.ap_fsvi_domain_std,
             "ap_fsvi_max_grad_norm": args.ap_fsvi_max_grad_norm,
         })
+    if model_type == "nf_ip":
+        hyperparameters.update({
+            "nf_ip_layer_model": "BayesLinear",
+            "nf_ip_num_context": args.nf_ip_num_context,
+            "nf_ip_num_samples": args.nf_ip_num_samples,
+            "nf_ip_num_prior_samples": args.nf_ip_num_prior_samples,
+            "nf_ip_num_eval_samples": args.nf_ip_num_eval_samples,
+            "nf_ip_beta": args.nf_ip_beta,
+            "nf_ip_beta_start": args.nf_ip_beta_start,
+            "nf_ip_beta_warmup_steps": args.nf_ip_beta_warmup_steps,
+            "nf_ip_data_pretrain_steps": args.nf_ip_data_pretrain_steps,
+            "nf_ip_data_loss": args.nf_ip_data_loss,
+            "nf_ip_context_weights": args.nf_ip_context_weights,
+            "nf_ip_near_data_noise": args.nf_ip_near_data_noise,
+            "nf_ip_domain_std": args.nf_ip_domain_std,
+            "nf_ip_flow_depth": args.nf_ip_flow_depth,
+            "nf_ip_flow_hidden_dim": args.nf_ip_flow_hidden_dim,
+            "nf_ip_flow_num_bins": args.nf_ip_flow_num_bins,
+            "nf_ip_flow_bound": args.nf_ip_flow_bound,
+            "nf_ip_conditional_flow": args.nf_ip_conditional_flow,
+            "nf_ip_flow_condition_hidden_dim": (
+                args.nf_ip_flow_condition_hidden_dim
+            ),
+            "nf_ip_flow_condition_embedding_dim": (
+                args.nf_ip_flow_condition_embedding_dim
+            ),
+            "nf_ip_prior_fit_steps": args.nf_ip_prior_fit_steps,
+            "nf_ip_prior_fit_rtol": args.nf_ip_prior_fit_rtol,
+            "nf_ip_prior_fit_patience": args.nf_ip_prior_fit_patience,
+            "nf_ip_prior_fit_eval_every": args.nf_ip_prior_fit_eval_every,
+            "nf_ip_prior_fit_val_samples": args.nf_ip_prior_fit_val_samples,
+            "nf_ip_posterior_flow_steps": args.nf_ip_posterior_flow_steps,
+            "nf_ip_posterior_flow_rtol": args.nf_ip_posterior_flow_rtol,
+            "nf_ip_posterior_flow_patience": args.nf_ip_posterior_flow_patience,
+            "nf_ip_posterior_flow_min_steps": (
+                args.nf_ip_posterior_flow_min_steps
+            ),
+            "nf_ip_posterior_flow_eval_every": (
+                args.nf_ip_posterior_flow_eval_every
+            ),
+            "nf_ip_posterior_flow_val_fraction": (
+                args.nf_ip_posterior_flow_val_fraction
+            ),
+            "nf_ip_flow_lr": args.nf_ip_flow_lr,
+            "nf_ip_flow_batch_size": args.nf_ip_flow_batch_size,
+            "nf_ip_kl_floor": args.nf_ip_kl_floor,
+            "nf_ip_log_variance_init": args.nf_ip_log_variance_init,
+            "nf_ip_max_grad_norm": args.nf_ip_max_grad_norm,
+        })
     if model_type == "map":
         hyperparameters["map_l2"] = args.map_l2
         hyperparameters["map_log_variance_init"] = args.map_log_variance_init
@@ -1344,6 +1665,17 @@ def _wandb_run_metadata(args, dataset_name):
         ):
             suffix = f"{suffix}/{args.ap_fsvi_sample_projection_mode}"
             group_parts.append(args.ap_fsvi_sample_projection_mode)
+    elif args.model == "nf_ip":
+        suffix = _uci_wandb_suffix(args, "nf_ip")
+        group_parts.extend([
+            f"s{args.nf_ip_num_samples}",
+            f"pf{args.nf_ip_prior_fit_steps}",
+            f"qf{args.nf_ip_posterior_flow_steps}",
+            f"prt{_compact_float_tag(args.nf_ip_prior_fit_rtol)}",
+            f"qrt{_compact_float_tag(args.nf_ip_posterior_flow_rtol)}",
+        ])
+        if args.nf_ip_conditional_flow:
+            group_parts.append("cond")
 
     name = wandb_run_name(
         "UCI 120k",
@@ -1355,6 +1687,15 @@ def _wandb_run_metadata(args, dataset_name):
     tags = ["uci", "120k", dataset_name, args.model]
     if args.model == "ap_fsvi":
         tags.extend([args.ap_fsvi_discrepancy, args.ap_fsvi_sample_projection_mode])
+    elif args.model == "nf_ip":
+        tags.extend([
+            "flow-rtol",
+            f"s{args.nf_ip_num_samples}",
+            f"pf{args.nf_ip_prior_fit_steps}",
+            f"qf{args.nf_ip_posterior_flow_steps}",
+        ])
+        if args.nf_ip_conditional_flow:
+            tags.append("conditional-flow")
     group = "_".join(str(part) for part in group_parts)
     return name, group, tags
 

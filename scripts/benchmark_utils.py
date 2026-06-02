@@ -283,6 +283,13 @@ def training_decomposition(model, model_type=None):
         posterior_flow_nll_after = _last_scalar(model, "posterior_flow_nlls_after")
         posterior_flow_train_nll = _last_scalar(model, "posterior_flow_train_nlls")
         posterior_flow_val_nll = _last_scalar(model, "posterior_flow_val_nlls")
+        prior_flow_relative_improvement = _last_scalar(
+            model, "prior_flow_relative_improvements"
+        )
+        prior_flow_update_count = _last_scalar(model, "prior_flow_update_counts")
+        posterior_flow_relative_improvement = _last_scalar(
+            model, "posterior_flow_relative_improvements"
+        )
         posterior_flow_update_count = _last_scalar(model, "posterior_flow_update_counts")
         posterior_flow_converged = _last_scalar(
             model, "posterior_flow_converged_flags"
@@ -311,6 +318,12 @@ def training_decomposition(model, model_type=None):
             payload["train/nf_ip_prior_flow_train_nll"] = prior_flow_train_nll
         if prior_flow_val_nll is not None:
             payload["train/nf_ip_prior_flow_val_nll"] = prior_flow_val_nll
+        if prior_flow_relative_improvement is not None:
+            payload["train/nf_ip_prior_flow_relative_improvement"] = (
+                prior_flow_relative_improvement
+            )
+        if prior_flow_update_count is not None:
+            payload["train/nf_ip_prior_flow_updates"] = prior_flow_update_count
         if prior_flow_converged is not None:
             payload["train/nf_ip_prior_flow_converged"] = prior_flow_converged
         if posterior_flow_nll is not None:
@@ -319,10 +332,18 @@ def training_decomposition(model, model_type=None):
             payload["train/nf_ip_posterior_flow_nll_before"] = posterior_flow_nll_before
         if posterior_flow_nll_after is not None:
             payload["train/nf_ip_posterior_flow_nll_after"] = posterior_flow_nll_after
+        if posterior_flow_nll_before is not None and posterior_flow_nll_after is not None:
+            payload["train/nf_ip_posterior_flow_nll_drop"] = (
+                posterior_flow_nll_before - posterior_flow_nll_after
+            )
         if posterior_flow_train_nll is not None:
             payload["train/nf_ip_posterior_flow_train_nll"] = posterior_flow_train_nll
         if posterior_flow_val_nll is not None:
             payload["train/nf_ip_posterior_flow_val_nll"] = posterior_flow_val_nll
+        if posterior_flow_relative_improvement is not None:
+            payload["train/nf_ip_posterior_flow_relative_improvement"] = (
+                posterior_flow_relative_improvement
+            )
         if posterior_flow_update_count is not None:
             payload["train/nf_ip_posterior_flow_updates"] = posterior_flow_update_count
         if posterior_flow_converged is not None:
