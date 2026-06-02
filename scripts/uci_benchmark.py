@@ -1182,28 +1182,6 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
         except Exception:
             print("  [warn] torch.compile unavailable, running without it")
 
-    run = init_wandb_run(
-        args,
-        name=wandb_run_name(
-            "UCI",
-            dataset=dataset_name,
-            model=model_type,
-            suffix=_uci_wandb_suffix(args, model_type),
-            seed=args.seed,
-        ),
-        group=_uci_wandb_group(dataset_name, model_type, args),
-        tags=[
-            "uci",
-            dataset_name,
-            model_type,
-            args.layer_model,
-        ],
-        config={
-            "dataset_name": dataset_name,
-            "model_type": model_type,
-        },
-    )
-
     t0 = time.time()
     losses, metrics_history, diagnostics = train_with_metrics(
         model, train_loader, train_test_dataset, test_dataset, args,
