@@ -76,6 +76,11 @@ AP_VARIANTS = {
         "discrepancy": "sample_sliced_kl",
         "sample_projection_mode": "fixed_random",
     },
+    "sample_sliced_knn_random": {
+        "display": "Sample Sliced kNN KL",
+        "discrepancy": "sample_sliced_knn_kl",
+        "sample_projection_mode": "random",
+    },
     "sample_sliced_gaussian_random": {
         "display": "Sample Sliced Gaussian KL",
         "discrepancy": "sample_sliced_gaussian_kl",
@@ -96,6 +101,11 @@ AP_VARIANTS = {
 AP_VARIANT_ALIASES = {
     "sample_sliced": "sample_sliced_random",
     "sample_sliced_kl": "sample_sliced_random",
+    "sample_sliced_knn": "sample_sliced_knn_random",
+    "sample_sliced_knn_kl": "sample_sliced_knn_random",
+    "sliced_knn_kl": "sample_sliced_knn_random",
+    "sample_sliced_spacing_kl": "sample_sliced_knn_random",
+    "sliced_spacing_kl": "sample_sliced_knn_random",
     "sample_sliced_gaussian": "sample_sliced_gaussian_random",
     "sample_sliced_gaussian_kl": "sample_sliced_gaussian_random",
     "sample_sliced_quantile_transport": "sample_sliced_quantile_transport_random",
@@ -266,8 +276,8 @@ def parse_args():
     p.add_argument(
         "--ap_fsvi_num_samples",
         type=int,
-        default=None,
-        help="AP-FSVI posterior samples per step. Defaults to --num_samples.",
+        default=32,
+        help="AP-FSVI posterior samples per step.",
     )
     p.add_argument("--ap_fsvi_num_prior_samples", type=int, default=64)
     p.add_argument("--ap_fsvi_num_measurement", type=int, default=64)
@@ -283,7 +293,7 @@ def parse_args():
     p.add_argument(
         "--ap_fsvi_discrepancy_projections",
         type=int,
-        default=64,
+        default=128,
         help="Projection/mode count for sliced or spectral AP-FSVI variants.",
     )
     p.add_argument(
@@ -293,6 +303,12 @@ def parse_args():
     )
     p.add_argument("--ap_fsvi_spectral_cov_shrinkage", type=float, default=0.05)
     p.add_argument("--ap_fsvi_sample_gaussian_shrinkage", type=float, default=0.05)
+    p.add_argument(
+        "--ap_fsvi_sample_knn_k",
+        type=int,
+        default=3,
+        help="Neighbor count for AP-FSVI sample sliced kNN KL.",
+    )
     p.add_argument(
         "--ap_fsvi_quantile_transport_k",
         type=int,
@@ -760,6 +776,7 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             function_discrepancy=spec["discrepancy"],
             discrepancy_num_projections=args.ap_fsvi_discrepancy_projections,
             sample_projection_mode=spec["sample_projection_mode"],
+            sample_knn_k=args.ap_fsvi_sample_knn_k,
             quantile_transport_k=args.ap_fsvi_quantile_transport_k,
             spectral_estimator=args.ap_fsvi_spectral_estimator,
             spectral_cov_shrinkage=args.ap_fsvi_spectral_cov_shrinkage,
@@ -1238,6 +1255,7 @@ def result_hyperparameters(args, model_type, ap_variant):
                 "ap_fsvi_discrepancy_projections": args.ap_fsvi_discrepancy_projections,
                 "ap_fsvi_spectral_estimator": args.ap_fsvi_spectral_estimator,
                 "ap_fsvi_spectral_cov_shrinkage": args.ap_fsvi_spectral_cov_shrinkage,
+                "ap_fsvi_sample_knn_k": args.ap_fsvi_sample_knn_k,
                 "ap_fsvi_sample_gaussian_shrinkage": args.ap_fsvi_sample_gaussian_shrinkage,
                 "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
                 "ap_fsvi_measurement_weights": args.ap_fsvi_measurement_weights,

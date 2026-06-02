@@ -351,13 +351,13 @@ def parse_args():
                          "MC count (matches the other methods in this script).")
 
     # --- AP-FSVI-specific ---
-    p.add_argument("--ap_fsvi_prior", type=str, choices=["gp", "bnn"], default="gp",
+    p.add_argument("--ap_fsvi_prior", type=str, choices=["gp", "bnn"], default="bnn",
                     help="AP-FSVI function prior: exact RBF GP or frozen BNN prior.")
     p.add_argument("--ap_fsvi_weight_log_sigma_init", type=float, default=None,
                     help="Initial posterior weight log sigma for AP-FSVI.")
-    p.add_argument("--ap_fsvi_num_samples", type=int, default=None,
+    p.add_argument("--ap_fsvi_num_samples", type=int, default=32,
                     help="Posterior function samples per AP-FSVI step.")
-    p.add_argument("--ap_fsvi_num_prior_samples", type=int, default=None,
+    p.add_argument("--ap_fsvi_num_prior_samples", type=int, default=64,
                     help="Prior samples per AP-FSVI regularizer step.")
     p.add_argument("--ap_fsvi_num_eval_samples", type=int, default=200,
                     help="Posterior samples used at AP-FSVI evaluation time.")
@@ -386,7 +386,7 @@ def parse_args():
                     help="Gradient ascent learning rate for adaptive measurement points.")
     p.add_argument("--ap_fsvi_adaptive_measure_domain_limit", type=float, default=None,
                     help="Optional clamp radius for adaptive measurement points.")
-    p.add_argument("--ap_fsvi_beta", type=float, default=0.05,
+    p.add_argument("--ap_fsvi_beta", type=float, default=1.0,
                     help="Weight on AP-FSVI function-space regularizer.")
     p.add_argument("--ap_fsvi_beta_start", type=float, default=0.0,
                     help="Initial beta for AP-FSVI warmup.")
@@ -397,7 +397,7 @@ def parse_args():
     p.add_argument("--ap_fsvi_data_loss", choices=["expected_nll", "predictive_nll"],
                     default="expected_nll",
                     help="AP-FSVI data term estimator.")
-    p.add_argument("--ap_fsvi_discrepancy", type=str, default="mmd",
+    p.add_argument("--ap_fsvi_discrepancy", type=str, default="sample_sliced_kl",
                     choices=[
                         "mmd",
                         "energy",
@@ -409,15 +409,18 @@ def parse_args():
                         "spectral_sliced_kl",
                         "spectral_projected_kl",
                         "sample_sliced_kl",
+                        "sample_sliced_knn_kl",
                         "sample_sliced_gaussian_kl",
                         "sample_sliced_quantile_transport_kl",
                     ],
                     help="AP-FSVI function-space discrepancy.")
-    p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=64,
+    p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=128,
                     help="Projection count for sliced AP-FSVI discrepancies.")
     p.add_argument("--ap_fsvi_sample_projection_mode", type=str, default="random",
                     choices=["random", "fixed_random", "prior_pca", "discrepancy_pca", "fixed_orthogonal"],
                     help="Projection rule for AP-FSVI sample_sliced_kl.")
+    p.add_argument("--ap_fsvi_sample_knn_k", type=int, default=3,
+                    help="Neighbor count for AP-FSVI sample_sliced_knn_kl.")
     p.add_argument("--ap_fsvi_quantile_transport_k", type=int, default=3,
                     help="Local spacing window for AP-FSVI sliced quantile-transport KL.")
     p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0,
@@ -601,8 +604,8 @@ def build_model(args, train_dataset, model_type=None):
         )
 
     if model_type == "ap_fsvi":
-        ap_samples = _arg("ap_fsvi_num_samples", _arg("regression_coeffs", 20))
-        prior_samples = _arg("ap_fsvi_num_prior_samples", None) or ap_samples
+        ap_samples = _arg("ap_fsvi_num_samples", 32)
+        prior_samples = _arg("ap_fsvi_num_prior_samples", 64)
         gen_fn = BayesianNN(
             input_dim=train_dataset.input_dim,
             num_samples=ap_samples,
@@ -618,7 +621,7 @@ def build_model(args, train_dataset, model_type=None):
             dtype=dtype,
         )
         prior_fn = None
-        if _arg("ap_fsvi_prior", "gp") == "bnn":
+        if _arg("ap_fsvi_prior", "bnn") == "bnn":
             prior_fn = BayesianNN(
                 input_dim=train_dataset.input_dim,
                 num_samples=prior_samples,
@@ -659,7 +662,7 @@ def build_model(args, train_dataset, model_type=None):
             adaptive_measure_domain_limit=_arg(
                 "ap_fsvi_adaptive_measure_domain_limit", None
             ),
-            beta=_arg("ap_fsvi_beta", 0.05),
+            beta=_arg("ap_fsvi_beta", 1.0),
             beta_start=_arg("ap_fsvi_beta_start", 0.0),
             beta_warmup_steps=_arg("ap_fsvi_beta_warmup_steps", 5000),
             data_pretrain_steps=_arg("ap_fsvi_data_pretrain_steps", 1000),
@@ -667,9 +670,10 @@ def build_model(args, train_dataset, model_type=None):
             measurement_weights=_arg("ap_fsvi_measurement_weights", [0.2, 0.2, 0.6]),
             near_data_noise=_arg("ap_fsvi_near_data_noise", 0.1),
             domain_std=_arg("ap_fsvi_domain_std", 2.5),
-            function_discrepancy=_arg("ap_fsvi_discrepancy", "mmd"),
-            discrepancy_num_projections=_arg("ap_fsvi_discrepancy_projections", 64),
+            function_discrepancy=_arg("ap_fsvi_discrepancy", "sample_sliced_kl"),
+            discrepancy_num_projections=_arg("ap_fsvi_discrepancy_projections", 128),
             sample_projection_mode=_arg("ap_fsvi_sample_projection_mode", "random"),
+            sample_knn_k=_arg("ap_fsvi_sample_knn_k", 3),
             quantile_transport_k=_arg("ap_fsvi_quantile_transport_k", 3),
             sinkhorn_epsilon=_arg("ap_fsvi_sinkhorn_epsilon", 1.0),
             sinkhorn_iterations=_arg("ap_fsvi_sinkhorn_iterations", 50),
@@ -1146,6 +1150,7 @@ def _variant_tag(args, model_type):
     tag = f"_{discrepancy}"
     if discrepancy in (
         "sample_sliced_kl",
+        "sample_sliced_knn_kl",
         "sample_sliced_gaussian_kl",
         "prior_whitened_sliced_kl",
         "spectral_projected_kl",
@@ -1269,6 +1274,7 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "ap_fsvi_discrepancy": args.ap_fsvi_discrepancy,
             "ap_fsvi_discrepancy_projections": args.ap_fsvi_discrepancy_projections,
             "ap_fsvi_sample_projection_mode": args.ap_fsvi_sample_projection_mode,
+            "ap_fsvi_sample_knn_k": args.ap_fsvi_sample_knn_k,
             "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
             "ap_fsvi_sinkhorn_epsilon": args.ap_fsvi_sinkhorn_epsilon,
             "ap_fsvi_sinkhorn_iterations": args.ap_fsvi_sinkhorn_iterations,
@@ -1330,6 +1336,7 @@ def _wandb_run_metadata(args, dataset_name):
         group_parts.append(args.ap_fsvi_discrepancy)
         if args.ap_fsvi_discrepancy in (
             "sample_sliced_kl",
+            "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
             "prior_whitened_sliced_kl",
             "spectral_projected_kl",

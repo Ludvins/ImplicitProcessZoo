@@ -43,15 +43,13 @@ Examples:
 - `python -m scripts.synthetic_benchmark --models all --datasets bimodal --wandb --wandb_group synthetic-bimodal`
 - `python -m scripts.ap_fsvi_uci_sweep --datasets boston energy concrete --wandb --wandb_group bayeslinear-convergence`
 
-AP-FSVI is implemented under `src/ap_fsvi` as a regression MVP with a supplied
-posterior `generative_function`, an RBF GP function prior, data/near-data/domain
-measurement points, and a configurable function-space discrepancy. Available
-AP-FSVI discrepancies are `mmd`, `energy`, `sliced_wasserstein`, `stein`, and
-`sinkhorn`; `mmd` remains the default. The benchmark
-scripts pass the same generator-family objects used by the other methods
-(for example `BayesianNN` on UCI/synthetic regression) so the posterior
-architecture is defined outside AP-FSVI. It is wired into the synthetic
-benchmark as the `ap_fsvi` model so it can be compared directly against VIP,
-FTIP, MFVI, FBNN, and TFSVI on the included synthetic datasets.
+AP-FSVI is implemented under `src/ap_fsvi` with a supplied posterior
+`generative_function`, data/near-data/domain measurement points, and a
+configurable function-space discrepancy. The UCI benchmark default is the
+current selected sample-sliced candidate: frozen BNN prior,
+`sample_sliced_kl`, random projections, `beta=1`, `S=32`, `Sp=64`, `M=64`,
+and `L=128`. The benchmark scripts pass the same generator-family objects used
+by the other methods, so the posterior architecture is defined outside
+AP-FSVI.
 The regression benchmarks write per-run JSON files and also emit comparison
 tables plus JSON/CSV comparison summaries when several models are run together.
