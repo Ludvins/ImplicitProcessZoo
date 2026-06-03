@@ -1,8 +1,13 @@
-"""Tests for NF-IP (normalizing-flow context KL for implicit processes)."""
+"""Tests for FCFSVI (Flow-Calibrated Function-Space VI)."""
 
 import torch
 
-from src.nf_ip import ConditionalContextDensityFlow, ContextDensityFlow, NFIP
+from src.fcfsvi import (
+    AffineContextDensityFlow,
+    ConditionalContextDensityFlow,
+    ContextDensityFlow,
+    FCFSVI,
+)
 from src.priors.generative_functions import BayesianNN, BayesLinear
 from tests.conftest import (
     BATCH_SIZE,
@@ -45,11 +50,17 @@ def _make_model(**kwargs):
         beta_start=0.1,
         beta_warmup_steps=0,
         data_pretrain_steps=0,
+        nf_flow_arch="spline",
         nf_flow_depth=2,
         nf_flow_hidden_dim=16,
         nf_flow_num_bins=4,
         nf_prior_fit_steps=3,
+        nf_prior_fit_rtol=None,
+        nf_prior_fit_val_samples=16,
         nf_posterior_flow_steps=1,
+        nf_posterior_flow_rtol=None,
+        nf_posterior_flow_restore_best=True,
+        nf_flow_diagnostics_every=1,
         nf_flow_batch_size=8,
         nf_flow_lr=1e-2,
         device=DEVICE,
@@ -57,7 +68,7 @@ def _make_model(**kwargs):
         seed=SEED,
     )
     defaults.update(kwargs)
-    return NFIP(**defaults)
+    return FCFSVI(**defaults)
 
 
 def _state_clone(module):
@@ -122,6 +133,54 @@ class TestContextDensityFlow:
         assert after < before
 
 
+class TestAffineContextDensityFlow:
+
+    def test_identity_log_prob_is_standard_normal_and_input_differentiable(self):
+        flow = AffineContextDensityFlow(
+            input_dim=4,
+            depth=2,
+            hidden_dim=16,
+            device=DEVICE,
+            dtype=DTYPE,
+            seed=SEED,
+        )
+        x = torch.randn(10, 4, dtype=DTYPE, device=DEVICE, requires_grad=True)
+        log_prob = flow.log_prob(x)
+        expected = -0.5 * (
+            x.square().sum(dim=-1)
+            + x.shape[-1] * torch.log(torch.tensor(2.0 * torch.pi, dtype=DTYPE, device=DEVICE))
+        )
+
+        assert log_prob.shape == (10,)
+        assert torch.allclose(log_prob, expected, atol=1e-10)
+        log_prob.sum().backward()
+        assert x.grad is not None
+        assert torch.isfinite(x.grad).all()
+
+    def test_mle_reduces_nll_on_shifted_gaussian(self):
+        torch.manual_seed(SEED)
+        samples = torch.randn(128, 4, dtype=DTYPE, device=DEVICE) * 0.5 + 1.0
+        flow = AffineContextDensityFlow(
+            input_dim=4,
+            depth=2,
+            hidden_dim=32,
+            device=DEVICE,
+            dtype=DTYPE,
+            seed=SEED,
+        )
+        optimizer = torch.optim.Adam(flow.parameters(), lr=1e-2)
+        before = flow.nll(samples).detach()
+        for _ in range(25):
+            optimizer.zero_grad(set_to_none=True)
+            loss = flow.nll(samples)
+            loss.backward()
+            optimizer.step()
+        after = flow.nll(samples).detach()
+
+        assert torch.isfinite(after)
+        assert after < before
+
+
 class TestConditionalContextDensityFlow:
 
     def test_log_prob_is_finite_and_condition_differentiable(self):
@@ -173,7 +232,7 @@ class TestConditionalContextDensityFlow:
         assert torch.isfinite(out).all()
 
 
-class TestNFIP:
+class TestFCFSVI:
 
     def test_prior_and_posterior_flows_are_copied_after_initialization(self, regression_data):
         X, _ = regression_data
@@ -225,6 +284,61 @@ class TestNFIP:
         assert loss.dim() == 0
         assert loss.requires_grad
         assert torch.isfinite(loss)
+
+    def test_prior_whitened_residual_nelbo_is_finite(self, regression_data):
+        X, y = regression_data
+        model = _make_model(
+            nf_flow_arch="prior_whitened_affine",
+            nf_prior_fit_steps=1,
+            nf_posterior_flow_steps=1,
+            nf_residual_flow_depth=2,
+            nf_residual_flow_hidden_dim=16,
+        )
+        loss = model.nelbo(X[:BATCH_SIZE], y[:BATCH_SIZE])
+
+        assert loss.dim() == 0
+        assert loss.requires_grad
+        assert torch.isfinite(loss)
+
+    def test_prior_whitened_identity_residual_has_zero_flow_kl(self, regression_data):
+        X, _ = regression_data
+        model = _make_model(
+            nf_flow_arch="prior_whitened_affine",
+            nf_prior_fit_steps=1,
+            nf_posterior_flow_steps=0,
+            nf_residual_flow_depth=2,
+            nf_residual_flow_hidden_dim=16,
+        )
+        model._ensure_context_and_flows_initialized(X[:BATCH_SIZE])
+
+        with torch.no_grad():
+            prior = model._sample_prior(model.context_inputs, 8)
+            z = prior.reshape(8, -1)
+            kl = model._context_kl(z)
+
+        assert torch.isfinite(kl)
+        assert torch.allclose(kl, torch.zeros_like(kl), atol=1e-10)
+
+    def test_prior_whitened_train_step_updates_residual_only(self, regression_data):
+        X, y = regression_data
+        model = _make_model(
+            nf_flow_arch="prior_whitened_affine",
+            nf_prior_fit_steps=2,
+            nf_posterior_flow_steps=2,
+            nf_residual_flow_depth=2,
+            nf_residual_flow_hidden_dim=16,
+        )
+        optimizer = torch.optim.Adam(model.vi_parameters(), lr=1e-3)
+
+        model._ensure_context_and_flows_initialized(X[:BATCH_SIZE])
+        prior_before = _state_clone(model.prior_flow)
+        posterior_before = _state_clone(model.posterior_flow)
+
+        loss = model._train_step(optimizer, X[:BATCH_SIZE], y[:BATCH_SIZE])
+
+        assert torch.isfinite(loss)
+        assert _state_equal(prior_before, model.prior_flow.state_dict())
+        assert _state_changed(posterior_before, model.posterior_flow)
 
     def test_context_is_fixed_and_diagnostics_are_recorded(self, regression_data):
         X, y = regression_data

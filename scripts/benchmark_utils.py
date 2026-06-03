@@ -23,7 +23,7 @@ MODEL_DISPLAY_NAMES = {
     "ftip": "FTIP",
     "map": "MAP",
     "mfvi": "MFVI",
-    "nf_ip": "NF-IP",
+    "fcfsvi": "FCFSVI",
     "tfsvi": "TFSVI",
     "vip": "VIP",
 }
@@ -63,6 +63,11 @@ def pretty_model_name(model_type):
     """Human-readable model label for reports and W&B run names."""
     model_type = str(model_type)
     return MODEL_DISPLAY_NAMES.get(model_type, model_type.replace("_", " ").upper())
+
+
+def canonical_model_type(model_type):
+    """Canonical method id."""
+    return str(model_type or "").lower()
 
 
 def pretty_dataset_name(dataset_name):
@@ -215,31 +220,31 @@ def training_decomposition(model, model_type=None):
     beta = _last_scalar(model, "betas")
     function_term = _last_scalar(model, "function_terms")
 
-    normalized_type = str(model_type or "").lower()
+    normalized_type = canonical_model_type(model_type)
     if normalized_type == "ap_fsvi" or beta is not None or function_term is not None:
         if function_term is None:
             function_term = kl
         if function_term is not None:
-            if normalized_type == "nf_ip":
-                payload["train/nf_ip_context_kl"] = function_term
-                payload["train/nf_ip/context_kl"] = function_term
+            if normalized_type == "fcfsvi":
+                payload["train/fcfsvi_context_kl"] = function_term
+                payload["train/fcfsvi/context_kl"] = function_term
             else:
                 payload["train/ap_fsvi_discrepancy"] = function_term
                 payload["train/apfsvi/discrepancy_unweighted"] = function_term
             payload["train/function_regularizer_unweighted"] = function_term
         if beta is not None:
-            if normalized_type == "nf_ip":
-                payload["train/nf_ip_beta"] = beta
-                payload["train/nf_ip/beta"] = beta
+            if normalized_type == "fcfsvi":
+                payload["train/fcfsvi_beta"] = beta
+                payload["train/fcfsvi/beta"] = beta
             else:
                 payload["train/ap_fsvi_beta"] = beta
                 payload["train/apfsvi/beta"] = beta
         if function_term is not None:
             weighted = (beta if beta is not None else 1.0) * function_term
             payload["train/regularizer"] = weighted
-            if normalized_type == "nf_ip":
-                payload["train/nf_ip_weighted_context_kl"] = weighted
-                payload["train/nf_ip/context_kl_weighted"] = weighted
+            if normalized_type == "fcfsvi":
+                payload["train/fcfsvi_weighted_context_kl"] = weighted
+                payload["train/fcfsvi/context_kl_weighted"] = weighted
             else:
                 payload["train/ap_fsvi_weighted_discrepancy"] = weighted
                 payload["train/apfsvi/discrepancy_weighted"] = weighted
@@ -272,7 +277,7 @@ def training_decomposition(model, model_type=None):
             payload["train/objective_regularizer"] = total_regularizer
             payload["train/regularizer_total"] = total_regularizer
 
-    if normalized_type == "nf_ip":
+    if normalized_type == "fcfsvi":
         kl_raw = _last_scalar(model, "nf_kl_raws")
         prior_flow_nll = _last_scalar(model, "prior_flow_nlls")
         posterior_flow_nll = _last_scalar(model, "posterior_flow_nlls")
@@ -311,55 +316,55 @@ def training_decomposition(model, model_type=None):
         )
         context_input_norm = _last_scalar(model, "context_input_norms")
         if kl_raw is not None:
-            payload["train/nf_ip_kl_raw"] = kl_raw
+            payload["train/fcfsvi_kl_raw"] = kl_raw
         if prior_flow_nll is not None:
-            payload["train/nf_ip_prior_flow_nll"] = prior_flow_nll
+            payload["train/fcfsvi_prior_flow_nll"] = prior_flow_nll
         if prior_flow_train_nll is not None:
-            payload["train/nf_ip_prior_flow_train_nll"] = prior_flow_train_nll
+            payload["train/fcfsvi_prior_flow_train_nll"] = prior_flow_train_nll
         if prior_flow_val_nll is not None:
-            payload["train/nf_ip_prior_flow_val_nll"] = prior_flow_val_nll
+            payload["train/fcfsvi_prior_flow_val_nll"] = prior_flow_val_nll
         if prior_flow_relative_improvement is not None:
-            payload["train/nf_ip_prior_flow_relative_improvement"] = (
+            payload["train/fcfsvi_prior_flow_relative_improvement"] = (
                 prior_flow_relative_improvement
             )
         if prior_flow_update_count is not None:
-            payload["train/nf_ip_prior_flow_updates"] = prior_flow_update_count
+            payload["train/fcfsvi_prior_flow_updates"] = prior_flow_update_count
         if prior_flow_converged is not None:
-            payload["train/nf_ip_prior_flow_converged"] = prior_flow_converged
+            payload["train/fcfsvi_prior_flow_converged"] = prior_flow_converged
         if posterior_flow_nll is not None:
-            payload["train/nf_ip_posterior_flow_nll"] = posterior_flow_nll
+            payload["train/fcfsvi_posterior_flow_nll"] = posterior_flow_nll
         if posterior_flow_nll_before is not None:
-            payload["train/nf_ip_posterior_flow_nll_before"] = posterior_flow_nll_before
+            payload["train/fcfsvi_posterior_flow_nll_before"] = posterior_flow_nll_before
         if posterior_flow_nll_after is not None:
-            payload["train/nf_ip_posterior_flow_nll_after"] = posterior_flow_nll_after
+            payload["train/fcfsvi_posterior_flow_nll_after"] = posterior_flow_nll_after
         if posterior_flow_nll_before is not None and posterior_flow_nll_after is not None:
-            payload["train/nf_ip_posterior_flow_nll_drop"] = (
+            payload["train/fcfsvi_posterior_flow_nll_drop"] = (
                 posterior_flow_nll_before - posterior_flow_nll_after
             )
         if posterior_flow_train_nll is not None:
-            payload["train/nf_ip_posterior_flow_train_nll"] = posterior_flow_train_nll
+            payload["train/fcfsvi_posterior_flow_train_nll"] = posterior_flow_train_nll
         if posterior_flow_val_nll is not None:
-            payload["train/nf_ip_posterior_flow_val_nll"] = posterior_flow_val_nll
+            payload["train/fcfsvi_posterior_flow_val_nll"] = posterior_flow_val_nll
         if posterior_flow_relative_improvement is not None:
-            payload["train/nf_ip_posterior_flow_relative_improvement"] = (
+            payload["train/fcfsvi_posterior_flow_relative_improvement"] = (
                 posterior_flow_relative_improvement
             )
         if posterior_flow_update_count is not None:
-            payload["train/nf_ip_posterior_flow_updates"] = posterior_flow_update_count
+            payload["train/fcfsvi_posterior_flow_updates"] = posterior_flow_update_count
         if posterior_flow_converged is not None:
-            payload["train/nf_ip_posterior_flow_converged"] = posterior_flow_converged
+            payload["train/fcfsvi_posterior_flow_converged"] = posterior_flow_converged
         if posterior_flow_fit_samples is not None:
-            payload["train/nf_ip_posterior_flow_fit_samples"] = posterior_flow_fit_samples
+            payload["train/fcfsvi_posterior_flow_fit_samples"] = posterior_flow_fit_samples
         if posterior_flow_val_samples is not None:
-            payload["train/nf_ip_posterior_flow_val_samples"] = posterior_flow_val_samples
+            payload["train/fcfsvi_posterior_flow_val_samples"] = posterior_flow_val_samples
         if context_opt_kl_before is not None:
-            payload["train/nf_ip_context_opt_kl_before"] = context_opt_kl_before
+            payload["train/fcfsvi_context_opt_kl_before"] = context_opt_kl_before
         if context_opt_kl_after is not None:
-            payload["train/nf_ip_context_opt_kl_after"] = context_opt_kl_after
+            payload["train/fcfsvi_context_opt_kl_after"] = context_opt_kl_after
         if context_opt_update_count is not None:
-            payload["train/nf_ip_context_opt_updates"] = context_opt_update_count
+            payload["train/fcfsvi_context_opt_updates"] = context_opt_update_count
         if context_input_norm is not None:
-            payload["train/nf_ip_context_input_norm"] = context_input_norm
+            payload["train/fcfsvi_context_input_norm"] = context_input_norm
 
     base_kl = _last_scalar(model, "base_KLs")
     flow_ldj = _last_scalar(model, "flow_ldj")
@@ -546,3 +551,4 @@ def _format_cell(value):
     if isinstance(value, float):
         return f"{value:.4f}"
     return str(value)
+

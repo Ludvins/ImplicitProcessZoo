@@ -196,6 +196,157 @@ class ConditionalRQSplineCouplingLayer(nn.Module):
         return out, log_det
 
 
+class AffineCouplingLayer(nn.Module):
+    """Fast affine coupling layer initialized as the identity map."""
+
+    def __init__(
+        self,
+        input_dim,
+        hidden_dim=64,
+        scale_bound=0.2,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        if input_dim < 1:
+            raise ValueError("input_dim must be positive.")
+        self.input_dim = input_dim
+        self.d_half = input_dim // 2
+        self.d_out = input_dim - self.d_half
+        self.scale_bound = scale_bound
+
+        self.net = nn.Sequential(
+            nn.Linear(self.d_half, hidden_dim, dtype=dtype, device=device),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 2 * self.d_out, dtype=dtype, device=device),
+        )
+        self.reset_identity()
+
+    def reset_identity(self):
+        self.net[-1].weight.data.zero_()
+        self.net[-1].bias.data.zero_()
+
+    def _params(self, context):
+        raw = self.net(context)
+        shift, raw_log_scale = raw.chunk(2, dim=-1)
+        log_scale = self.scale_bound * torch.tanh(raw_log_scale)
+        return shift, log_scale
+
+    def forward(self, z):
+        z1 = z[..., : self.d_half]
+        z2 = z[..., self.d_half :]
+        shift, log_scale = self._params(z1)
+        x2 = z2 * torch.exp(log_scale) + shift
+        log_det = log_scale.sum(dim=-1)
+        return torch.cat([z1, x2], dim=-1), log_det
+
+    def inverse(self, x):
+        x1 = x[..., : self.d_half]
+        x2 = x[..., self.d_half :]
+        shift, log_scale = self._params(x1)
+        z2 = (x2 - shift) * torch.exp(-log_scale)
+        log_det = -log_scale.sum(dim=-1)
+        return torch.cat([x1, z2], dim=-1), log_det
+
+
+class AffineContextDensityFlow(nn.Module):
+    """Lightweight flow over prior-whitened context values."""
+
+    def __init__(
+        self,
+        input_dim,
+        depth=2,
+        hidden_dim=64,
+        scale_bound=0.2,
+        device=None,
+        dtype=torch.float64,
+        seed=2147483647,
+    ):
+        super().__init__()
+        if input_dim < 2:
+            raise ValueError("AffineContextDensityFlow requires input_dim >= 2.")
+        self.input_dim = input_dim
+        self.depth = depth
+        self.hidden_dim = hidden_dim
+        self.scale_bound = scale_bound
+        self.dtype = dtype
+        self.device = device
+
+        generator = torch.Generator(device if device is not None else "cpu")
+        generator.manual_seed(seed)
+        self.generator = generator
+
+        self.layers = nn.ModuleList(
+            [
+                AffineCouplingLayer(
+                    input_dim=input_dim,
+                    hidden_dim=hidden_dim,
+                    scale_bound=scale_bound,
+                    device=device,
+                    dtype=dtype,
+                )
+                for _ in range(depth)
+            ]
+        )
+        self.register_buffer(
+            "_flip_idx", torch.arange(input_dim - 1, -1, -1, device=device)
+        )
+        self.register_buffer(
+            "_log2pi", torch.tensor(math.log(2.0 * math.pi), dtype=dtype, device=device)
+        )
+
+    def reset_identity(self):
+        for layer in self.layers:
+            layer.reset_identity()
+
+    @torch.no_grad()
+    def set_standardization(self, samples):
+        del samples
+
+    def forward(self, z):
+        x = z
+        log_det = torch.zeros(z.shape[0], dtype=z.dtype, device=z.device)
+        for layer in self.layers:
+            x, ldj = layer(x)
+            log_det = log_det + ldj
+            x = x[..., self._flip_idx]
+        return x, log_det
+
+    def inverse(self, x):
+        z = x
+        log_det = torch.zeros(x.shape[0], dtype=x.dtype, device=x.device)
+        for layer in reversed(self.layers):
+            z = z[..., self._flip_idx]
+            z, ldj = layer.inverse(z)
+            log_det = log_det + ldj
+        return z, log_det
+
+    def base_log_prob(self, z):
+        return -0.5 * (z.square().sum(dim=-1) + self.input_dim * self._log2pi)
+
+    def log_prob(self, x):
+        if x.ndim != 2 or x.shape[-1] != self.input_dim:
+            raise ValueError(
+                f"x must have shape [N, {self.input_dim}], got {tuple(x.shape)}."
+            )
+        z, inverse_log_det = self.inverse(x)
+        return self.base_log_prob(z) + inverse_log_det
+
+    def nll(self, x):
+        return -self.log_prob(x).mean()
+
+    def sample(self, num_samples):
+        z = torch.randn(
+            num_samples,
+            self.input_dim,
+            generator=self.generator,
+            dtype=self.dtype,
+            device=self._log2pi.device,
+        )
+        x, _ = self.forward(z)
+        return x
+
+
 class ContextDensityFlow(nn.Module):
     """Unconditional density flow over flattened context function values."""
 

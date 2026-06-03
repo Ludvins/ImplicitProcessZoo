@@ -64,11 +64,13 @@ class CouplingLayer(torch.nn.Module):
     def __init__(self, input_dim, device, dtype, init_scale=1e-3):
         super().__init__()
         self.input_dim = input_dim
+        self.d_half = input_dim // 2
+        self.d_out = input_dim - self.d_half
 
         self.nn = torch.nn.Sequential(
-            torch.nn.Linear(input_dim // 2, input_dim * 2, dtype=dtype, device=device),
+            torch.nn.Linear(self.d_half, input_dim * 2, dtype=dtype, device=device),
             torch.nn.Tanh(),
-            torch.nn.Linear(input_dim * 2, input_dim, dtype=dtype, device=device),
+            torch.nn.Linear(input_dim * 2, 2 * self.d_out, dtype=dtype, device=device),
         )
         # Near-identity init: small random weights so gradients flow to all
         # layers from step 1, while the transform stays close to identity.
@@ -76,12 +78,12 @@ class CouplingLayer(torch.nn.Module):
         self.nn[-1].bias.data.fill_(0)
 
     def forward(self, a):
-        z1 = a[..., : self.input_dim // 2]
-        z2 = a[..., self.input_dim // 2 :]
+        z1 = a[..., : self.d_half]
+        z2 = a[..., self.d_half :]
 
         nn = self.nn(z1)
-        mu = nn[..., : self.input_dim // 2]
-        sigma = nn[..., self.input_dim // 2 :]
+        mu = nn[..., : self.d_out]
+        sigma = nn[..., self.d_out :]
         z2 = z2 * torch.exp(sigma) + mu
 
         ldj = torch.sum(sigma, dim=-1)

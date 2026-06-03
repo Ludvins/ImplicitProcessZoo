@@ -1,7 +1,7 @@
 """UCI regression benchmark.
 
-Runs the UCI regression datasets with VIP, FTIP, AP-FSVI, MFVI, FBNN,
-TFSVI, or MAP.
+Runs the UCI regression datasets with VIP, FTIP, AP-FSVI, FCFSVI, MFVI,
+FBNN, TFSVI, or MAP.
 Each run writes a JSON result file and, by default, a checkpoint.
 
 Example:
@@ -31,10 +31,11 @@ from src.ap_fsvi import APFSVI
 from src.fbnn import FBNN
 from src.tfsvi import TFSVI
 from src.mfvi import MFVI
-from src.nf_ip import NFIP
+from src.fcfsvi import FCFSVI
 from src.map_baseline import DeterministicMAP
 from scripts.benchmark_utils import (
     add_wandb_args,
+    canonical_model_type,
     finish_wandb_run,
     init_wandb_run,
     pretty_discrepancy_name,
@@ -82,9 +83,12 @@ REGRESSION_MODELS = [
     "tfsvi",
     "mfvi",
     "ap_fsvi",
-    "nf_ip",
+    "fcfsvi",
     "map",
 ]
+
+def _is_fcfsvi_model(model_type):
+    return canonical_model_type(model_type) == "fcfsvi"
 
 
 def generate_ood_points(test_dataset, n_ood=None, seed=42):
@@ -312,6 +316,10 @@ def parse_args():
                     help="Number of MC samples used at evaluation time (FTIP only).")
     p.add_argument("--warm_start_from", type=str, default=None,
                     help="Path to a VIP checkpoint (.pt) for warm-starting FTIP.")
+    p.add_argument("--resume_from_checkpoint", type=str, default=None,
+                    help="Path to a model checkpoint (.pt) to load before training.")
+    p.add_argument("--resume_step_offset", type=int, default=0,
+                    help="Iteration offset for resumed runs, used for W&B/eval step numbers.")
     p.add_argument("--learnable_affine", action="store_true", default=True,
                     help="Make the affine warm-start layer trainable.")
     p.add_argument("--no_learnable_affine", action="store_true",
@@ -450,80 +458,99 @@ def parse_args():
     p.add_argument("--ap_fsvi_max_grad_norm", type=float, default=None,
                     help="Optional AP-FSVI gradient clipping norm.")
 
-    # --- NF-IP-specific ---
-    p.add_argument("--nf_ip_num_context", type=int, default=16,
-                    help="Fixed context-set size for the NF-IP finite KL.")
-    p.add_argument("--nf_ip_num_samples", type=int, default=64,
-                    help="Posterior function samples per NF-IP training step.")
-    p.add_argument("--nf_ip_num_prior_samples", type=int, default=256,
+    # --- FCFSVI-specific ---
+    p.add_argument("--fcfsvi_num_context", type=int, default=64,
+                    help="Fixed context-set size for the FCFSVI finite KL.")
+    p.add_argument("--fcfsvi_num_samples", type=int, default=512,
+                    help="Posterior function samples per FCFSVI training step.")
+    p.add_argument("--fcfsvi_num_prior_samples", type=int, default=2048,
                     help="Initial prior context samples used for flow standardization.")
-    p.add_argument("--nf_ip_num_eval_samples", type=int, default=200,
-                    help="Posterior samples used at NF-IP evaluation time.")
-    p.add_argument("--nf_ip_beta", type=float, default=1.0,
-                    help="Weight on the NF-IP context KL.")
-    p.add_argument("--nf_ip_beta_start", type=float, default=1.0,
-                    help="Initial NF-IP beta for warmup.")
-    p.add_argument("--nf_ip_beta_warmup_steps", type=int, default=0,
-                    help="Linear NF-IP beta warmup steps.")
-    p.add_argument("--nf_ip_data_pretrain_steps", type=int, default=0,
-                    help="Steps with NF-IP beta forced to zero.")
-    p.add_argument("--nf_ip_data_loss", choices=["expected_nll", "predictive_nll"],
+    p.add_argument("--fcfsvi_num_eval_samples", type=int, default=200,
+                    help="Posterior samples used at FCFSVI evaluation time.")
+    p.add_argument("--fcfsvi_beta", type=float, default=1.0,
+                    help="Weight on the FCFSVI context KL.")
+    p.add_argument("--fcfsvi_beta_start", type=float, default=1.0,
+                    help="Initial FCFSVI beta for warmup.")
+    p.add_argument("--fcfsvi_beta_warmup_steps", type=int, default=0,
+                    help="Linear FCFSVI beta warmup steps.")
+    p.add_argument("--fcfsvi_data_pretrain_steps", type=int, default=0,
+                    help="Steps with FCFSVI beta forced to zero.")
+    p.add_argument("--fcfsvi_data_loss", choices=["expected_nll", "predictive_nll"],
                     default="expected_nll",
-                    help="NF-IP data term estimator.")
-    p.add_argument("--nf_ip_context_weights", type=float, nargs=3,
+                    help="FCFSVI data term estimator.")
+    p.add_argument("--fcfsvi_context_weights", type=float, nargs=3,
                     default=[0.2, 0.2, 0.6],
                     metavar=("DATA", "NEAR", "DOMAIN"),
-                    help="Data/near-data/domain weights for the fixed NF-IP context set.")
-    p.add_argument("--nf_ip_near_data_noise", type=float, default=0.1,
-                    help="Std of near-data NF-IP context perturbations.")
-    p.add_argument("--nf_ip_domain_std", type=float, default=2.5,
-                    help="Std for NF-IP Gaussian domain context points.")
-    p.add_argument("--nf_ip_flow_depth", type=int, default=4,
-                    help="Number of RQ-spline coupling layers in each NF-IP density flow.")
-    p.add_argument("--nf_ip_flow_hidden_dim", type=int, default=128,
-                    help="Hidden width for NF-IP flow coupling networks.")
-    p.add_argument("--nf_ip_flow_num_bins", type=int, default=8,
-                    help="Bins per NF-IP RQ-spline coupling layer.")
-    p.add_argument("--nf_ip_flow_bound", type=float, default=3.0,
-                    help="Spline domain half-width for NF-IP density flows.")
-    p.add_argument("--nf_ip_conditional_flow", action="store_true", default=False,
-                    help="Condition NF-IP density flows on the flattened context inputs.")
-    p.add_argument("--nf_ip_flow_condition_hidden_dim", type=int, default=None,
-                    help="Hidden width for the NF-IP conditional-flow context encoder.")
-    p.add_argument("--nf_ip_flow_condition_embedding_dim", type=int, default=None,
-                    help="Embedding size for the NF-IP conditional-flow context encoder.")
-    p.add_argument("--nf_ip_prior_fit_steps", type=int, default=500,
+                    help="Data/near-data/domain weights for the fixed FCFSVI context set.")
+    p.add_argument("--fcfsvi_near_data_noise", type=float, default=0.1,
+                    help="Std of near-data FCFSVI context perturbations.")
+    p.add_argument("--fcfsvi_domain_std", type=float, default=2.5,
+                    help="Std for FCFSVI Gaussian domain context points.")
+    p.add_argument("--fcfsvi_flow_arch", choices=["spline", "prior_whitened_affine"],
+                    default="prior_whitened_affine",
+                    help="FCFSVI density architecture for posterior context KL.")
+    p.add_argument("--fcfsvi_flow_depth", type=int, default=4,
+                    help="Number of RQ-spline coupling layers in each FCFSVI density flow.")
+    p.add_argument("--fcfsvi_flow_hidden_dim", type=int, default=128,
+                    help="Hidden width for FCFSVI flow coupling networks.")
+    p.add_argument("--fcfsvi_flow_num_bins", type=int, default=8,
+                    help="Bins per FCFSVI RQ-spline coupling layer.")
+    p.add_argument("--fcfsvi_flow_bound", type=float, default=3.0,
+                    help="Spline domain half-width for FCFSVI density flows.")
+    p.add_argument("--fcfsvi_residual_flow_depth", type=int, default=2,
+                    help="Depth of the prior-whitened affine posterior residual flow.")
+    p.add_argument("--fcfsvi_residual_flow_hidden_dim", type=int, default=64,
+                    help="Hidden width of the prior-whitened affine posterior residual flow.")
+    p.add_argument("--fcfsvi_residual_flow_scale_bound", type=float, default=0.2,
+                    help="Tanh clamp for affine residual log-scales.")
+    p.add_argument("--fcfsvi_conditional_flow", action="store_true", default=False,
+                    help="Condition FCFSVI density flows on the flattened context inputs.")
+    p.add_argument("--fcfsvi_flow_condition_hidden_dim", type=int, default=None,
+                    help="Hidden width for the FCFSVI conditional-flow context encoder.")
+    p.add_argument("--fcfsvi_flow_condition_embedding_dim", type=int, default=None,
+                    help="Embedding size for the FCFSVI conditional-flow context encoder.")
+    p.add_argument("--fcfsvi_prior_fit_steps", type=int, default=50000,
                     help="Maximum prior-flow MLE updates before IP training.")
-    p.add_argument("--nf_ip_prior_fit_rtol", type=float, default=None,
+    p.add_argument("--fcfsvi_prior_fit_rtol", type=float, default=1e-5,
                     help="Relative validation-NLL improvement tolerance for prior-flow early stopping.")
-    p.add_argument("--nf_ip_prior_fit_patience", type=int, default=5,
+    p.add_argument("--fcfsvi_prior_fit_patience", type=int, default=10,
                     help="Prior-flow validation checks allowed below rtol before stopping.")
-    p.add_argument("--nf_ip_prior_fit_eval_every", type=int, default=50,
+    p.add_argument("--fcfsvi_prior_fit_eval_every", type=int, default=200,
                     help="Prior-flow validation interval in auxiliary flow updates.")
-    p.add_argument("--nf_ip_prior_fit_val_samples", type=int, default=4096,
+    p.add_argument("--fcfsvi_prior_fit_val_samples", type=int, default=16384,
                     help="Fresh prior samples used as prior-flow validation set when rtol is active.")
-    p.add_argument("--nf_ip_posterior_flow_steps", type=int, default=2,
-                    help="Maximum posterior-flow MLE updates per NF-IP training step.")
-    p.add_argument("--nf_ip_posterior_flow_rtol", type=float, default=None,
+    p.add_argument("--fcfsvi_posterior_flow_steps", type=int, default=600,
+                    help="Maximum posterior-flow MLE updates per FCFSVI training step.")
+    p.add_argument("--fcfsvi_posterior_flow_rtol", type=float, default=1e-4,
                     help="Relative validation-NLL improvement tolerance for posterior-flow early stopping.")
-    p.add_argument("--nf_ip_posterior_flow_patience", type=int, default=3,
+    p.add_argument("--fcfsvi_posterior_flow_patience", type=int, default=1,
                     help="Posterior-flow validation checks allowed below rtol before stopping.")
-    p.add_argument("--nf_ip_posterior_flow_min_steps", type=int, default=1,
+    p.add_argument("--fcfsvi_posterior_flow_min_steps", type=int, default=1,
                     help="Minimum posterior-flow updates before rtol early stopping can trigger.")
-    p.add_argument("--nf_ip_posterior_flow_eval_every", type=int, default=1,
+    p.add_argument("--fcfsvi_posterior_flow_eval_every", type=int, default=1,
                     help="Posterior-flow validation interval in auxiliary flow updates.")
-    p.add_argument("--nf_ip_posterior_flow_val_fraction", type=float, default=0.25,
+    p.add_argument("--fcfsvi_posterior_flow_val_fraction", type=float, default=0.25,
                     help="Fraction of current posterior samples held out for posterior-flow rtol validation.")
-    p.add_argument("--nf_ip_flow_lr", type=float, default=1e-3,
-                    help="Learning rate for both NF-IP density-flow optimizers.")
-    p.add_argument("--nf_ip_flow_batch_size", type=int, default=128,
-                    help="Minibatch size for auxiliary NF-IP flow MLE updates.")
-    p.add_argument("--nf_ip_kl_floor", type=float, default=0.0,
-                    help="Lower clamp applied to the raw NF-IP context KL.")
-    p.add_argument("--nf_ip_log_variance_init", type=float, default=-5.0,
-                    help="Initial log observation variance for NF-IP.")
-    p.add_argument("--nf_ip_max_grad_norm", type=float, default=None,
-                    help="Optional NF-IP gradient clipping norm.")
+    p.add_argument("--fcfsvi_no_posterior_flow_restore_best",
+                    dest="fcfsvi_no_posterior_flow_restore_best",
+                    action="store_true", default=True,
+                    help="Do not restore the posterior flow to its best validation state after auxiliary fitting.")
+    p.add_argument("--fcfsvi_posterior_flow_restore_best",
+                    dest="fcfsvi_no_posterior_flow_restore_best",
+                    action="store_false",
+                    help="Restore the posterior flow to its best validation state after auxiliary fitting.")
+    p.add_argument("--fcfsvi_flow_diagnostics_every", type=int, default=50,
+                    help="Log expensive FCFSVI flow NLL diagnostics every N IP steps.")
+    p.add_argument("--fcfsvi_flow_lr", type=float, default=1e-3,
+                    help="Learning rate for both FCFSVI density-flow optimizers.")
+    p.add_argument("--fcfsvi_flow_batch_size", type=int, default=512,
+                    help="Minibatch size for auxiliary FCFSVI flow MLE updates.")
+    p.add_argument("--fcfsvi_kl_floor", type=float, default=0.0,
+                    help="Lower clamp applied to the raw FCFSVI context KL.")
+    p.add_argument("--fcfsvi_log_variance_init", type=float, default=-5.0,
+                    help="Initial log observation variance for FCFSVI.")
+    p.add_argument("--fcfsvi_max_grad_norm", type=float, default=None,
+                    help="Optional FCFSVI gradient clipping norm.")
 
     # --- MAP-specific ---
     p.add_argument("--map_l2", type=float, default=1e-4,
@@ -585,8 +612,15 @@ def parse_args():
     if args.no_learnable_affine:
         args.learnable_affine = False
 
+    if args.resume_step_offset < 0:
+        p.error("--resume_step_offset must be non-negative.")
+    if args.resume_from_checkpoint and args.warm_start_from:
+        p.error("--resume_from_checkpoint cannot be combined with --warm_start_from.")
+
     # Disable auto_warm_start if an explicit checkpoint path is given
     if args.warm_start_from:
+        args.auto_warm_start = False
+    if args.resume_from_checkpoint:
         args.auto_warm_start = False
 
     # Track whether the user explicitly chose a training budget; if not,
@@ -771,11 +805,11 @@ def build_model(args, train_dataset, model_type=None):
             seed=args.seed,
         )
 
-    if model_type == "nf_ip":
-        nf_samples = _arg("nf_ip_num_samples", 64)
+    if _is_fcfsvi_model(model_type):
+        fcfsvi_samples = _arg("fcfsvi_num_samples", 512)
         gen_fn = BayesianNN(
             input_dim=train_dataset.input_dim,
-            num_samples=nf_samples,
+            num_samples=fcfsvi_samples,
             structure=args.hidden_dims,
             activation=ACTIVATIONS[args.activation],
             output_dim=train_dataset.output_dim,
@@ -786,59 +820,71 @@ def build_model(args, train_dataset, model_type=None):
             seed=args.seed,
             dtype=dtype,
         )
-        return NFIP(
+        return FCFSVI(
             generative_function=gen_fn,
             prior_function=None,
             input_dim=train_dataset.input_dim,
             output_dim=train_dataset.output_dim,
             likelihood="regression",
             num_data=len(train_dataset),
-            num_context=_arg("nf_ip_num_context", 16),
-            num_samples=nf_samples,
-            num_prior_samples=_arg("nf_ip_num_prior_samples", 256),
-            beta=_arg("nf_ip_beta", 1.0),
-            beta_start=_arg("nf_ip_beta_start", 1.0),
-            beta_warmup_steps=_arg("nf_ip_beta_warmup_steps", 0),
-            data_pretrain_steps=_arg("nf_ip_data_pretrain_steps", 0),
-            data_loss=_arg("nf_ip_data_loss", "expected_nll"),
-            context_weights=_arg("nf_ip_context_weights", [0.2, 0.2, 0.6]),
-            near_data_noise=_arg("nf_ip_near_data_noise", 0.1),
-            domain_std=_arg("nf_ip_domain_std", 2.5),
-            nf_flow_depth=_arg("nf_ip_flow_depth", 4),
-            nf_flow_hidden_dim=_arg("nf_ip_flow_hidden_dim", 128),
-            nf_conditional_flow=_arg("nf_ip_conditional_flow", False),
+            num_context=_arg("fcfsvi_num_context", 64),
+            num_samples=fcfsvi_samples,
+            num_prior_samples=_arg("fcfsvi_num_prior_samples", 2048),
+            beta=_arg("fcfsvi_beta", 1.0),
+            beta_start=_arg("fcfsvi_beta_start", 1.0),
+            beta_warmup_steps=_arg("fcfsvi_beta_warmup_steps", 0),
+            data_pretrain_steps=_arg("fcfsvi_data_pretrain_steps", 0),
+            data_loss=_arg("fcfsvi_data_loss", "expected_nll"),
+            context_weights=_arg("fcfsvi_context_weights", [0.2, 0.2, 0.6]),
+            near_data_noise=_arg("fcfsvi_near_data_noise", 0.1),
+            domain_std=_arg("fcfsvi_domain_std", 2.5),
+            nf_flow_arch=_arg("fcfsvi_flow_arch", "prior_whitened_affine"),
+            nf_flow_depth=_arg("fcfsvi_flow_depth", 4),
+            nf_flow_hidden_dim=_arg("fcfsvi_flow_hidden_dim", 128),
+            nf_conditional_flow=_arg("fcfsvi_conditional_flow", False),
             nf_flow_condition_hidden_dim=_arg(
-                "nf_ip_flow_condition_hidden_dim", None
+                "fcfsvi_flow_condition_hidden_dim", None
             ),
             nf_flow_condition_embedding_dim=_arg(
-                "nf_ip_flow_condition_embedding_dim", None
+                "fcfsvi_flow_condition_embedding_dim", None
             ),
-            nf_flow_num_bins=_arg("nf_ip_flow_num_bins", 8),
-            nf_flow_bound=_arg("nf_ip_flow_bound", 3.0),
-            nf_prior_fit_steps=_arg("nf_ip_prior_fit_steps", 500),
-            nf_prior_fit_rtol=_arg("nf_ip_prior_fit_rtol", None),
-            nf_prior_fit_patience=_arg("nf_ip_prior_fit_patience", 5),
-            nf_prior_fit_eval_every=_arg("nf_ip_prior_fit_eval_every", 50),
-            nf_prior_fit_val_samples=_arg("nf_ip_prior_fit_val_samples", 4096),
-            nf_posterior_flow_steps=_arg("nf_ip_posterior_flow_steps", 2),
-            nf_posterior_flow_rtol=_arg("nf_ip_posterior_flow_rtol", None),
-            nf_posterior_flow_patience=_arg("nf_ip_posterior_flow_patience", 3),
+            nf_flow_num_bins=_arg("fcfsvi_flow_num_bins", 8),
+            nf_flow_bound=_arg("fcfsvi_flow_bound", 3.0),
+            nf_residual_flow_depth=_arg("fcfsvi_residual_flow_depth", 2),
+            nf_residual_flow_hidden_dim=_arg(
+                "fcfsvi_residual_flow_hidden_dim", 64
+            ),
+            nf_residual_flow_scale_bound=_arg(
+                "fcfsvi_residual_flow_scale_bound", 0.2
+            ),
+            nf_prior_fit_steps=_arg("fcfsvi_prior_fit_steps", 50000),
+            nf_prior_fit_rtol=_arg("fcfsvi_prior_fit_rtol", 1e-5),
+            nf_prior_fit_patience=_arg("fcfsvi_prior_fit_patience", 10),
+            nf_prior_fit_eval_every=_arg("fcfsvi_prior_fit_eval_every", 200),
+            nf_prior_fit_val_samples=_arg("fcfsvi_prior_fit_val_samples", 16384),
+            nf_posterior_flow_steps=_arg("fcfsvi_posterior_flow_steps", 600),
+            nf_posterior_flow_rtol=_arg("fcfsvi_posterior_flow_rtol", 1e-4),
+            nf_posterior_flow_patience=_arg("fcfsvi_posterior_flow_patience", 1),
             nf_posterior_flow_min_steps=_arg(
-                "nf_ip_posterior_flow_min_steps", 1
+                "fcfsvi_posterior_flow_min_steps", 1
             ),
             nf_posterior_flow_eval_every=_arg(
-                "nf_ip_posterior_flow_eval_every", 1
+                "fcfsvi_posterior_flow_eval_every", 1
             ),
             nf_posterior_flow_val_fraction=_arg(
-                "nf_ip_posterior_flow_val_fraction", 0.25
+                "fcfsvi_posterior_flow_val_fraction", 0.25
             ),
-            nf_flow_lr=_arg("nf_ip_flow_lr", 1e-3),
-            nf_flow_batch_size=_arg("nf_ip_flow_batch_size", 128),
-            nf_kl_floor=_arg("nf_ip_kl_floor", 0.0),
-            log_variance_init=_arg("nf_ip_log_variance_init", -5.0),
+            nf_posterior_flow_restore_best=not _arg(
+                "fcfsvi_no_posterior_flow_restore_best", True
+            ),
+            nf_flow_diagnostics_every=_arg("fcfsvi_flow_diagnostics_every", 50),
+            nf_flow_lr=_arg("fcfsvi_flow_lr", 1e-3),
+            nf_flow_batch_size=_arg("fcfsvi_flow_batch_size", 512),
+            nf_kl_floor=_arg("fcfsvi_kl_floor", 0.0),
+            log_variance_init=_arg("fcfsvi_log_variance_init", -5.0),
             y_mean=train_dataset.targets_mean,
             y_std=train_dataset.targets_std,
-            max_grad_norm=_arg("nf_ip_max_grad_norm", None),
+            max_grad_norm=_arg("fcfsvi_max_grad_norm", None),
             device=device,
             dtype=dtype,
             seed=args.seed,
@@ -1048,8 +1094,8 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
             S = args.tfsvi_num_eval_samples
         elif model_type == "mfvi":
             S = args.mfvi_num_eval_samples
-        elif model_type == "nf_ip":
-            S = args.nf_ip_num_eval_samples
+        elif _is_fcfsvi_model(model_type):
+            S = args.fcfsvi_num_eval_samples
         else:
             S = args.regression_coeffs
         S_crps = min(S, 100)
@@ -1063,10 +1109,10 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
         fbnn_old_S = model.num_samples
         model._set_num_samples(args.fbnn_num_eval_samples)
         model.num_samples = args.fbnn_num_eval_samples
-    nf_ip_old_S = None
-    if model_type == "nf_ip":
-        nf_ip_old_S = model.num_samples
-        model.num_samples = args.nf_ip_num_eval_samples
+    fcfsvi_old_S = None
+    if _is_fcfsvi_model(model_type):
+        fcfsvi_old_S = model.num_samples
+        model.num_samples = args.fcfsvi_num_eval_samples
     with torch.no_grad():
         # For FTIP: sample flow coefficients once (data-independent)
         a = model.sample_flow_coefficients(args.eval_samples) if model_type == "ftip" else None
@@ -1091,8 +1137,8 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
     if fbnn_old_S is not None:
         model._set_num_samples(fbnn_old_S)
         model.num_samples = fbnn_old_S
-    if nf_ip_old_S is not None:
-        model.num_samples = nf_ip_old_S
+    if fcfsvi_old_S is not None:
+        model.num_samples = fcfsvi_old_S
     return metrics.get_dict()
 
 
@@ -1151,9 +1197,9 @@ def evaluate_light(model, dataset, args, model_type=None, batch_size=2048):
                 S_light = min(64, args.mfvi_num_eval_samples)
                 mean, std = _tfsvi_pred_components(model, xb, S_light)
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=True)
-            elif model_type == "nf_ip":
+            elif _is_fcfsvi_model(model_type):
                 old_S = model.num_samples
-                model.num_samples = min(64, args.nf_ip_num_eval_samples)
+                model.num_samples = min(64, args.fcfsvi_num_eval_samples)
                 mean, std = model(xb)
                 model.num_samples = old_S
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=True)
@@ -1185,7 +1231,10 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
     device = torch.device(args.device)
 
     wd = 0.0
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+    optimizer_params = (
+        model.vi_parameters() if hasattr(model, "vi_parameters") else model.parameters()
+    )
+    optimizer = torch.optim.Adam(optimizer_params, lr=lr, weight_decay=wd)
 
     scheduler = None
     if args.cosine_annealing:
@@ -1200,6 +1249,7 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
 
     losses = []
     metrics_history = {"iterations": [], "train": [], "validation": []}
+    step_offset = int(getattr(args, "resume_step_offset", 0) or 0)
 
     # TFSVI samples its KL context set from `model._train_inputs`; populate
     # it here since we bypass `model.fit()` and call `_train_step` directly.
@@ -1216,13 +1266,14 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
         loop = tqdm(range(total), unit=" iter", desc=desc)
 
         for i in loop:
+            global_step = step_offset + i + 1
             inputs, target = next(data_stream)
             inputs = inputs.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             loss = model._train_step(optimizer, inputs, target)
             losses.append(loss.item())
             wandb_log_train_step(
-                args, i + 1, loss, optimizer=optimizer, model=model,
+                args, global_step, loss, optimizer=optimizer, model=model,
                 model_type=model_type,
             )
 
@@ -1230,7 +1281,7 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
                 scheduler.step()
 
             if (i + 1) % args.eval_every == 0:
-                metrics_history["iterations"].append(i + 1)
+                metrics_history["iterations"].append(global_step)
                 train_eval = evaluate_light(
                     model, train_test_dataset, args, model_type=model_type
                 )
@@ -1239,7 +1290,7 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
                 )
                 metrics_history["train"].append(train_eval)
                 metrics_history["validation"].append(validation_eval)
-                wandb_log_eval(i + 1, train_eval, validation_eval)
+                wandb_log_eval(global_step, train_eval, validation_eval)
 
             loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
     else:
@@ -1253,13 +1304,14 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
                 loss = model._train_step(optimizer, inputs, target)
                 losses.append(loss.item())
                 it += 1
+                global_step = step_offset + it
                 wandb_log_train_step(
-                    args, it, loss, optimizer=optimizer, model=model,
+                    args, global_step, loss, optimizer=optimizer, model=model,
                     model_type=model_type,
                 )
 
                 if it % args.eval_every == 0:
-                    metrics_history["iterations"].append(it)
+                    metrics_history["iterations"].append(global_step)
                     train_eval = evaluate_light(
                         model, train_test_dataset, args, model_type=model_type
                     )
@@ -1268,7 +1320,7 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
                     )
                     metrics_history["train"].append(train_eval)
                     metrics_history["validation"].append(validation_eval)
-                    wandb_log_eval(it, train_eval, validation_eval)
+                    wandb_log_eval(global_step, train_eval, validation_eval)
 
             if scheduler is not None:
                 scheduler.step()
@@ -1285,7 +1337,7 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
     if model_type == "ftip":
         diagnostics["base_KLs"] = [float(v) for v in model.base_KLs]
         diagnostics["flow_ldj"] = [float(v) for v in model.flow_ldj]
-    if model_type == "nf_ip":
+    if _is_fcfsvi_model(model_type):
         for attr in (
             "nf_kl_raws",
             "prior_flow_nlls",
@@ -1350,20 +1402,29 @@ def _compact_float_tag(value):
 
 def _variant_tag(args, model_type):
     """Filename tag for variants that share the same top-level model name."""
-    if model_type == "nf_ip":
+    if _is_fcfsvi_model(model_type):
+        arch = getattr(args, "fcfsvi_flow_arch", "prior_whitened_affine")
         tag = (
-            f"_ctx{getattr(args, 'nf_ip_num_context', 16)}"
-            f"_s{getattr(args, 'nf_ip_num_samples', 64)}"
-            f"_pf{getattr(args, 'nf_ip_prior_fit_steps', 500)}"
-            f"_qf{getattr(args, 'nf_ip_posterior_flow_steps', 2)}"
+            f"_ctx{getattr(args, 'fcfsvi_num_context', 64)}"
+            f"_s{getattr(args, 'fcfsvi_num_samples', 512)}"
+            f"_pf{getattr(args, 'fcfsvi_prior_fit_steps', 50000)}"
+            f"_qf{getattr(args, 'fcfsvi_posterior_flow_steps', 600)}"
         )
-        prior_rtol = _compact_float_tag(getattr(args, "nf_ip_prior_fit_rtol", None))
+        prior_rtol = _compact_float_tag(getattr(args, "fcfsvi_prior_fit_rtol", None))
         posterior_rtol = _compact_float_tag(
-            getattr(args, "nf_ip_posterior_flow_rtol", None)
+            getattr(args, "fcfsvi_posterior_flow_rtol", None)
         )
         tag = f"{tag}_prt{prior_rtol}_qrt{posterior_rtol}"
-        if getattr(args, "nf_ip_conditional_flow", False):
+        if getattr(args, "fcfsvi_conditional_flow", False):
             tag = f"{tag}_cond"
+        if arch == "prior_whitened_affine":
+            tag = (
+                f"{tag}_pwa"
+                f"_rd{getattr(args, 'fcfsvi_residual_flow_depth', 2)}"
+                f"_rh{getattr(args, 'fcfsvi_residual_flow_hidden_dim', 64)}"
+            )
+        elif arch != "spline":
+            tag = f"{tag}_{arch}"
         return tag
     if model_type != "ap_fsvi":
         return ""
@@ -1407,15 +1468,23 @@ def _uci_wandb_suffix(args, model_type):
         ):
             suffix = f"{suffix}/{args.ap_fsvi_sample_projection_mode}"
         return suffix
-    if model_type == "nf_ip":
-        prior_rtol = _compact_float_tag(args.nf_ip_prior_fit_rtol)
-        posterior_rtol = _compact_float_tag(args.nf_ip_posterior_flow_rtol)
+    if _is_fcfsvi_model(model_type):
+        prior_rtol = _compact_float_tag(args.fcfsvi_prior_fit_rtol)
+        posterior_rtol = _compact_float_tag(args.fcfsvi_posterior_flow_rtol)
         suffix = (
-            f"S={args.nf_ip_num_samples}, "
-            f"prior={args.nf_ip_prior_fit_steps}/{prior_rtol}, "
-            f"post={args.nf_ip_posterior_flow_steps}/{posterior_rtol}"
+            f"S={args.fcfsvi_num_samples}, "
+            f"prior={args.fcfsvi_prior_fit_steps}/{prior_rtol}, "
+            f"post={args.fcfsvi_posterior_flow_steps}/{posterior_rtol}"
         )
-        if args.nf_ip_conditional_flow:
+        if args.fcfsvi_flow_arch == "prior_whitened_affine":
+            suffix = (
+                f"{suffix}, PWA "
+                f"{args.fcfsvi_residual_flow_depth}x"
+                f"{args.fcfsvi_residual_flow_hidden_dim}"
+            )
+        elif args.fcfsvi_flow_arch != "spline":
+            suffix = f"{suffix}, {args.fcfsvi_flow_arch}"
+        if args.fcfsvi_conditional_flow:
             suffix = f"{suffix}, cond"
         return suffix
     return None
@@ -1434,13 +1503,19 @@ def _uci_wandb_group(dataset_name, model_type, args):
             "spectral_sliced_kl",
         ):
             parts.append(args.ap_fsvi_sample_projection_mode)
-    elif model_type == "nf_ip":
-        parts.append(f"s{args.nf_ip_num_samples}")
-        parts.append(f"pf{args.nf_ip_prior_fit_steps}")
-        parts.append(f"qf{args.nf_ip_posterior_flow_steps}")
-        parts.append(f"prt{_compact_float_tag(args.nf_ip_prior_fit_rtol)}")
-        parts.append(f"qrt{_compact_float_tag(args.nf_ip_posterior_flow_rtol)}")
-        if args.nf_ip_conditional_flow:
+    elif _is_fcfsvi_model(model_type):
+        parts.append(f"s{args.fcfsvi_num_samples}")
+        parts.append(f"pf{args.fcfsvi_prior_fit_steps}")
+        parts.append(f"qf{args.fcfsvi_posterior_flow_steps}")
+        parts.append(f"prt{_compact_float_tag(args.fcfsvi_prior_fit_rtol)}")
+        parts.append(f"qrt{_compact_float_tag(args.fcfsvi_posterior_flow_rtol)}")
+        if args.fcfsvi_flow_arch == "prior_whitened_affine":
+            parts.append("pwa")
+            parts.append(f"rd{args.fcfsvi_residual_flow_depth}")
+            parts.append(f"rh{args.fcfsvi_residual_flow_hidden_dim}")
+        elif args.fcfsvi_flow_arch != "spline":
+            parts.append(args.fcfsvi_flow_arch)
+        if args.fcfsvi_conditional_flow:
             parts.append("cond")
     return "_".join(str(part) for part in parts)
 
@@ -1497,6 +1572,8 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
         "seed": args.seed,
         "dtype": args.dtype,
         "device": args.device,
+        "resume_from_checkpoint": args.resume_from_checkpoint,
+        "resume_step_offset": args.resume_step_offset,
     }
     if model_type == "ftip":
         hyperparameters["flow_depth"] = args.flow_depth
@@ -1556,54 +1633,64 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "ap_fsvi_domain_std": args.ap_fsvi_domain_std,
             "ap_fsvi_max_grad_norm": args.ap_fsvi_max_grad_norm,
         })
-    if model_type == "nf_ip":
+    if _is_fcfsvi_model(model_type):
         hyperparameters.update({
-            "nf_ip_layer_model": "BayesLinear",
-            "nf_ip_num_context": args.nf_ip_num_context,
-            "nf_ip_num_samples": args.nf_ip_num_samples,
-            "nf_ip_num_prior_samples": args.nf_ip_num_prior_samples,
-            "nf_ip_num_eval_samples": args.nf_ip_num_eval_samples,
-            "nf_ip_beta": args.nf_ip_beta,
-            "nf_ip_beta_start": args.nf_ip_beta_start,
-            "nf_ip_beta_warmup_steps": args.nf_ip_beta_warmup_steps,
-            "nf_ip_data_pretrain_steps": args.nf_ip_data_pretrain_steps,
-            "nf_ip_data_loss": args.nf_ip_data_loss,
-            "nf_ip_context_weights": args.nf_ip_context_weights,
-            "nf_ip_near_data_noise": args.nf_ip_near_data_noise,
-            "nf_ip_domain_std": args.nf_ip_domain_std,
-            "nf_ip_flow_depth": args.nf_ip_flow_depth,
-            "nf_ip_flow_hidden_dim": args.nf_ip_flow_hidden_dim,
-            "nf_ip_flow_num_bins": args.nf_ip_flow_num_bins,
-            "nf_ip_flow_bound": args.nf_ip_flow_bound,
-            "nf_ip_conditional_flow": args.nf_ip_conditional_flow,
-            "nf_ip_flow_condition_hidden_dim": (
-                args.nf_ip_flow_condition_hidden_dim
+            "fcfsvi_layer_model": "BayesLinear",
+            "fcfsvi_num_context": args.fcfsvi_num_context,
+            "fcfsvi_num_samples": args.fcfsvi_num_samples,
+            "fcfsvi_num_prior_samples": args.fcfsvi_num_prior_samples,
+            "fcfsvi_num_eval_samples": args.fcfsvi_num_eval_samples,
+            "fcfsvi_beta": args.fcfsvi_beta,
+            "fcfsvi_beta_start": args.fcfsvi_beta_start,
+            "fcfsvi_beta_warmup_steps": args.fcfsvi_beta_warmup_steps,
+            "fcfsvi_data_pretrain_steps": args.fcfsvi_data_pretrain_steps,
+            "fcfsvi_data_loss": args.fcfsvi_data_loss,
+            "fcfsvi_context_weights": args.fcfsvi_context_weights,
+            "fcfsvi_near_data_noise": args.fcfsvi_near_data_noise,
+            "fcfsvi_domain_std": args.fcfsvi_domain_std,
+            "fcfsvi_flow_arch": args.fcfsvi_flow_arch,
+            "fcfsvi_flow_depth": args.fcfsvi_flow_depth,
+            "fcfsvi_flow_hidden_dim": args.fcfsvi_flow_hidden_dim,
+            "fcfsvi_flow_num_bins": args.fcfsvi_flow_num_bins,
+            "fcfsvi_flow_bound": args.fcfsvi_flow_bound,
+            "fcfsvi_residual_flow_depth": args.fcfsvi_residual_flow_depth,
+            "fcfsvi_residual_flow_hidden_dim": args.fcfsvi_residual_flow_hidden_dim,
+            "fcfsvi_residual_flow_scale_bound": (
+                args.fcfsvi_residual_flow_scale_bound
             ),
-            "nf_ip_flow_condition_embedding_dim": (
-                args.nf_ip_flow_condition_embedding_dim
+            "fcfsvi_conditional_flow": args.fcfsvi_conditional_flow,
+            "fcfsvi_flow_condition_hidden_dim": (
+                args.fcfsvi_flow_condition_hidden_dim
             ),
-            "nf_ip_prior_fit_steps": args.nf_ip_prior_fit_steps,
-            "nf_ip_prior_fit_rtol": args.nf_ip_prior_fit_rtol,
-            "nf_ip_prior_fit_patience": args.nf_ip_prior_fit_patience,
-            "nf_ip_prior_fit_eval_every": args.nf_ip_prior_fit_eval_every,
-            "nf_ip_prior_fit_val_samples": args.nf_ip_prior_fit_val_samples,
-            "nf_ip_posterior_flow_steps": args.nf_ip_posterior_flow_steps,
-            "nf_ip_posterior_flow_rtol": args.nf_ip_posterior_flow_rtol,
-            "nf_ip_posterior_flow_patience": args.nf_ip_posterior_flow_patience,
-            "nf_ip_posterior_flow_min_steps": (
-                args.nf_ip_posterior_flow_min_steps
+            "fcfsvi_flow_condition_embedding_dim": (
+                args.fcfsvi_flow_condition_embedding_dim
             ),
-            "nf_ip_posterior_flow_eval_every": (
-                args.nf_ip_posterior_flow_eval_every
+            "fcfsvi_prior_fit_steps": args.fcfsvi_prior_fit_steps,
+            "fcfsvi_prior_fit_rtol": args.fcfsvi_prior_fit_rtol,
+            "fcfsvi_prior_fit_patience": args.fcfsvi_prior_fit_patience,
+            "fcfsvi_prior_fit_eval_every": args.fcfsvi_prior_fit_eval_every,
+            "fcfsvi_prior_fit_val_samples": args.fcfsvi_prior_fit_val_samples,
+            "fcfsvi_posterior_flow_steps": args.fcfsvi_posterior_flow_steps,
+            "fcfsvi_posterior_flow_rtol": args.fcfsvi_posterior_flow_rtol,
+            "fcfsvi_posterior_flow_patience": args.fcfsvi_posterior_flow_patience,
+            "fcfsvi_posterior_flow_min_steps": (
+                args.fcfsvi_posterior_flow_min_steps
             ),
-            "nf_ip_posterior_flow_val_fraction": (
-                args.nf_ip_posterior_flow_val_fraction
+            "fcfsvi_posterior_flow_eval_every": (
+                args.fcfsvi_posterior_flow_eval_every
             ),
-            "nf_ip_flow_lr": args.nf_ip_flow_lr,
-            "nf_ip_flow_batch_size": args.nf_ip_flow_batch_size,
-            "nf_ip_kl_floor": args.nf_ip_kl_floor,
-            "nf_ip_log_variance_init": args.nf_ip_log_variance_init,
-            "nf_ip_max_grad_norm": args.nf_ip_max_grad_norm,
+            "fcfsvi_posterior_flow_val_fraction": (
+                args.fcfsvi_posterior_flow_val_fraction
+            ),
+            "fcfsvi_posterior_flow_restore_best": (
+                not args.fcfsvi_no_posterior_flow_restore_best
+            ),
+            "fcfsvi_flow_diagnostics_every": args.fcfsvi_flow_diagnostics_every,
+            "fcfsvi_flow_lr": args.fcfsvi_flow_lr,
+            "fcfsvi_flow_batch_size": args.fcfsvi_flow_batch_size,
+            "fcfsvi_kl_floor": args.fcfsvi_kl_floor,
+            "fcfsvi_log_variance_init": args.fcfsvi_log_variance_init,
+            "fcfsvi_max_grad_norm": args.fcfsvi_max_grad_norm,
         })
     if model_type == "map":
         hyperparameters["map_l2"] = args.map_l2
@@ -1665,16 +1752,24 @@ def _wandb_run_metadata(args, dataset_name):
         ):
             suffix = f"{suffix}/{args.ap_fsvi_sample_projection_mode}"
             group_parts.append(args.ap_fsvi_sample_projection_mode)
-    elif args.model == "nf_ip":
-        suffix = _uci_wandb_suffix(args, "nf_ip")
+    elif _is_fcfsvi_model(args.model):
+        suffix = _uci_wandb_suffix(args, "fcfsvi")
         group_parts.extend([
-            f"s{args.nf_ip_num_samples}",
-            f"pf{args.nf_ip_prior_fit_steps}",
-            f"qf{args.nf_ip_posterior_flow_steps}",
-            f"prt{_compact_float_tag(args.nf_ip_prior_fit_rtol)}",
-            f"qrt{_compact_float_tag(args.nf_ip_posterior_flow_rtol)}",
+            f"s{args.fcfsvi_num_samples}",
+            f"pf{args.fcfsvi_prior_fit_steps}",
+            f"qf{args.fcfsvi_posterior_flow_steps}",
+            f"prt{_compact_float_tag(args.fcfsvi_prior_fit_rtol)}",
+            f"qrt{_compact_float_tag(args.fcfsvi_posterior_flow_rtol)}",
         ])
-        if args.nf_ip_conditional_flow:
+        if args.fcfsvi_flow_arch == "prior_whitened_affine":
+            group_parts.extend([
+                "pwa",
+                f"rd{args.fcfsvi_residual_flow_depth}",
+                f"rh{args.fcfsvi_residual_flow_hidden_dim}",
+            ])
+        elif args.fcfsvi_flow_arch != "spline":
+            group_parts.append(args.fcfsvi_flow_arch)
+        if args.fcfsvi_conditional_flow:
             group_parts.append("cond")
 
     name = wandb_run_name(
@@ -1687,14 +1782,22 @@ def _wandb_run_metadata(args, dataset_name):
     tags = ["uci", "120k", dataset_name, args.model]
     if args.model == "ap_fsvi":
         tags.extend([args.ap_fsvi_discrepancy, args.ap_fsvi_sample_projection_mode])
-    elif args.model == "nf_ip":
+    elif _is_fcfsvi_model(args.model):
         tags.extend([
             "flow-rtol",
-            f"s{args.nf_ip_num_samples}",
-            f"pf{args.nf_ip_prior_fit_steps}",
-            f"qf{args.nf_ip_posterior_flow_steps}",
+            f"s{args.fcfsvi_num_samples}",
+            f"pf{args.fcfsvi_prior_fit_steps}",
+            f"qf{args.fcfsvi_posterior_flow_steps}",
         ])
-        if args.nf_ip_conditional_flow:
+        if args.fcfsvi_flow_arch == "prior_whitened_affine":
+            tags.extend([
+                "prior-whitened-affine",
+                f"res-depth-{args.fcfsvi_residual_flow_depth}",
+                f"res-hidden-{args.fcfsvi_residual_flow_hidden_dim}",
+            ])
+        elif args.fcfsvi_flow_arch != "spline":
+            tags.append(args.fcfsvi_flow_arch)
+        if args.fcfsvi_conditional_flow:
             tags.append("conditional-flow")
     group = "_".join(str(part) for part in group_parts)
     return name, group, tags
@@ -1835,6 +1938,21 @@ def _run_single(dataset_name, args):
         # ── Single-model training (VIP or cold-start FTIP) ──
         model = build_model(args, train_dataset)
 
+        if args.resume_from_checkpoint:
+            device = torch.device(args.device)
+            state = torch.load(
+                args.resume_from_checkpoint, map_location=device, weights_only=True
+            )
+            model.load_state_dict(state)
+            if hasattr(model, "_step"):
+                model._step = max(
+                    int(getattr(model, "_step", 0)), args.resume_step_offset
+                )
+            print(
+                f"  Resumed {args.model.upper()} from {args.resume_from_checkpoint} "
+                f"(step offset={args.resume_step_offset})"
+            )
+
         # Manual warm-start from external checkpoint
         if args.warm_start_from and args.model == "ftip":
             device = torch.device(args.device)
@@ -1856,6 +1974,12 @@ def _run_single(dataset_name, args):
                 "enabled": True,
                 "warm_start_from": args.warm_start_from,
                 "learnable_affine": args.learnable_affine,
+            }
+        if args.resume_from_checkpoint:
+            result["resume"] = {
+                "enabled": True,
+                "resume_from_checkpoint": args.resume_from_checkpoint,
+                "resume_step_offset": args.resume_step_offset,
             }
         results.append(result)
 
@@ -1889,10 +2013,12 @@ def main():
                 if run_args.vip_epochs is None and run_args.vip_iterations is None:
                     run_args.vip_iterations = run_args.iterations
                     run_args.vip_epochs = None
-            # MFVI also defaults to alpha=0.5 (vs 1.0 for the rest), unless
-            # the user explicitly passed --bb_alpha.
+            # MFVI defaults to alpha=0.5; FCFSVI does not use BB-alpha, so use
+            # alpha=0.0 in filenames/metadata unless the user explicitly sets it.
             if run_args.model == "mfvi" and not run_args._bb_alpha_user_supplied:
                 run_args.bb_alpha = 0.5
+            if _is_fcfsvi_model(run_args.model) and not run_args._bb_alpha_user_supplied:
+                run_args.bb_alpha = 0.0
 
             # Check if results already exist
             alpha_tag = f"_alpha{run_args.bb_alpha}"
@@ -1922,3 +2048,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

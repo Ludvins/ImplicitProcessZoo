@@ -1,4 +1,4 @@
-"""Normalizing-flow context KL for implicit-process variational inference."""
+"""Flow-Calibrated FSVI with a flow-estimated finite-context KL."""
 
 import copy
 import math
@@ -13,11 +13,15 @@ from ..utils.likelihood import (
     multiclass_logp,
 )
 from ..utils.utils import infinite_loader
-from .density_flow import ConditionalContextDensityFlow, ContextDensityFlow
+from .density_flow import (
+    AffineContextDensityFlow,
+    ConditionalContextDensityFlow,
+    ContextDensityFlow,
+)
 
 
-class NFIP(torch.nn.Module):
-    """Implicit process trained with a flow-estimated finite-context KL."""
+class FCFSVI(torch.nn.Module):
+    """Function-space VI with a flow-calibrated finite-context KL."""
 
     def __init__(
         self,
@@ -28,19 +32,20 @@ class NFIP(torch.nn.Module):
         likelihood="regression",
         num_classes=None,
         num_data=1,
-        num_context=16,
-        num_samples=64,
-        num_prior_samples=256,
-        beta=0.05,
-        beta_start=0.0,
-        beta_warmup_steps=5000,
-        data_pretrain_steps=1000,
+        num_context=64,
+        num_samples=512,
+        num_prior_samples=2048,
+        beta=1.0,
+        beta_start=1.0,
+        beta_warmup_steps=0,
+        data_pretrain_steps=0,
         data_loss="expected_nll",
         context_weights=(0.2, 0.2, 0.6),
         near_data_noise=0.1,
         domain_bounds=None,
         domain_std=2.0,
         reservoir_size=1000,
+        nf_flow_arch="prior_whitened_affine",
         nf_flow_depth=4,
         nf_flow_hidden_dim=128,
         nf_conditional_flow=False,
@@ -48,19 +53,24 @@ class NFIP(torch.nn.Module):
         nf_flow_condition_embedding_dim=None,
         nf_flow_num_bins=8,
         nf_flow_bound=3.0,
-        nf_prior_fit_steps=500,
-        nf_prior_fit_rtol=None,
-        nf_prior_fit_patience=5,
-        nf_prior_fit_eval_every=50,
-        nf_prior_fit_val_samples=4096,
-        nf_posterior_flow_steps=2,
-        nf_posterior_flow_rtol=None,
-        nf_posterior_flow_patience=3,
+        nf_residual_flow_depth=2,
+        nf_residual_flow_hidden_dim=64,
+        nf_residual_flow_scale_bound=0.2,
+        nf_prior_fit_steps=50000,
+        nf_prior_fit_rtol=1e-5,
+        nf_prior_fit_patience=10,
+        nf_prior_fit_eval_every=200,
+        nf_prior_fit_val_samples=16384,
+        nf_posterior_flow_steps=600,
+        nf_posterior_flow_rtol=1e-4,
+        nf_posterior_flow_patience=1,
         nf_posterior_flow_min_steps=1,
         nf_posterior_flow_eval_every=1,
         nf_posterior_flow_val_fraction=0.25,
+        nf_posterior_flow_restore_best=False,
+        nf_flow_diagnostics_every=50,
         nf_flow_lr=1e-3,
-        nf_flow_batch_size=128,
+        nf_flow_batch_size=512,
         nf_kl_floor=0.0,
         optimize_context=False,
         context_optimization_steps=0,
@@ -84,7 +94,7 @@ class NFIP(torch.nn.Module):
         if likelihood == "multiclass" and num_classes is None:
             raise ValueError("num_classes is required for multiclass likelihood.")
         if generative_function is None:
-            raise ValueError("NFIP requires a generative_function.")
+            raise ValueError("FCFSVI requires a generative_function.")
         if input_dim is None:
             input_dim = getattr(generative_function, "input_dim", None)
         if input_dim is None:
@@ -112,6 +122,8 @@ class NFIP(torch.nn.Module):
             raise ValueError("nf_posterior_flow_min_steps must be non-negative.")
         if not (0.0 <= nf_posterior_flow_val_fraction < 1.0):
             raise ValueError("nf_posterior_flow_val_fraction must be in [0, 1).")
+        if nf_flow_diagnostics_every <= 0:
+            raise ValueError("nf_flow_diagnostics_every must be positive.")
         if nf_flow_batch_size <= 0:
             raise ValueError("nf_flow_batch_size must be positive.")
         if context_optimization_steps < 0:
@@ -127,6 +139,22 @@ class NFIP(torch.nn.Module):
             raise ValueError("context_optimization_num_samples must be positive.")
         if data_loss not in ("expected_nll", "expected", "elbo", "predictive_nll", "mixture_nll", "log_mean_exp"):
             raise ValueError(f"Unknown data_loss mode: {data_loss!r}.")
+        if nf_flow_arch not in ("spline", "prior_whitened_affine"):
+            raise ValueError(
+                "nf_flow_arch must be 'spline' or 'prior_whitened_affine', "
+                f"got {nf_flow_arch!r}."
+            )
+        if nf_flow_arch == "prior_whitened_affine" and nf_conditional_flow:
+            raise ValueError(
+                "prior_whitened_affine does not support nf_conditional_flow; "
+                "use a fixed context set and the unconditional prior flow."
+            )
+        if nf_residual_flow_depth <= 0:
+            raise ValueError("nf_residual_flow_depth must be positive.")
+        if nf_residual_flow_hidden_dim <= 0:
+            raise ValueError("nf_residual_flow_hidden_dim must be positive.")
+        if nf_residual_flow_scale_bound <= 0:
+            raise ValueError("nf_residual_flow_scale_bound must be positive.")
 
         self.likelihood_type = likelihood
         self.num_classes = num_classes
@@ -146,6 +174,7 @@ class NFIP(torch.nn.Module):
         self.domain_std = domain_std
         self._reservoir_size = reservoir_size
         self._reservoir = None
+        self.nf_flow_arch = nf_flow_arch
         self.nf_prior_fit_steps = nf_prior_fit_steps
         self.nf_prior_fit_rtol = nf_prior_fit_rtol
         self.nf_prior_fit_patience = nf_prior_fit_patience
@@ -157,12 +186,17 @@ class NFIP(torch.nn.Module):
         self.nf_posterior_flow_min_steps = nf_posterior_flow_min_steps
         self.nf_posterior_flow_eval_every = nf_posterior_flow_eval_every
         self.nf_posterior_flow_val_fraction = nf_posterior_flow_val_fraction
+        self.nf_posterior_flow_restore_best = bool(nf_posterior_flow_restore_best)
+        self.nf_flow_diagnostics_every = nf_flow_diagnostics_every
         self.nf_flow_lr = nf_flow_lr
         self.nf_flow_batch_size = nf_flow_batch_size
         self.nf_kl_floor = nf_kl_floor
         self.nf_conditional_flow = bool(nf_conditional_flow)
         self.nf_flow_condition_hidden_dim = nf_flow_condition_hidden_dim
         self.nf_flow_condition_embedding_dim = nf_flow_condition_embedding_dim
+        self.nf_residual_flow_depth = nf_residual_flow_depth
+        self.nf_residual_flow_hidden_dim = nf_residual_flow_hidden_dim
+        self.nf_residual_flow_scale_bound = nf_residual_flow_scale_bound
         self.optimize_context = bool(optimize_context)
         self.context_optimization_steps = context_optimization_steps
         self.context_optimization_lr = context_optimization_lr
@@ -229,6 +263,17 @@ class NFIP(torch.nn.Module):
             )
             self.prior_flow = ConditionalContextDensityFlow(**flow_kwargs)
             self.posterior_flow = ConditionalContextDensityFlow(**flow_kwargs)
+        elif self._uses_prior_whitened_residual:
+            self.prior_flow = ContextDensityFlow(**flow_kwargs)
+            self.posterior_flow = AffineContextDensityFlow(
+                input_dim=flow_dim,
+                depth=nf_residual_flow_depth,
+                hidden_dim=nf_residual_flow_hidden_dim,
+                scale_bound=nf_residual_flow_scale_bound,
+                device=device,
+                dtype=dtype,
+                seed=seed,
+            )
         else:
             self.prior_flow = ContextDensityFlow(**flow_kwargs)
             self.posterior_flow = ContextDensityFlow(**flow_kwargs)
@@ -283,6 +328,16 @@ class NFIP(torch.nn.Module):
                 self.posterior_flow.parameters(), lr=self.nf_flow_lr
             )
         return result
+
+    def vi_parameters(self):
+        params = [p for p in self.generative_function.parameters() if p.requires_grad]
+        if hasattr(self, "log_variance"):
+            params.append(self.log_variance)
+        return params
+
+    @property
+    def _uses_prior_whitened_residual(self):
+        return self.nf_flow_arch == "prior_whitened_affine"
 
     # ------------------------------------------------------------------
     # Sampling and prediction
@@ -355,8 +410,18 @@ class NFIP(torch.nn.Module):
         z_q = _flatten_context_values(F_joint[:, : self.num_context, :])
         F_batch = F_joint[:, self.num_context :, :]
 
-        self._fine_tune_posterior_flow(z_q.detach(), context)
-        kl_raw = self._context_kl(z_q, context)
+        log_flow_after = self._fine_tune_posterior_flow(z_q.detach(), context)
+        log_q, log_p = self._context_log_probs(z_q, context)
+        kl_raw = (log_q - log_p).mean()
+        if log_flow_after:
+            if self._uses_prior_whitened_residual:
+                fit_z = self._posterior_flow_fit_inputs(z_q.detach(), context)
+                with torch.no_grad():
+                    self.posterior_flow_nlls_after.append(
+                        self._flow_nll(self.posterior_flow, fit_z).detach()
+                    )
+            else:
+                self.posterior_flow_nlls_after.append((-log_q.detach()).mean())
         kl = kl_raw.clamp_min(self.nf_kl_floor)
 
         data_term = self._data_term(F_batch, y, X.shape[0])
@@ -386,11 +451,42 @@ class NFIP(torch.nn.Module):
         return multiclass_logp(F, y, self.num_classes, self.epsilon)
 
     def _context_kl(self, z_q, context_inputs=None):
+        log_q, log_p = self._context_log_probs(z_q, context_inputs)
+        return (log_q - log_p).mean()
+
+    def _context_log_probs(self, z_q, context_inputs=None):
         _set_requires_grad(self.prior_flow, False)
         _set_requires_grad(self.posterior_flow, False)
+        if self._uses_prior_whitened_residual:
+            v_q, prior_log_det = self._prior_whiten(z_q, context_inputs)
+            log_p = self._standard_normal_log_prob(v_q) + prior_log_det
+            log_q = self._flow_log_prob(self.posterior_flow, v_q) + prior_log_det
+            return log_q, log_p
         log_q = self._flow_log_prob(self.posterior_flow, z_q, context_inputs)
         log_p = self._flow_log_prob(self.prior_flow, z_q, context_inputs)
-        return (log_q - log_p).mean()
+        return log_q, log_p
+
+    def _prior_whiten(self, samples, context_inputs=None):
+        if self.nf_conditional_flow:
+            if context_inputs is None:
+                context_inputs = self.context_inputs
+            x_std = (
+                samples - self.prior_flow.loc.view(1, -1)
+            ) / self.prior_flow.scale.view(1, -1)
+            v, inverse_log_det = self.prior_flow.inverse(x_std, context_inputs)
+        else:
+            x_std = (
+                samples - self.prior_flow.loc.view(1, -1)
+            ) / self.prior_flow.scale.view(1, -1)
+            v, inverse_log_det = self.prior_flow.inverse(x_std)
+        standardization_log_det = -self.prior_flow.scale.log().sum()
+        return v, inverse_log_det + standardization_log_det
+
+    def _standard_normal_log_prob(self, samples):
+        log2pi = torch.as_tensor(
+            math.log(2.0 * math.pi), dtype=samples.dtype, device=samples.device
+        )
+        return -0.5 * (samples.square().sum(dim=-1) + samples.shape[-1] * log2pi)
 
     def _scheduled_beta(self):
         if self._step <= self.data_pretrain_steps:
@@ -431,7 +527,10 @@ class NFIP(torch.nn.Module):
             )
             init_flat = _flatten_context_values(init_samples)
         self.prior_flow.set_standardization(init_flat)
-        self.posterior_flow.load_state_dict(self.prior_flow.state_dict())
+        if self._uses_prior_whitened_residual:
+            self.posterior_flow.reset_identity()
+        else:
+            self.posterior_flow.load_state_dict(self.prior_flow.state_dict())
 
         losses = []
         converged = False
@@ -504,7 +603,10 @@ class NFIP(torch.nn.Module):
         if use_prior_early_stop:
             self.prior_flow_converged_flags.append(float(converged))
 
-        self.posterior_flow.load_state_dict(self.prior_flow.state_dict())
+        if self._uses_prior_whitened_residual:
+            self.posterior_flow.reset_identity()
+        else:
+            self.posterior_flow.load_state_dict(self.prior_flow.state_dict())
         _set_requires_grad(self.prior_flow, False)
         _set_requires_grad(self.posterior_flow, False)
         _clear_grads(self.prior_flow)
@@ -557,26 +659,32 @@ class NFIP(torch.nn.Module):
         z = _flatten_context_values(F)
         return self._context_kl(z, context_inputs)
 
+    def _should_log_flow_diagnostics(self):
+        return self._step % self.nf_flow_diagnostics_every == 0
+
     def _fine_tune_posterior_flow(self, z_q, context_inputs=None):
-        with torch.no_grad():
-            nll_before = self._flow_nll(
-                self.posterior_flow, z_q, context_inputs
-            ).detach()
-        self.posterior_flow_nlls_before.append(nll_before)
+        fit_z = self._posterior_flow_fit_inputs(z_q, context_inputs)
+        log_diagnostics = self._should_log_flow_diagnostics()
+        if log_diagnostics:
+            with torch.no_grad():
+                nll_before = self._flow_nll(
+                    self.posterior_flow, fit_z, context_inputs
+                ).detach()
+            self.posterior_flow_nlls_before.append(nll_before)
         if self.nf_posterior_flow_steps <= 0:
-            self.posterior_flow_nlls.append(nll_before)
-            self.posterior_flow_nlls_after.append(nll_before)
+            if log_diagnostics:
+                self.posterior_flow_nlls.append(nll_before)
             self.posterior_flow_update_counts.append(0)
             self.posterior_flow_converged_flags.append(0.0)
             self.posterior_flow_fit_sample_counts.append(0)
             self.posterior_flow_val_sample_counts.append(0)
-            return
+            return log_diagnostics
         _set_requires_grad(self.posterior_flow, True)
         if self._posterior_flow_optimizer is None:
             self._posterior_flow_optimizer = torch.optim.Adam(
                 self.posterior_flow.parameters(), lr=self.nf_flow_lr
             )
-        train_z, val_z = self._posterior_flow_train_val_split(z_q)
+        train_z, val_z = self._posterior_flow_train_val_split(fit_z)
         use_posterior_early_stop = (
             self.nf_posterior_flow_rtol is not None and val_z is not None
         )
@@ -589,10 +697,13 @@ class NFIP(torch.nn.Module):
                 val_nll = self._flow_nll(
                     self.posterior_flow, val_z, context_inputs
                 ).detach()
-            self.posterior_flow_val_nlls.append(val_nll)
+            if log_diagnostics:
+                self.posterior_flow_val_nlls.append(val_nll)
             best_val_nll = val_nll
-            best_state = _clone_state_dict(self.posterior_flow)
+            if self.nf_posterior_flow_restore_best:
+                best_state = _clone_state_dict(self.posterior_flow)
         losses = []
+        update_count = 0
         fit_sample_counts = []
         for step in range(1, self.nf_posterior_flow_steps + 1):
             batch = self._flow_batch(train_z, train_z.shape[0])
@@ -601,9 +712,11 @@ class NFIP(torch.nn.Module):
             loss = self._flow_nll(self.posterior_flow, batch, context_inputs)
             loss.backward()
             self._posterior_flow_optimizer.step()
+            update_count += 1
             loss_detached = loss.detach()
-            losses.append(loss_detached)
-            self.posterior_flow_train_nlls.append(loss_detached)
+            if log_diagnostics:
+                losses.append(loss_detached)
+                self.posterior_flow_train_nlls.append(loss_detached)
             if (
                 use_posterior_early_stop
                 and step >= self.nf_posterior_flow_min_steps
@@ -613,12 +726,15 @@ class NFIP(torch.nn.Module):
                     val_nll = self._flow_nll(
                         self.posterior_flow, val_z, context_inputs
                     ).detach()
-                self.posterior_flow_val_nlls.append(val_nll)
+                if log_diagnostics:
+                    self.posterior_flow_val_nlls.append(val_nll)
                 rel = _relative_improvement(best_val_nll, val_nll)
-                self.posterior_flow_relative_improvements.append(rel)
+                if log_diagnostics:
+                    self.posterior_flow_relative_improvements.append(rel)
                 if val_nll < best_val_nll:
                     best_val_nll = val_nll
-                    best_state = _clone_state_dict(self.posterior_flow)
+                    if self.nf_posterior_flow_restore_best:
+                        best_state = _clone_state_dict(self.posterior_flow)
                 if rel.item() > self.nf_posterior_flow_rtol:
                     bad_checks = 0
                 else:
@@ -630,10 +746,7 @@ class NFIP(torch.nn.Module):
             self.posterior_flow.load_state_dict(best_state)
         if losses:
             self.posterior_flow_nlls.append(torch.stack(losses).mean().detach())
-        with torch.no_grad():
-            nll_after = self._flow_nll(self.posterior_flow, z_q, context_inputs)
-            self.posterior_flow_nlls_after.append(nll_after.detach())
-        self.posterior_flow_update_counts.append(len(losses))
+        self.posterior_flow_update_counts.append(update_count)
         fit_count = fit_sample_counts[-1] if fit_sample_counts else 0
         val_count = 0 if val_z is None else val_z.shape[0]
         self.posterior_flow_converged_flags.append(float(converged))
@@ -641,6 +754,7 @@ class NFIP(torch.nn.Module):
         self.posterior_flow_val_sample_counts.append(val_count)
         _clear_grads(self.posterior_flow)
         _set_requires_grad(self.posterior_flow, False)
+        return log_diagnostics
 
     def _flow_log_prob(self, flow, samples, context_inputs=None):
         if self.nf_conditional_flow:
@@ -656,6 +770,13 @@ class NFIP(torch.nn.Module):
             return flow.nll(samples, context_inputs)
         return flow.nll(samples)
 
+    def _posterior_flow_fit_inputs(self, samples, context_inputs=None):
+        if not self._uses_prior_whitened_residual:
+            return samples
+        with torch.no_grad():
+            whitened, _ = self._prior_whiten(samples, context_inputs)
+        return whitened.detach()
+
     def _posterior_flow_train_val_split(self, z_q):
         if (
             self.nf_posterior_flow_rtol is None
@@ -665,10 +786,7 @@ class NFIP(torch.nn.Module):
             return z_q, None
         val_count = int(round(z_q.shape[0] * self.nf_posterior_flow_val_fraction))
         val_count = max(1, min(z_q.shape[0] - 1, val_count))
-        perm = torch.randperm(z_q.shape[0], generator=self.generator, device=z_q.device)
-        val_idx = perm[:val_count]
-        train_idx = perm[val_count:]
-        return z_q[train_idx], z_q[val_idx]
+        return z_q[:-val_count], z_q[-val_count:]
 
     def _flow_batch(self, samples, n):
         if n <= self.nf_flow_batch_size:
@@ -784,7 +902,7 @@ class NFIP(torch.nn.Module):
     ):
         self._fill_reservoir(train_loader)
         if optimizer is None:
-            optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+            optimizer = torch.optim.Adam(self.vi_parameters(), lr=lr)
         if epochs is None and iterations is None:
             raise ValueError("Either epochs or iterations must be set.")
 
@@ -882,8 +1000,12 @@ def _flatten_context_values(values):
 
 
 def _set_requires_grad(module, requires_grad):
+    requires_grad = bool(requires_grad)
+    if getattr(module, "_fcfsvi_requires_grad_state", None) == requires_grad:
+        return
     for param in module.parameters():
         param.requires_grad_(requires_grad)
+    module._fcfsvi_requires_grad_state = requires_grad
 
 
 def _freeze_params(module):
@@ -900,8 +1022,7 @@ def _restore_params(states):
 
 
 def _clear_grads(module):
-    for param in module.parameters():
-        param.grad = None
+    module.zero_grad(set_to_none=True)
 
 
 def _clone_state_dict(module):
