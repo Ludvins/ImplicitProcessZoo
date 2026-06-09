@@ -325,6 +325,9 @@ def build_model(args, train_adapter, model_type=None):
             discrepancy_num_projections=args.ap_fsvi_discrepancy_projections,
             sample_knn_k=args.ap_fsvi_sample_knn_k,
             quantile_transport_k=args.ap_fsvi_quantile_transport_k,
+            sample_rank_resolution=args.ap_fsvi_sample_rank_resolution,
+            sample_rank_temperature=args.ap_fsvi_sample_rank_temperature,
+            sample_rank_bin_temperature=args.ap_fsvi_sample_rank_bin_temperature,
             sinkhorn_epsilon=args.ap_fsvi_sinkhorn_epsilon,
             sinkhorn_iterations=args.ap_fsvi_sinkhorn_iterations,
             y_mean=train_adapter.targets_mean,
@@ -959,6 +962,10 @@ def _build_result(model_type, model, args, train_loader,
         hyperparameters["ap_fsvi_discrepancy"] = args.ap_fsvi_discrepancy
         hyperparameters["ap_fsvi_discrepancy_projections"] = args.ap_fsvi_discrepancy_projections
         hyperparameters["ap_fsvi_sample_knn_k"] = args.ap_fsvi_sample_knn_k
+        hyperparameters["ap_fsvi_quantile_transport_k"] = args.ap_fsvi_quantile_transport_k
+        hyperparameters["ap_fsvi_sample_rank_resolution"] = args.ap_fsvi_sample_rank_resolution
+        hyperparameters["ap_fsvi_sample_rank_temperature"] = args.ap_fsvi_sample_rank_temperature
+        hyperparameters["ap_fsvi_sample_rank_bin_temperature"] = args.ap_fsvi_sample_rank_bin_temperature
         hyperparameters["ap_fsvi_sinkhorn_epsilon"] = args.ap_fsvi_sinkhorn_epsilon
         hyperparameters["ap_fsvi_sinkhorn_iterations"] = args.ap_fsvi_sinkhorn_iterations
         hyperparameters["ap_fsvi_log_variance_init"] = args.ap_fsvi_log_variance_init
@@ -1440,10 +1447,14 @@ def parse_args():
                        "sample_sliced_knn_kl",
                        "sample_sliced_gaussian_kl",
                        "sample_sliced_quantile_transport_kl",
+                       "sample_sliced_rank_kl",
                    ])
     p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=128)
     p.add_argument("--ap_fsvi_sample_knn_k", type=int, default=3)
     p.add_argument("--ap_fsvi_quantile_transport_k", type=int, default=3)
+    p.add_argument("--ap_fsvi_sample_rank_resolution", type=int, default=16)
+    p.add_argument("--ap_fsvi_sample_rank_temperature", type=float, default=0.2)
+    p.add_argument("--ap_fsvi_sample_rank_bin_temperature", type=float, default=0.5)
     p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0)
     p.add_argument("--ap_fsvi_sinkhorn_iterations", type=int, default=50)
     p.add_argument("--ap_fsvi_log_variance_init", type=float, default=-2.0)

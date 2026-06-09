@@ -489,6 +489,7 @@ class TestAPFSVILoss:
             "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
             "sample_sliced_quantile_transport_kl",
+            "sample_sliced_rank_kl",
         ],
     )
     def test_sample_discrepancies_detect_shift(self, kind):
@@ -765,6 +766,30 @@ class TestAPFSVILoss:
         assert matching_value < 1e-6
         assert shifted_value > matching_value
 
+    def test_sample_sliced_rank_kl_detects_shift_and_has_gradient(self):
+        torch.manual_seed(SEED)
+        prior = torch.randn(128, 8, 1, dtype=DTYPE, device=DEVICE)
+        posterior = (prior + 0.75).detach().clone().requires_grad_(True)
+        discrepancy = FunctionDiscrepancy(
+            kind="sample_sliced_rank_kl",
+            num_projections=16,
+            sample_projection_mode="fixed_random",
+            sample_rank_resolution=16,
+            sample_rank_temperature=0.2,
+            sample_rank_bin_temperature=0.5,
+        )
+        matching_value = discrepancy(prior, prior_values=prior)
+        shifted_value = discrepancy(posterior, prior_values=prior)
+
+        assert torch.isfinite(matching_value)
+        assert torch.isfinite(shifted_value)
+        assert shifted_value > matching_value
+
+        shifted_value.backward()
+        assert posterior.grad is not None
+        assert torch.isfinite(posterior.grad).all()
+        assert posterior.grad.abs().sum() > 0
+
     def test_sinkhorn_defaults_to_non_debiased(self):
         discrepancy = FunctionDiscrepancy(kind="sinkhorn")
         assert discrepancy.sinkhorn_debiased is False
@@ -807,6 +832,7 @@ class TestAPFSVILoss:
             "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
             "sample_sliced_quantile_transport_kl",
+            "sample_sliced_rank_kl",
         ],
     )
     def test_function_discrepancy_options_train(self, regression_data, kind):

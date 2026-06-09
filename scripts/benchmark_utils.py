@@ -51,6 +51,7 @@ DISCREPANCY_DISPLAY_NAMES = {
     "sample_sliced_knn_kl": "Sample Sliced kNN KL",
     "sample_sliced_gaussian_kl": "Sample Sliced Gaussian KL",
     "sample_sliced_quantile_transport_kl": "Sliced Quantile-Transport KL",
+    "sample_sliced_rank_kl": "Sample Sliced Rank KL",
     "spectral_projected_kl": "Spectral Projected KL",
     "spectral_sliced_kl": "Spectral Sliced KL",
     "sliced_wasserstein": "Sliced Wasserstein",

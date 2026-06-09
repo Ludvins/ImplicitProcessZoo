@@ -430,6 +430,7 @@ def parse_args():
                         "sample_sliced_knn_kl",
                         "sample_sliced_gaussian_kl",
                         "sample_sliced_quantile_transport_kl",
+                        "sample_sliced_rank_kl",
                     ],
                     help="AP-FSVI function-space discrepancy.")
     p.add_argument("--ap_fsvi_discrepancy_projections", type=int, default=128,
@@ -441,6 +442,12 @@ def parse_args():
                     help="Neighbor count for AP-FSVI sample_sliced_knn_kl.")
     p.add_argument("--ap_fsvi_quantile_transport_k", type=int, default=3,
                     help="Local spacing window for AP-FSVI sliced quantile-transport KL.")
+    p.add_argument("--ap_fsvi_sample_rank_resolution", type=int, default=16,
+                    help="Rank histogram resolution K for AP-FSVI sample_sliced_rank_kl.")
+    p.add_argument("--ap_fsvi_sample_rank_temperature", type=float, default=0.2,
+                    help="Soft CDF temperature multiplier for AP-FSVI sample_sliced_rank_kl.")
+    p.add_argument("--ap_fsvi_sample_rank_bin_temperature", type=float, default=0.5,
+                    help="Soft histogram bin temperature for AP-FSVI sample_sliced_rank_kl.")
     p.add_argument("--ap_fsvi_sinkhorn_epsilon", type=float, default=1.0,
                     help="AP-FSVI Sinkhorn entropy regularization.")
     p.add_argument("--ap_fsvi_sinkhorn_iterations", type=int, default=50,
@@ -794,6 +801,9 @@ def build_model(args, train_dataset, model_type=None):
             sample_projection_mode=_arg("ap_fsvi_sample_projection_mode", "random"),
             sample_knn_k=_arg("ap_fsvi_sample_knn_k", 3),
             quantile_transport_k=_arg("ap_fsvi_quantile_transport_k", 3),
+            sample_rank_resolution=_arg("ap_fsvi_sample_rank_resolution", 16),
+            sample_rank_temperature=_arg("ap_fsvi_sample_rank_temperature", 0.2),
+            sample_rank_bin_temperature=_arg("ap_fsvi_sample_rank_bin_temperature", 0.5),
             sinkhorn_epsilon=_arg("ap_fsvi_sinkhorn_epsilon", 1.0),
             sinkhorn_iterations=_arg("ap_fsvi_sinkhorn_iterations", 50),
             log_variance_init=_arg("ap_fsvi_log_variance_init", -5.0),
@@ -1434,6 +1444,7 @@ def _variant_tag(args, model_type):
         "sample_sliced_kl",
         "sample_sliced_knn_kl",
         "sample_sliced_gaussian_kl",
+        "sample_sliced_rank_kl",
         "prior_whitened_sliced_kl",
         "spectral_projected_kl",
         "spectral_sliced_kl",
@@ -1462,6 +1473,7 @@ def _uci_wandb_suffix(args, model_type):
             "sample_sliced_kl",
             "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
+            "sample_sliced_rank_kl",
             "prior_whitened_sliced_kl",
             "spectral_projected_kl",
             "spectral_sliced_kl",
@@ -1498,6 +1510,7 @@ def _uci_wandb_group(dataset_name, model_type, args):
             "sample_sliced_kl",
             "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
+            "sample_sliced_rank_kl",
             "prior_whitened_sliced_kl",
             "spectral_projected_kl",
             "spectral_sliced_kl",
@@ -1625,6 +1638,9 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "ap_fsvi_sample_projection_mode": args.ap_fsvi_sample_projection_mode,
             "ap_fsvi_sample_knn_k": args.ap_fsvi_sample_knn_k,
             "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
+            "ap_fsvi_sample_rank_resolution": args.ap_fsvi_sample_rank_resolution,
+            "ap_fsvi_sample_rank_temperature": args.ap_fsvi_sample_rank_temperature,
+            "ap_fsvi_sample_rank_bin_temperature": args.ap_fsvi_sample_rank_bin_temperature,
             "ap_fsvi_sinkhorn_epsilon": args.ap_fsvi_sinkhorn_epsilon,
             "ap_fsvi_sinkhorn_iterations": args.ap_fsvi_sinkhorn_iterations,
             "ap_fsvi_log_variance_init": args.ap_fsvi_log_variance_init,
@@ -1746,6 +1762,7 @@ def _wandb_run_metadata(args, dataset_name):
             "sample_sliced_kl",
             "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
+            "sample_sliced_rank_kl",
             "prior_whitened_sliced_kl",
             "spectral_projected_kl",
             "spectral_sliced_kl",

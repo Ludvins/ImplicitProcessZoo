@@ -91,6 +91,11 @@ AP_VARIANTS = {
         "discrepancy": "sample_sliced_quantile_transport_kl",
         "sample_projection_mode": "random",
     },
+    "sample_sliced_rank_random": {
+        "display": "Sample Sliced Rank KL",
+        "discrepancy": "sample_sliced_rank_kl",
+        "sample_projection_mode": "random",
+    },
     "spectral_projected": {
         "display": "Spectral Projected KL",
         "discrepancy": "spectral_projected_kl",
@@ -112,6 +117,13 @@ AP_VARIANT_ALIASES = {
     "sample_sliced_quantile_transport_kl": "sample_sliced_quantile_transport_random",
     "sliced_quantile_transport_kl": "sample_sliced_quantile_transport_random",
     "sqtkl": "sample_sliced_quantile_transport_random",
+    "sample_sliced_rank": "sample_sliced_rank_random",
+    "sample_sliced_rank_kl": "sample_sliced_rank_random",
+    "sample_sliced_rank_statistic_kl": "sample_sliced_rank_random",
+    "sliced_rank_kl": "sample_sliced_rank_random",
+    "rank_sliced_kl": "sample_sliced_rank_random",
+    "rsfkl": "sample_sliced_rank_random",
+    "ssrkl": "sample_sliced_rank_random",
     "spectral_projected_kl": "spectral_projected",
 }
 
@@ -314,6 +326,24 @@ def parse_args():
         type=int,
         default=3,
         help="Local spacing window for AP-FSVI sliced quantile-transport KL.",
+    )
+    p.add_argument(
+        "--ap_fsvi_sample_rank_resolution",
+        type=int,
+        default=16,
+        help="Rank histogram resolution K for AP-FSVI sample sliced rank KL.",
+    )
+    p.add_argument(
+        "--ap_fsvi_sample_rank_temperature",
+        type=float,
+        default=0.2,
+        help="Soft CDF temperature multiplier for AP-FSVI sample sliced rank KL.",
+    )
+    p.add_argument(
+        "--ap_fsvi_sample_rank_bin_temperature",
+        type=float,
+        default=0.5,
+        help="Soft histogram bin temperature for AP-FSVI sample sliced rank KL.",
     )
     p.add_argument(
         "--ap_fsvi_measurement_weights",
@@ -778,6 +808,9 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             sample_projection_mode=spec["sample_projection_mode"],
             sample_knn_k=args.ap_fsvi_sample_knn_k,
             quantile_transport_k=args.ap_fsvi_quantile_transport_k,
+            sample_rank_resolution=args.ap_fsvi_sample_rank_resolution,
+            sample_rank_temperature=args.ap_fsvi_sample_rank_temperature,
+            sample_rank_bin_temperature=args.ap_fsvi_sample_rank_bin_temperature,
             spectral_estimator=args.ap_fsvi_spectral_estimator,
             spectral_cov_shrinkage=args.ap_fsvi_spectral_cov_shrinkage,
             sample_gaussian_shrinkage=args.ap_fsvi_sample_gaussian_shrinkage,
@@ -1258,6 +1291,9 @@ def result_hyperparameters(args, model_type, ap_variant):
                 "ap_fsvi_sample_knn_k": args.ap_fsvi_sample_knn_k,
                 "ap_fsvi_sample_gaussian_shrinkage": args.ap_fsvi_sample_gaussian_shrinkage,
                 "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
+                "ap_fsvi_sample_rank_resolution": args.ap_fsvi_sample_rank_resolution,
+                "ap_fsvi_sample_rank_temperature": args.ap_fsvi_sample_rank_temperature,
+                "ap_fsvi_sample_rank_bin_temperature": args.ap_fsvi_sample_rank_bin_temperature,
                 "ap_fsvi_measurement_weights": args.ap_fsvi_measurement_weights,
                 "ap_fsvi_near_data_noise": args.ap_fsvi_near_data_noise,
                 "ap_fsvi_domain_std": args.ap_fsvi_domain_std,

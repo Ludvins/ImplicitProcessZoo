@@ -32,6 +32,7 @@ class FunctionDiscrepancy:
         "sample_sliced_knn_kl",
         "sample_sliced_gaussian_kl",
         "sample_sliced_quantile_transport_kl",
+        "sample_sliced_rank_kl",
     )
 
     def __init__(
@@ -57,6 +58,9 @@ class FunctionDiscrepancy:
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
         quantile_transport_k=3,
+        sample_rank_resolution=16,
+        sample_rank_temperature=0.2,
+        sample_rank_bin_temperature=0.5,
     ):
         self.kind = _normalize_discrepancy_kind(kind)
         self.bandwidth = bandwidth
@@ -82,6 +86,15 @@ class FunctionDiscrepancy:
         if quantile_transport_k <= 0:
             raise ValueError("quantile_transport_k must be positive.")
         self.quantile_transport_k = int(quantile_transport_k)
+        if sample_rank_resolution <= 0:
+            raise ValueError("sample_rank_resolution must be positive.")
+        if sample_rank_temperature <= 0:
+            raise ValueError("sample_rank_temperature must be positive.")
+        if sample_rank_bin_temperature <= 0:
+            raise ValueError("sample_rank_bin_temperature must be positive.")
+        self.sample_rank_resolution = int(sample_rank_resolution)
+        self.sample_rank_temperature = float(sample_rank_temperature)
+        self.sample_rank_bin_temperature = float(sample_rank_bin_temperature)
         self.sample_projection_mode = _normalize_sample_projection_mode(
             sample_projection_mode
         )
@@ -111,6 +124,9 @@ class FunctionDiscrepancy:
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
         quantile_transport_k=3,
+        sample_rank_resolution=16,
+        sample_rank_temperature=0.2,
+        sample_rank_bin_temperature=0.5,
     ):
         return cls(
             kind=kind,
@@ -134,6 +150,9 @@ class FunctionDiscrepancy:
             sample_gaussian_shrinkage=sample_gaussian_shrinkage,
             sample_projection_mode=sample_projection_mode,
             quantile_transport_k=quantile_transport_k,
+            sample_rank_resolution=sample_rank_resolution,
+            sample_rank_temperature=sample_rank_temperature,
+            sample_rank_bin_temperature=sample_rank_bin_temperature,
         )
 
     @property
@@ -147,6 +166,7 @@ class FunctionDiscrepancy:
             "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
             "sample_sliced_quantile_transport_kl",
+            "sample_sliced_rank_kl",
         )
 
     def __call__(
@@ -204,6 +224,8 @@ class FunctionDiscrepancy:
             return self._sample_sliced_gaussian_kl(z, w)
         if self.kind == "sample_sliced_quantile_transport_kl":
             return self._sample_sliced_quantile_transport_kl(z, w)
+        if self.kind == "sample_sliced_rank_kl":
+            return self._sample_sliced_rank_kl(z, w)
         raise ValueError(f"Unknown function discrepancy: {self.kind!r}")
 
     def _mmd(self, z, w):
@@ -504,6 +526,62 @@ class FunctionDiscrepancy:
         kl = (log_p_transport - log_p_z + slope.log()).mean(dim=0)
         return (z.shape[-1] * kl.mean()).clamp_min(0.0)
 
+    def _sample_sliced_rank_kl(self, z, w):
+        """Sliced rank-statistic KL with a differentiable soft histogram.
+
+        For each projection, posterior samples are mapped to soft ranks against
+        the projected prior sample set. The rank histogram is compared to the
+        uniform rank law with a discrete KL. Hard ranks are piecewise constant,
+        so this training objective uses a sigmoid CDF and soft bin assignment.
+        """
+        if self.num_projections <= 0:
+            raise ValueError("num_projections must be positive.")
+        if z.shape[0] < 2 or w.shape[0] < 2:
+            return self._sample_sliced_gaussian_kl(z, w)
+        z, w = _diagonal_standardize_by_reference(z, w, self.min_bandwidth)
+        directions = _sample_sliced_projection_directions(
+            z,
+            w,
+            self.num_projections,
+            mode=self.sample_projection_mode,
+            min_bandwidth=self.min_bandwidth,
+            cache=self._fixed_projection_cache,
+        )
+        z_proj = z @ directions
+        w_proj = w @ directions
+
+        bandwidth = self._projection_bandwidth(z_proj, w_proj.detach())
+        cdf_temperature = (
+            bandwidth * self.sample_rank_temperature
+        ).clamp_min(self.min_bandwidth)
+        soft_cdf = torch.sigmoid(
+            (z_proj.unsqueeze(1) - w_proj.detach().unsqueeze(0))
+            / cdf_temperature.view(1, 1, -1)
+        ).mean(dim=1)
+
+        resolution = self.sample_rank_resolution
+        bins = torch.arange(
+            resolution + 1,
+            dtype=z_proj.dtype,
+            device=z_proj.device,
+        )
+        scaled_rank = resolution * soft_cdf.clamp(0.0, 1.0)
+        bin_temperature = torch.as_tensor(
+            self.sample_rank_bin_temperature,
+            dtype=z_proj.dtype,
+            device=z_proj.device,
+        ).clamp_min(self.min_bandwidth)
+        logits = -0.5 * (
+            (scaled_rank.unsqueeze(-1) - bins.view(1, 1, -1))
+            / bin_temperature
+        ).square()
+        assignments = torch.softmax(logits, dim=-1)
+        hist = assignments.mean(dim=0)
+        hist = hist.clamp_min(1e-12)
+        hist = hist / hist.sum(dim=-1, keepdim=True)
+        kl = (hist * (hist.log() + math.log(resolution + 1.0))).sum(dim=-1)
+        return (z.shape[-1] * kl.mean()).clamp_min(0.0)
+
     def _spectral_sliced_kl(
         self, posterior_values, prior_values, measurement_inputs, prior_function
     ):
@@ -749,6 +827,9 @@ class APFSVI(torch.nn.Module):
         sample_gaussian_shrinkage=0.05,
         sample_projection_mode="random",
         quantile_transport_k=3,
+        sample_rank_resolution=16,
+        sample_rank_temperature=0.2,
+        sample_rank_bin_temperature=0.5,
         fixed_measure_points=False,
         prior_kernel_amp=1.0,
         prior_kernel_length=1.0,
@@ -954,6 +1035,9 @@ class APFSVI(torch.nn.Module):
             sample_gaussian_shrinkage=sample_gaussian_shrinkage,
             sample_projection_mode=sample_projection_mode,
             quantile_transport_k=quantile_transport_k,
+            sample_rank_resolution=sample_rank_resolution,
+            sample_rank_temperature=sample_rank_temperature,
+            sample_rank_bin_temperature=sample_rank_bin_temperature,
         )
         if self.likelihood_type == "regression":
             log_variance = torch.as_tensor(log_variance_init, dtype=dtype, device=device)
@@ -1301,6 +1385,7 @@ class APFSVI(torch.nn.Module):
             "sample_sliced_knn_kl",
             "sample_sliced_gaussian_kl",
             "sample_sliced_quantile_transport_kl",
+            "sample_sliced_rank_kl",
         ):
             return _sample_sliced_point_scores(
                 values,
@@ -1339,6 +1424,9 @@ class APFSVI(torch.nn.Module):
             sample_knn_k=self.divergence.sample_knn_k,
             sample_projection_mode=self.divergence.sample_projection_mode,
             quantile_transport_k=self.divergence.quantile_transport_k,
+            sample_rank_resolution=self.divergence.sample_rank_resolution,
+            sample_rank_temperature=self.divergence.sample_rank_temperature,
+            sample_rank_bin_temperature=self.divergence.sample_rank_bin_temperature,
         )
         values = []
         for i in range(X_pool.shape[0]):
@@ -1446,6 +1534,9 @@ class APFSVI(torch.nn.Module):
             sample_knn_k=self.divergence.sample_knn_k,
             sample_projection_mode=self.divergence.sample_projection_mode,
             quantile_transport_k=self.divergence.quantile_transport_k,
+            sample_rank_resolution=self.divergence.sample_rank_resolution,
+            sample_rank_temperature=self.divergence.sample_rank_temperature,
+            sample_rank_bin_temperature=self.divergence.sample_rank_bin_temperature,
         )
 
     def _project_adaptive_measurement_points(self, X):
@@ -1674,6 +1765,16 @@ def _normalize_discrepancy_kind(kind):
         "sample_quantile_transport_kl": "sample_sliced_quantile_transport_kl",
         "sample-quantile-transport-kl": "sample_sliced_quantile_transport_kl",
         "sqtkl": "sample_sliced_quantile_transport_kl",
+        "sample_sliced_rank_kl": "sample_sliced_rank_kl",
+        "sample-sliced-rank-kl": "sample_sliced_rank_kl",
+        "sample_sliced_rank_statistic_kl": "sample_sliced_rank_kl",
+        "sample-sliced-rank-statistic-kl": "sample_sliced_rank_kl",
+        "sliced_rank_kl": "sample_sliced_rank_kl",
+        "sliced-rank-kl": "sample_sliced_rank_kl",
+        "rank_sliced_kl": "sample_sliced_rank_kl",
+        "rank-sliced-kl": "sample_sliced_rank_kl",
+        "rsfkl": "sample_sliced_rank_kl",
+        "ssrkl": "sample_sliced_rank_kl",
     }
     normalized = aliases.get(str(kind).lower())
     if normalized is None:
