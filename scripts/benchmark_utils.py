@@ -18,12 +18,10 @@ DEFAULT_METRICS = (
 )
 
 MODEL_DISPLAY_NAMES = {
-    "ap_fsvi": "AP-FSVI",
     "fbnn": "FBNN",
     "ftip": "FTIP",
     "map": "MAP",
     "mfvi": "MFVI",
-    "fcfsvi": "FCFSVI",
     "tfsvi": "TFSVI",
     "vip": "VIP",
 }
@@ -80,7 +78,7 @@ def pretty_dataset_name(dataset_name):
 
 
 def pretty_discrepancy_name(discrepancy):
-    """Human-readable AP-FSVI discrepancy label for W&B run names."""
+    """Human-readable discrepancy label for W&B run names."""
     discrepancy = str(discrepancy)
     if discrepancy in DISCREPANCY_DISPLAY_NAMES:
         return DISCREPANCY_DISPLAY_NAMES[discrepancy]
@@ -109,7 +107,7 @@ def add_wandb_args(parser):
         default=False,
         help="Enable Weights & Biases experiment tracking.",
     )
-    parser.add_argument("--wandb_project", default="apfsvi")
+    parser.add_argument("--wandb_project", default="gmvip")
     parser.add_argument("--wandb_entity", default="ludvins")
     parser.add_argument("--wandb_group", default=None)
     parser.add_argument("--wandb_name", default=None)
@@ -167,7 +165,7 @@ def init_wandb_run(args, *, name=None, group=None, tags=None, config=None):
         run_config.update(_json_safe_dict(config))
 
     return wandb.init(
-        project=getattr(args, "wandb_project", "apfsvi"),
+        project=getattr(args, "wandb_project", "gmvip"),
         entity=getattr(args, "wandb_entity", None),
         group=getattr(args, "wandb_group", None) or group,
         name=getattr(args, "wandb_name", None) or name,

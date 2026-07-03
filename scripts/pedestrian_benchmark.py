@@ -31,7 +31,6 @@ from src.ftip import FTIP
 from src.mfvi import MFVI
 from src.fbnn import FBNN
 from src.tfsvi import TFSVI
-from src.ap_fsvi import APFSVI
 from scripts.benchmark_utils import (
     add_wandb_args,
     finish_wandb_run,
@@ -45,7 +44,7 @@ from scripts.benchmark_utils import (
 )
 
 
-MODELS = ["vip", "ftip", "mfvi", "fbnn", "tfsvi", "ap_fsvi"]
+MODELS = ["vip", "ftip", "mfvi", "fbnn", "tfsvi"]
 LAYER_MODELS = {
     "BayesLinear": BayesLinear,
 }

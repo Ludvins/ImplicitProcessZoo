@@ -1,6 +1,6 @@
 """UCI regression benchmark.
 
-Runs the UCI regression datasets with VIP, FTIP, AP-FSVI, FCFSVI, MFVI,
+Runs the UCI regression datasets with VIP, FTIP, MFVI,
 FBNN, TFSVI, or MAP.
 Each run writes a JSON result file and, by default, a checkpoint.
 
@@ -27,11 +27,9 @@ from src.priors.generative_functions import BayesianNN, BayesLinear, GP
 from src.flows import CouplingFlow, SplineCouplingFlow, SplineCoupling1x1Flow
 from src.vip import VIP
 from src.ftip import FTIP
-from src.ap_fsvi import APFSVI
 from src.fbnn import FBNN
 from src.tfsvi import TFSVI
 from src.mfvi import MFVI
-from src.fcfsvi import FCFSVI
 from src.map_baseline import DeterministicMAP
 from scripts.benchmark_utils import (
     add_wandb_args,
@@ -82,8 +80,6 @@ REGRESSION_MODELS = [
     "fbnn",
     "tfsvi",
     "mfvi",
-    "ap_fsvi",
-    "fcfsvi",
     "map",
 ]
 
