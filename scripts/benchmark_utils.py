@@ -20,6 +20,7 @@ DEFAULT_METRICS = (
 MODEL_DISPLAY_NAMES = {
     "fbnn": "FBNN",
     "ftip": "FTIP",
+    "gmvip": "GMVIP",
     "map": "MAP",
     "mfvi": "MFVI",
     "tfsvi": "TFSVI",
@@ -227,6 +228,9 @@ def training_decomposition(model, model_type=None):
             if normalized_type == "fcfsvi":
                 payload["train/fcfsvi_context_kl"] = function_term
                 payload["train/fcfsvi/context_kl"] = function_term
+            elif normalized_type == "gmvip":
+                payload["train/gmvip_kl"] = function_term
+                payload["train/gmvip/latent_kl_unweighted"] = function_term
             else:
                 payload["train/ap_fsvi_discrepancy"] = function_term
                 payload["train/apfsvi/discrepancy_unweighted"] = function_term
@@ -235,6 +239,9 @@ def training_decomposition(model, model_type=None):
             if normalized_type == "fcfsvi":
                 payload["train/fcfsvi_beta"] = beta
                 payload["train/fcfsvi/beta"] = beta
+            elif normalized_type == "gmvip":
+                payload["train/gmvip_beta"] = beta
+                payload["train/gmvip/beta"] = beta
             else:
                 payload["train/ap_fsvi_beta"] = beta
                 payload["train/apfsvi/beta"] = beta
@@ -244,9 +251,19 @@ def training_decomposition(model, model_type=None):
             if normalized_type == "fcfsvi":
                 payload["train/fcfsvi_weighted_context_kl"] = weighted
                 payload["train/fcfsvi/context_kl_weighted"] = weighted
+            elif normalized_type == "gmvip":
+                payload["train/gmvip_weighted_kl"] = weighted
+                payload["train/gmvip/latent_kl_weighted"] = weighted
             else:
                 payload["train/ap_fsvi_weighted_discrepancy"] = weighted
                 payload["train/apfsvi/discrepancy_weighted"] = weighted
+
+        if normalized_type == "gmvip":
+            metrics = getattr(model, "last_train_metrics", {}) or {}
+            for metric_name in ("flow_logdet_mean", "flow_kl_std"):
+                value = metrics.get(metric_name)
+                if value is not None:
+                    payload[f"train/gmvip/{metric_name}"] = _to_float(value)
 
     else:
         if kl is not None:
