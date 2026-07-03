@@ -1,7 +1,7 @@
 """Deterministic MLP that can be evaluated from a flat parameter vector.
 
 Shared by methods that parameterize a neural network by a single flat weight
-vector (e.g. TFSVI, NFVI): an architecture template is built as a normal
+vector (e.g. TFSVI): an architecture template is built as a normal
 ``torch.nn.Module`` so PyTorch's init logic applies, then its parameters are
 collected into (name, shape) lists and their actual values are supplied at
 forward time via :func:`forward_with_flat_params`.

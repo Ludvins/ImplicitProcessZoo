@@ -1,0 +1,46 @@
+name: gmvip
+model: gmvip
+
+operator_type: rbf
+posterior_type: gaussian
+num_inducing: 64
+num_operator_bank_samples: 512
+num_mc_samples_train: 8
+num_mc_samples_eval: 128
+
+jitter: 1.0e-5
+shrinkage: 1.0e-4
+mean_mode: prior_sample
+inducing_scale: rbf_cholesky
+learn_kernel: true
+freeze_base_prior: true
+detach_prior_samples: true
+enforce_exact_Z_identity: true
+
+posterior:
+  init_mean: 0.0
+  init_log_std: 0.0
+  min_log_std: -8.0
+  max_log_std: 4.0
+
+flow:
+  depth: 4
+  hidden_dim: 128
+  num_layers: 2
+  dropout: 0.0
+  scale_bound: 2.0
+
+likelihood:
+  type: gaussian
+  learn_noise: true
+  init_log_noise: -2.0
+  min_log_noise: -5.0
+  max_log_noise: null
+
+training:
+  lr: 1.0e-3
+  batch_size: 128
+  epochs: 1000
+  beta: 1.0
+  beta_warmup_steps: 0
+  max_grad_norm: 10.0
