@@ -1,6 +1,6 @@
 """UCI regression benchmark.
 
-Runs the UCI regression datasets with VIP, FTIP, AP-FSVI, FCFSVI, MFVI,
+Runs the UCI regression datasets with VIP, FTIP, GMVIP, MFVI,
 FBNN, TFSVI, or MAP.
 Each run writes a JSON result file and, by default, a checkpoint.
 
@@ -27,17 +27,17 @@ from src.priors.generative_functions import BayesianNN, BayesLinear, GP
 from src.flows import CouplingFlow, SplineCouplingFlow, SplineCoupling1x1Flow
 from src.vip import VIP
 from src.ftip import FTIP
-from src.ap_fsvi import APFSVI
 from src.fbnn import FBNN
 from src.tfsvi import TFSVI
 from src.mfvi import MFVI
-from src.fcfsvi import FCFSVI
+from src.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
 from src.map_baseline import DeterministicMAP
 from scripts.benchmark_utils import (
     add_wandb_args,
     canonical_model_type,
     finish_wandb_run,
     init_wandb_run,
+    pretty_dataset_name,
     pretty_discrepancy_name,
     wandb_log_eval,
     wandb_log_result,
@@ -82,13 +82,32 @@ REGRESSION_MODELS = [
     "fbnn",
     "tfsvi",
     "mfvi",
-    "ap_fsvi",
-    "fcfsvi",
+    "gmvip",
     "map",
 ]
 
 def _is_fcfsvi_model(model_type):
     return canonical_model_type(model_type) == "fcfsvi"
+
+
+def _optional_float(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and value.lower() in {"none", "null"}:
+        return None
+    return float(value)
+
+
+def _float_or_median(value):
+    if isinstance(value, str) and value.lower() == "median":
+        return "median"
+    return float(value)
+
+
+def _float_or_prior_marginal(value):
+    if isinstance(value, str) and value.lower() == "prior_marginal":
+        return "prior_marginal"
+    return float(value)
 
 
 def generate_ood_points(test_dataset, n_ood=None, seed=42):
@@ -189,6 +208,8 @@ def _batched_entropy(model, x, model_type, eval_samples, a=None, batch_size=2048
             mean, std = _tfsvi_pred_components(model, xb, eval_samples)
         elif model_type == "mfvi":
             mean, std = _tfsvi_pred_components(model, xb, eval_samples)
+        elif model_type == "gmvip":
+            mean, std = _gmvip_pred_components(model, xb, eval_samples)
         else:
             if hasattr(model, "num_samples"):
                 old_ns = model.num_samples
@@ -223,8 +244,11 @@ def evaluate_ood(model, test_dataset, args, model_type=None, seed=42):
     with torch.no_grad():
         # For FTIP: sample flow coefficients once (data-independent)
         a = model.sample_flow_coefficients(args.eval_samples) if model_type == "ftip" else None
-        entropy_id = _batched_entropy(model, x_id, model_type, args.eval_samples, a)
-        entropy_ood = _batched_entropy(model, x_ood, model_type, args.eval_samples, a)
+        entropy_samples = (
+            args.gmvip_num_eval_samples if model_type == "gmvip" else args.eval_samples
+        )
+        entropy_id = _batched_entropy(model, x_id, model_type, entropy_samples, a)
+        entropy_ood = _batched_entropy(model, x_ood, model_type, entropy_samples, a)
 
     # AUROC: label 0 = in-distribution, 1 = OOD, score = entropy
     labels = np.concatenate([np.zeros(len(entropy_id)), np.ones(len(entropy_ood))])
@@ -559,6 +583,97 @@ def parse_args():
     p.add_argument("--fcfsvi_max_grad_norm", type=float, default=None,
                     help="Optional FCFSVI gradient clipping norm.")
 
+    # --- GMVIP-specific ---
+    p.add_argument("--gmvip_operator_type", choices=["empirical", "rbf"], default="rbf",
+                    help="GMVIP Matheron operator.")
+    p.add_argument("--gmvip_posterior_type", choices=["gaussian", "realnvp"],
+                    default="gaussian",
+                    help="GMVIP latent coefficient posterior.")
+    p.add_argument("--gmvip_num_inducing", type=int, default=32,
+                    help="Number of GMVIP inducing points.")
+    p.add_argument("--gmvip_inducing_method", type=str, default="kmeans",
+                    choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+                    help="Initialization rule for GMVIP inducing points.")
+    p.add_argument("--gmvip_num_operator_bank_samples", type=int, default=256,
+                    help="Prior samples used to initialize GMVIP operator moments.")
+    p.add_argument("--gmvip_num_train_samples", type=int, default=16,
+                    help="Posterior function samples per GMVIP training step.")
+    p.add_argument("--gmvip_num_eval_samples", type=int, default=200,
+                    help="Posterior function samples used at GMVIP evaluation time.")
+    p.add_argument("--gmvip_antithetic_samples", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Use antithetic base Gaussian pairs for Gaussian/RealNVP GMVIP coefficient samples.")
+    p.add_argument("--gmvip_beta", type=float, default=1.0,
+                    help="Weight on the GMVIP latent coefficient KL.")
+    p.add_argument("--gmvip_beta_warmup_steps", type=int, default=0,
+                    help="Linear warmup steps for GMVIP beta.")
+    p.add_argument("--gmvip_data_alpha", type=float, default=0.0,
+                    help="Alpha data objective for GMVIP; 0 gives the standard ELBO data term.")
+    p.add_argument("--gmvip_weight_log_sigma_init", type=float, default=0.0,
+                    help="Frozen BNN prior weight log sigma for GMVIP.")
+    p.add_argument("--gmvip_learn_prior", action=argparse.BooleanOptionalAction,
+                    default=False,
+                    help="Train the GMVIP BNN basis/prior parameters as in VIP.")
+    p.add_argument("--gmvip_detach_operator_prior_grad",
+                    action=argparse.BooleanOptionalAction,
+                    default=False,
+                    help="Stop GMVIP operator-statistics gradients from updating "
+                         "the BNN prior parameters while preserving gradients "
+                         "through residual prior samples and learnable Z.")
+    p.add_argument("--gmvip_learn_noise", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Learn GMVIP Gaussian observation noise.")
+    p.add_argument("--gmvip_init_log_noise", type=float, default=-2.5,
+                    help="Initial GMVIP log observation noise.")
+    p.add_argument("--gmvip_min_log_noise", type=_optional_float, default=-5.0,
+                    help="Optional minimum GMVIP log observation noise; pass none to disable.")
+    p.add_argument("--gmvip_max_log_noise", type=_optional_float, default=None,
+                    help="Optional maximum GMVIP log observation noise; pass none to disable.")
+    p.add_argument("--gmvip_learn_Z", action=argparse.BooleanOptionalAction,
+                    default=False,
+                    help="Learn GMVIP inducing locations after initialization.")
+    p.add_argument("--gmvip_learn_kernel", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Learn the GMVIP RBF operator kernel hyperparameters.")
+    p.add_argument("--gmvip_ard", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Use ARD lengthscales in the GMVIP RBF operator.")
+    p.add_argument("--gmvip_init_lengthscale", type=_float_or_median, default="median",
+                    help="Initial GMVIP RBF lengthscale or 'median'.")
+    p.add_argument("--gmvip_init_outputscale", type=_float_or_prior_marginal,
+                    default="prior_marginal",
+                    help="Initial GMVIP RBF outputscale or 'prior_marginal'.")
+    p.add_argument("--gmvip_inducing_scale", type=str, default="prior_cholesky",
+                    choices=["prior_cholesky", "rbf_cholesky", "prior_diag", "identity"],
+                    help="Map from whitened GMVIP coefficients a to inducing values u.")
+    p.add_argument("--gmvip_mean_mode", type=str, default="prior_sample",
+                    choices=["prior_sample", "zero", "prior_api"],
+                    help="Mean initialization mode for GMVIP inducing values.")
+    p.add_argument("--gmvip_jitter", type=float, default=1e-5,
+                    help="GMVIP linear algebra jitter.")
+    p.add_argument("--gmvip_shrinkage", type=float, default=0.02,
+                    help="Empirical-operator covariance shrinkage.")
+    p.add_argument("--gmvip_posterior_init_mean", type=float, default=0.0,
+                    help="Initial GMVIP Gaussian coefficient posterior mean.")
+    p.add_argument("--gmvip_posterior_init_log_std", type=float, default=0.0,
+                    help="Initial GMVIP Gaussian coefficient posterior log std.")
+    p.add_argument("--gmvip_posterior_min_log_std", type=_optional_float, default=-8.0,
+                    help="Optional minimum GMVIP posterior log std; pass none to disable.")
+    p.add_argument("--gmvip_posterior_max_log_std", type=_optional_float, default=None,
+                    help="Optional maximum GMVIP posterior log std; pass none to disable.")
+    p.add_argument("--gmvip_flow_depth", type=int, default=4,
+                    help="Number of affine coupling layers for GMVIP RealNVP q(a).")
+    p.add_argument("--gmvip_flow_hidden_dim", type=int, default=128,
+                    help="Hidden width for GMVIP RealNVP coupling nets.")
+    p.add_argument("--gmvip_flow_num_layers", type=int, default=2,
+                    help="MLP layer count for GMVIP RealNVP coupling nets.")
+    p.add_argument("--gmvip_flow_dropout", type=float, default=0.0,
+                    help="Dropout for GMVIP RealNVP coupling nets.")
+    p.add_argument("--gmvip_flow_scale_bound", type=float, default=2.0,
+                    help="Tanh bound for GMVIP RealNVP log-scales.")
+    p.add_argument("--gmvip_max_grad_norm", type=_optional_float, default=None,
+                    help="Optional GMVIP gradient clipping norm; pass none to disable.")
+
     # --- MAP-specific ---
     p.add_argument("--map_l2", type=float, default=1e-4,
                     help="L2 weight penalty for deterministic MAP baseline.")
@@ -623,7 +738,14 @@ def parse_args():
         p.error("--resume_step_offset must be non-negative.")
     if args.resume_from_checkpoint and args.warm_start_from:
         p.error("--resume_from_checkpoint cannot be combined with --warm_start_from.")
-
+    if args.gmvip_num_inducing <= 0:
+        p.error("--gmvip_num_inducing must be positive.")
+    if args.model in {"gmvip", "all"} and args.gmvip_operator_type == "empirical":
+        if args.gmvip_mean_mode != "prior_sample":
+            p.error("--gmvip_mean_mode is only configurable for --gmvip_operator_type rbf.")
+        if args.gmvip_inducing_scale != "prior_cholesky":
+            p.error("--gmvip_inducing_scale is only configurable for --gmvip_operator_type rbf.")
+        args.gmvip_learn_kernel = False
     # Disable auto_warm_start if an explicit checkpoint path is given
     if args.warm_start_from:
         args.auto_warm_start = False
@@ -728,6 +850,91 @@ def build_model(args, train_dataset, model_type=None):
             dtype=dtype,
             seed=args.seed,
         )
+
+    if model_type == "gmvip":
+        train_inputs = torch.as_tensor(
+            train_dataset.inputs,
+            dtype=dtype,
+            device=device,
+        )
+        learn_prior = bool(_arg("gmvip_learn_prior", False))
+        inducing_points = initialize_inducing_points(
+            train_inputs,
+            num_inducing=_arg("gmvip_num_inducing", 32),
+            method=_arg("gmvip_inducing_method", "kmeans"),
+            seed=args.seed + 31,
+        )
+        prior_samples = max(
+            int(_arg("gmvip_num_operator_bank_samples", 256)),
+            int(_arg("gmvip_num_train_samples", 16)),
+            2,
+        )
+        prior = BayesianNN(
+            input_dim=train_dataset.input_dim,
+            num_samples=prior_samples,
+            structure=args.hidden_dims,
+            activation=ACTIVATIONS[args.activation],
+            output_dim=train_dataset.output_dim,
+            layer_model=BayesLinear,
+            dropout=args.dropout,
+            fix_random_noise=True,
+            zero_mean_prior=not learn_prior,
+            weight_log_sigma_init=_arg("gmvip_weight_log_sigma_init", 0.0),
+            device=device,
+            seed=args.seed + 1,
+            dtype=dtype,
+        )
+        if not learn_prior and hasattr(prior, "freeze_parameters"):
+            prior.freeze_parameters()
+        model = GeneralizedMatheronVIP(
+            base_prior=prior,
+            inducing_points=inducing_points,
+            operator_type=_arg("gmvip_operator_type", "rbf"),
+            posterior_type=_arg("gmvip_posterior_type", "gaussian"),
+            num_operator_bank_samples=_arg("gmvip_num_operator_bank_samples", 256),
+            learn_noise=_arg("gmvip_learn_noise", True),
+            init_log_noise=_arg("gmvip_init_log_noise", -2.5),
+            min_log_noise=_arg("gmvip_min_log_noise", -5.0),
+            max_log_noise=_arg("gmvip_max_log_noise", None),
+            freeze_base_prior=not learn_prior,
+            detach_prior_samples=not learn_prior,
+            detach_operator_prior_grad=_arg("gmvip_detach_operator_prior_grad", False),
+            jitter=_arg("gmvip_jitter", 1e-5),
+            shrinkage=_arg("gmvip_shrinkage", 0.02),
+            learn_Z=_arg("gmvip_learn_Z", False),
+            learn_kernel=_arg("gmvip_learn_kernel", True),
+            ard=_arg("gmvip_ard", True),
+            init_lengthscale=_arg("gmvip_init_lengthscale", "median"),
+            init_outputscale=_arg("gmvip_init_outputscale", "prior_marginal"),
+            inducing_scale=_arg("gmvip_inducing_scale", "prior_cholesky"),
+            mean_mode=_arg("gmvip_mean_mode", "prior_sample"),
+            posterior_init_mean=_arg("gmvip_posterior_init_mean", 0.0),
+            posterior_init_log_std=_arg("gmvip_posterior_init_log_std", 0.0),
+            posterior_min_log_std=_arg("gmvip_posterior_min_log_std", -8.0),
+            posterior_max_log_std=_arg("gmvip_posterior_max_log_std", None),
+            flow_depth=_arg("gmvip_flow_depth", 4),
+            flow_hidden_dim=_arg("gmvip_flow_hidden_dim", 128),
+            flow_num_layers=_arg("gmvip_flow_num_layers", 2),
+            flow_dropout=_arg("gmvip_flow_dropout", 0.0),
+            flow_scale_bound=_arg("gmvip_flow_scale_bound", 2.0),
+            antithetic_samples=_arg("gmvip_antithetic_samples", True),
+            num_data=len(train_dataset),
+            num_train_samples=_arg("gmvip_num_train_samples", 16),
+            beta=_arg("gmvip_beta", 1.0),
+            beta_warmup_steps=_arg("gmvip_beta_warmup_steps", 0),
+            data_alpha=_arg("gmvip_data_alpha", 0.0),
+            max_grad_norm=_arg("gmvip_max_grad_norm", None),
+            operator_bank_seed=args.seed + 101,
+        )
+        model.register_buffer(
+            "y_mean",
+            torch.as_tensor(train_dataset.targets_mean, dtype=dtype, device=device),
+        )
+        model.register_buffer(
+            "y_std",
+            torch.as_tensor(train_dataset.targets_std, dtype=dtype, device=device),
+        )
+        return model
 
     if model_type == "ap_fsvi":
         ap_samples = _arg("ap_fsvi_num_samples", 32)
@@ -1084,6 +1291,16 @@ def _tfsvi_pred_components(model, xb, S):
     return mean, std
 
 
+def _gmvip_pred_components(model, xb, S):
+    """GMVIP predictive mixture on the original target scale."""
+    F = model.predict_samples(xb, num_samples=S, noisy=False)  # (S, N, 1)
+    y_mean = getattr(model, "y_mean", torch.zeros(1, dtype=F.dtype, device=F.device))
+    y_std = getattr(model, "y_std", torch.ones(1, dtype=F.dtype, device=F.device))
+    mean = F * y_std + y_mean
+    std = (model.noise_std * y_std).expand_as(mean)
+    return mean, std
+
+
 def evaluate(model, dataset, args, model_type=None, batch_size=None):
     if model_type is None:
         model_type = args.model
@@ -1106,6 +1323,8 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
             S = args.mfvi_num_eval_samples
         elif _is_fcfsvi_model(model_type):
             S = args.fcfsvi_num_eval_samples
+        elif model_type == "gmvip":
+            S = args.gmvip_num_eval_samples
         else:
             S = args.regression_coeffs
         S_crps = min(S, 100)
@@ -1140,6 +1359,9 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
             elif model_type == "mfvi":
                 mean, std = _tfsvi_pred_components(model, xb, args.mfvi_num_eval_samples)
+                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
+            elif model_type == "gmvip":
+                mean, std = _gmvip_pred_components(model, xb, args.gmvip_num_eval_samples)
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
             else:
                 mean, std = model(xb)
@@ -1212,6 +1434,10 @@ def evaluate_light(model, dataset, args, model_type=None, batch_size=2048):
                 model.num_samples = min(64, args.fcfsvi_num_eval_samples)
                 mean, std = model(xb)
                 model.num_samples = old_S
+                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=True)
+            elif model_type == "gmvip":
+                S_light = min(64, args.gmvip_num_eval_samples)
+                mean, std = _gmvip_pred_components(model, xb, S_light)
                 metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=True)
             else:
                 mean, std = model(xb)
@@ -1412,6 +1638,36 @@ def _compact_float_tag(value):
 
 def _variant_tag(args, model_type):
     """Filename tag for variants that share the same top-level model name."""
+    if model_type == "gmvip":
+        tag = (
+            f"_{getattr(args, 'gmvip_operator_type', 'rbf')}"
+            f"_{getattr(args, 'gmvip_posterior_type', 'gaussian')}"
+            f"_{getattr(args, 'gmvip_mean_mode', 'prior_sample')}"
+            f"_{getattr(args, 'gmvip_inducing_scale', 'prior_cholesky')}"
+            f"_Z{getattr(args, 'gmvip_num_inducing', 32)}"
+            f"_{getattr(args, 'gmvip_inducing_method', 'kmeans')}"
+            f"_S{getattr(args, 'gmvip_num_train_samples', 16)}"
+            f"_b{_compact_float_tag(getattr(args, 'gmvip_beta', 1.0))}"
+            f"_a{_compact_float_tag(getattr(args, 'gmvip_data_alpha', 0.0))}"
+            f"_wls{_compact_float_tag(getattr(args, 'gmvip_weight_log_sigma_init', 0.0))}"
+        )
+        if getattr(args, "gmvip_learn_prior", False):
+            tag = f"{tag}_learnprior"
+        if getattr(args, "gmvip_learn_Z", False):
+            tag = f"{tag}_learnZ"
+        if not getattr(args, "gmvip_learn_kernel", True):
+            tag = f"{tag}_fixedkernel"
+        if (
+            getattr(args, "gmvip_learn_prior", False)
+            and getattr(args, "gmvip_detach_operator_prior_grad", False)
+        ):
+            tag = f"{tag}_opdetach"
+        if getattr(args, "gmvip_posterior_type", None) == "realnvp":
+            tag = (
+                f"{tag}_flowd{getattr(args, 'gmvip_flow_depth', 4)}"
+                f"_flowh{getattr(args, 'gmvip_flow_hidden_dim', 128)}"
+            )
+        return tag
     if _is_fcfsvi_model(model_type):
         arch = getattr(args, "fcfsvi_flow_arch", "prior_whitened_affine")
         tag = (
@@ -1480,6 +1736,8 @@ def _uci_wandb_suffix(args, model_type):
         ):
             suffix = f"{suffix}/{args.ap_fsvi_sample_projection_mode}"
         return suffix
+    if model_type == "gmvip":
+        return _gmvip_wandb_method_slug(args)
     if _is_fcfsvi_model(model_type):
         prior_rtol = _compact_float_tag(args.fcfsvi_prior_fit_rtol)
         posterior_rtol = _compact_float_tag(args.fcfsvi_posterior_flow_rtol)
@@ -1516,6 +1774,8 @@ def _uci_wandb_group(dataset_name, model_type, args):
             "spectral_sliced_kl",
         ):
             parts.append(args.ap_fsvi_sample_projection_mode)
+    elif model_type == "gmvip":
+        return _gmvip_wandb_group(dataset_name, args)
     elif _is_fcfsvi_model(model_type):
         parts.append(f"s{args.fcfsvi_num_samples}")
         parts.append(f"pf{args.fcfsvi_prior_fit_steps}")
@@ -1531,6 +1791,49 @@ def _uci_wandb_group(dataset_name, model_type, args):
         if args.fcfsvi_conditional_flow:
             parts.append("cond")
     return "_".join(str(part) for part in parts)
+
+
+def _pretty_gmvip_operator(operator_type):
+    operator = str(operator_type).replace("_", " ")
+    if operator.lower() == "rbf":
+        return "RBF"
+    return operator.title()
+
+
+def _pretty_gmvip_posterior(posterior_type):
+    if str(posterior_type).lower() == "realnvp":
+        return "RealNVP"
+    return str(posterior_type).replace("_", " ").title()
+
+
+def _gmvip_wandb_method_slug(args):
+    slug = (
+        f"gmvip_{args.gmvip_operator_type}_{args.gmvip_posterior_type}"
+        f"_{args.gmvip_mean_mode}_{args.gmvip_inducing_scale}"
+    )
+    if getattr(args, "gmvip_learn_prior", False):
+        slug = f"{slug}_learnprior"
+    return slug
+
+
+def _gmvip_z_state(args):
+    return "Unfixed Z" if getattr(args, "gmvip_learn_Z", False) else "Fixed Z"
+
+
+def _gmvip_prior_state(args):
+    return "Unfixed Prior" if getattr(args, "gmvip_learn_prior", False) else "Fixed Prior"
+
+
+def _gmvip_ablation_run_name(dataset_name, args):
+    return (
+        f"{pretty_dataset_name(dataset_name)} | GMVIP | "
+        f"{_gmvip_z_state(args)} | {_gmvip_prior_state(args)} | "
+        f"{_pretty_gmvip_operator(args.gmvip_operator_type)}"
+    )
+
+
+def _gmvip_wandb_group(dataset_name, args):
+    return f"{pretty_dataset_name(dataset_name)} | GMVIP | Operator Z Prior Ablation |"
 
 
 def _build_result(dataset_name, model_type, model, args, train_loader,
@@ -1708,6 +2011,47 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "fcfsvi_log_variance_init": args.fcfsvi_log_variance_init,
             "fcfsvi_max_grad_norm": args.fcfsvi_max_grad_norm,
         })
+    if model_type == "gmvip":
+        hyperparameters.update({
+            "gmvip_layer_model": "BayesLinear",
+            "gmvip_operator_type": args.gmvip_operator_type,
+            "gmvip_posterior_type": args.gmvip_posterior_type,
+            "gmvip_num_inducing": args.gmvip_num_inducing,
+            "gmvip_inducing_method": args.gmvip_inducing_method,
+            "gmvip_num_operator_bank_samples": args.gmvip_num_operator_bank_samples,
+            "gmvip_num_train_samples": args.gmvip_num_train_samples,
+            "gmvip_num_eval_samples": args.gmvip_num_eval_samples,
+            "gmvip_antithetic_samples": args.gmvip_antithetic_samples,
+            "gmvip_beta": args.gmvip_beta,
+            "gmvip_beta_warmup_steps": args.gmvip_beta_warmup_steps,
+            "gmvip_data_alpha": args.gmvip_data_alpha,
+            "gmvip_weight_log_sigma_init": args.gmvip_weight_log_sigma_init,
+            "gmvip_learn_prior": args.gmvip_learn_prior,
+            "gmvip_detach_operator_prior_grad": args.gmvip_detach_operator_prior_grad,
+            "gmvip_learn_noise": args.gmvip_learn_noise,
+            "gmvip_init_log_noise": args.gmvip_init_log_noise,
+            "gmvip_min_log_noise": args.gmvip_min_log_noise,
+            "gmvip_max_log_noise": args.gmvip_max_log_noise,
+            "gmvip_learn_Z": args.gmvip_learn_Z,
+            "gmvip_learn_kernel": args.gmvip_learn_kernel,
+            "gmvip_ard": args.gmvip_ard,
+            "gmvip_init_lengthscale": args.gmvip_init_lengthscale,
+            "gmvip_init_outputscale": args.gmvip_init_outputscale,
+            "gmvip_inducing_scale": args.gmvip_inducing_scale,
+            "gmvip_mean_mode": args.gmvip_mean_mode,
+            "gmvip_jitter": args.gmvip_jitter,
+            "gmvip_shrinkage": args.gmvip_shrinkage,
+            "gmvip_posterior_init_mean": args.gmvip_posterior_init_mean,
+            "gmvip_posterior_init_log_std": args.gmvip_posterior_init_log_std,
+            "gmvip_posterior_min_log_std": args.gmvip_posterior_min_log_std,
+            "gmvip_posterior_max_log_std": args.gmvip_posterior_max_log_std,
+            "gmvip_flow_depth": args.gmvip_flow_depth,
+            "gmvip_flow_hidden_dim": args.gmvip_flow_hidden_dim,
+            "gmvip_flow_num_layers": args.gmvip_flow_num_layers,
+            "gmvip_flow_dropout": args.gmvip_flow_dropout,
+            "gmvip_flow_scale_bound": args.gmvip_flow_scale_bound,
+            "gmvip_max_grad_norm": args.gmvip_max_grad_norm,
+        })
     if model_type == "map":
         hyperparameters["map_l2"] = args.map_l2
         hyperparameters["map_log_variance_init"] = args.map_log_variance_init
@@ -1769,6 +2113,41 @@ def _wandb_run_metadata(args, dataset_name):
         ):
             suffix = f"{suffix}/{args.ap_fsvi_sample_projection_mode}"
             group_parts.append(args.ap_fsvi_sample_projection_mode)
+    elif args.model == "gmvip":
+        group = _gmvip_wandb_group(dataset_name, args)
+        name = _gmvip_ablation_run_name(dataset_name, args)
+        tags = [
+            "uci",
+            "30k" if args.iterations == 30_000 else f"{args.iterations}iter",
+            dataset_name,
+            args.model,
+            args.gmvip_operator_type,
+            args.gmvip_posterior_type,
+            args.gmvip_mean_mode,
+            args.gmvip_inducing_scale,
+            _gmvip_z_state(args),
+            _gmvip_prior_state(args),
+            args.gmvip_inducing_method,
+            f"Z{args.gmvip_num_inducing}",
+            f"S{args.gmvip_num_train_samples}",
+            f"beta-{_compact_float_tag(args.gmvip_beta)}",
+            f"beta-warmup-{args.gmvip_beta_warmup_steps}",
+            f"prior-logsigma-{_compact_float_tag(args.gmvip_weight_log_sigma_init)}",
+        ]
+        if args.gmvip_learn_Z:
+            tags.append("learn-Z")
+        if args.gmvip_learn_prior:
+            tags.append("learn-prior")
+        if args.gmvip_learn_prior and args.gmvip_detach_operator_prior_grad:
+            tags.append("detach-operator-prior-grad")
+        if not args.gmvip_learn_kernel:
+            tags.append("fixed-kernel")
+        if args.gmvip_posterior_type == "realnvp":
+            tags.extend([
+                f"flow-depth-{args.gmvip_flow_depth}",
+                f"flow-hidden-{args.gmvip_flow_hidden_dim}",
+            ])
+        return name, group, tags
     elif _is_fcfsvi_model(args.model):
         suffix = _uci_wandb_suffix(args, "fcfsvi")
         group_parts.extend([
@@ -2035,6 +2414,8 @@ def main():
             if run_args.model == "mfvi" and not run_args._bb_alpha_user_supplied:
                 run_args.bb_alpha = 0.5
             if _is_fcfsvi_model(run_args.model) and not run_args._bb_alpha_user_supplied:
+                run_args.bb_alpha = 0.0
+            if run_args.model == "gmvip" and not run_args._bb_alpha_user_supplied:
                 run_args.bb_alpha = 0.0
 
             # Check if results already exist

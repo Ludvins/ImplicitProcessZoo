@@ -18,12 +18,11 @@ DEFAULT_METRICS = (
 )
 
 MODEL_DISPLAY_NAMES = {
-    "ap_fsvi": "AP-FSVI",
     "fbnn": "FBNN",
     "ftip": "FTIP",
+    "gmvip": "GMVIP",
     "map": "MAP",
     "mfvi": "MFVI",
-    "fcfsvi": "FCFSVI",
     "tfsvi": "TFSVI",
     "vip": "VIP",
 }
@@ -80,7 +79,7 @@ def pretty_dataset_name(dataset_name):
 
 
 def pretty_discrepancy_name(discrepancy):
-    """Human-readable AP-FSVI discrepancy label for W&B run names."""
+    """Human-readable discrepancy label for W&B run names."""
     discrepancy = str(discrepancy)
     if discrepancy in DISCREPANCY_DISPLAY_NAMES:
         return DISCREPANCY_DISPLAY_NAMES[discrepancy]
@@ -109,7 +108,7 @@ def add_wandb_args(parser):
         default=False,
         help="Enable Weights & Biases experiment tracking.",
     )
-    parser.add_argument("--wandb_project", default="apfsvi")
+    parser.add_argument("--wandb_project", default="gmvip")
     parser.add_argument("--wandb_entity", default="ludvins")
     parser.add_argument("--wandb_group", default=None)
     parser.add_argument("--wandb_name", default=None)
@@ -167,7 +166,7 @@ def init_wandb_run(args, *, name=None, group=None, tags=None, config=None):
         run_config.update(_json_safe_dict(config))
 
     return wandb.init(
-        project=getattr(args, "wandb_project", "apfsvi"),
+        project=getattr(args, "wandb_project", "gmvip"),
         entity=getattr(args, "wandb_entity", None),
         group=getattr(args, "wandb_group", None) or group,
         name=getattr(args, "wandb_name", None) or name,
@@ -229,6 +228,9 @@ def training_decomposition(model, model_type=None):
             if normalized_type == "fcfsvi":
                 payload["train/fcfsvi_context_kl"] = function_term
                 payload["train/fcfsvi/context_kl"] = function_term
+            elif normalized_type == "gmvip":
+                payload["train/gmvip_kl"] = function_term
+                payload["train/gmvip/latent_kl_unweighted"] = function_term
             else:
                 payload["train/ap_fsvi_discrepancy"] = function_term
                 payload["train/apfsvi/discrepancy_unweighted"] = function_term
@@ -237,6 +239,9 @@ def training_decomposition(model, model_type=None):
             if normalized_type == "fcfsvi":
                 payload["train/fcfsvi_beta"] = beta
                 payload["train/fcfsvi/beta"] = beta
+            elif normalized_type == "gmvip":
+                payload["train/gmvip_beta"] = beta
+                payload["train/gmvip/beta"] = beta
             else:
                 payload["train/ap_fsvi_beta"] = beta
                 payload["train/apfsvi/beta"] = beta
@@ -246,9 +251,19 @@ def training_decomposition(model, model_type=None):
             if normalized_type == "fcfsvi":
                 payload["train/fcfsvi_weighted_context_kl"] = weighted
                 payload["train/fcfsvi/context_kl_weighted"] = weighted
+            elif normalized_type == "gmvip":
+                payload["train/gmvip_weighted_kl"] = weighted
+                payload["train/gmvip/latent_kl_weighted"] = weighted
             else:
                 payload["train/ap_fsvi_weighted_discrepancy"] = weighted
                 payload["train/apfsvi/discrepancy_weighted"] = weighted
+
+        if normalized_type == "gmvip":
+            metrics = getattr(model, "last_train_metrics", {}) or {}
+            for metric_name in ("flow_logdet_mean", "flow_kl_std"):
+                value = metrics.get(metric_name)
+                if value is not None:
+                    payload[f"train/gmvip/{metric_name}"] = _to_float(value)
 
     else:
         if kl is not None:

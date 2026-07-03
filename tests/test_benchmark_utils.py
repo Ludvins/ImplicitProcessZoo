@@ -26,18 +26,18 @@ def test_training_decomposition_for_kl_model():
     assert values["train/reconstructed_loss"] == 9.75
 
 
-def test_training_decomposition_for_ap_fsvi():
+def test_training_decomposition_for_gmvip():
     model = DummyModel()
     model.data_terms = [4.0]
     model.KLs = [3.0]
     model.function_terms = [3.0]
     model.betas = [0.2]
 
-    values = training_decomposition(model, model_type="ap_fsvi")
+    values = training_decomposition(model, model_type="gmvip")
 
     assert values["train/data_fit"] == 4.0
-    assert values["train/ap_fsvi_discrepancy"] == 3.0
-    assert values["train/ap_fsvi_beta"] == 0.2
+    assert values["train/gmvip_kl"] == 3.0
+    assert values["train/gmvip_beta"] == 0.2
     assert values["train/regularizer"] == pytest.approx(0.6)
     assert values["train/reconstructed_loss"] == pytest.approx(4.6)
 

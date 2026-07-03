@@ -1,13 +1,13 @@
 """Image classification benchmark for FashionMNIST and CIFAR10.
 
-Runs MAP, VIP, FBNN, and AP-FSVI with CNN generative functions. The Bayesian
+Runs MAP, VIP, and FBNN with CNN generative functions. The Bayesian
 layers are always the full ``BayesLinear`` implementation, matching the current
 UCI benchmark policy.
 
 Examples
 --------
-python -m scripts.classification_benchmark --dataset FashionMNIST --model ap_fsvi
-python -m scripts.classification_benchmark --dataset CIFAR10 --model all --ap_variant all
+python -m scripts.classification_benchmark --dataset FashionMNIST --model vip
+python -m scripts.classification_benchmark --dataset CIFAR10 --model all
 """
 
 import argparse
@@ -28,7 +28,6 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from src.ap_fsvi import APFSVI
 from src.fbnn import FBNN
 from src.priors.generative_functions import (
     BayesLinear,
@@ -53,7 +52,7 @@ from scripts.benchmark_utils import (
 
 
 CLASSIFICATION_DATASETS = ["FashionMNIST", "CIFAR10"]
-CLASSIFICATION_MODELS = ["map", "vip", "fbnn", "ap_fsvi"]
+CLASSIFICATION_MODELS = ["map", "vip", "fbnn"]
 
 AP_VARIANTS = {
     "mmd": {

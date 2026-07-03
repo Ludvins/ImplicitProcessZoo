@@ -1,9 +1,9 @@
 
-FTIP Benchmarks
-===============
+GMVIP Benchmarks
+================
 
 This repository contains the code used to run the benchmark experiments for
-FTIP, the baseline methods, and an added AP-FSVI prototype.
+GMVIP, FTIP, and baseline methods.
 
 Python version: 3.10.11
 
@@ -11,7 +11,6 @@ Benchmark entrypoints:
 
 - `python -m scripts.uci_benchmark --model ftip --dataset boston`
 - `python -m scripts.synthetic_benchmark --models ftip --datasets bimodal`
-- `python -m scripts.synthetic_benchmark --models ap_fsvi --datasets bimodal`
 - `python -m scripts.synthetic_benchmark --models all --datasets bimodal`
 - `python -m scripts.uci_benchmark --model all --dataset boston`
 - `python -m scripts.pedestrian_benchmark --model all`
@@ -24,32 +23,22 @@ Use `--help` on each entrypoint for the full set of command-line options.
 Weights & Biases tracking is available for the regression benchmark entrypoints.
 Add `--wandb` to log training loss, learning rate, periodic train/test metrics,
 and final run summaries. By default runs go to
-`https://wandb.ai/ludvins/apfsvi`; override the destination with
+`https://wandb.ai/ludvins/gmvip`; override the destination with
 `--wandb_entity` or `--wandb_project`, group related runs with `--wandb_group`,
 and use `--wandb_mode offline` when running without a network session. Run
 names are formatted for scanning, e.g.
-`UCI | Boston | AP-FSVI | Stein | Beta=1 | seed 42`; pass `--wandb_name`
+`UCI | Boston | GMVIP | RBF | Gaussian | seed 42`; pass `--wandb_name`
 to override a run name manually.
 
 The training stream logs the total loss plus its decomposition:
 `train/data_fit`, `train/regularizer`, and `train/reconstructed_loss`.
 Method-specific terms are also logged when available, including `train/kl`,
 `train/prior_regularizer`, `train/ftip_base_kl`, `train/ftip_flow_ldj`,
-`train/ap_fsvi_discrepancy`, and `train/ap_fsvi_beta`.
+`train/gmvip_kl`, and `train/gmvip_beta`.
 
 Examples:
 
-- `python -m scripts.uci_benchmark --model ap_fsvi --dataset boston --wandb`
+- `python -m scripts.uci_benchmark --model gmvip --dataset boston --wandb`
 - `python -m scripts.synthetic_benchmark --models all --datasets bimodal --wandb --wandb_group synthetic-bimodal`
-- `python -m scripts.ap_fsvi_uci_sweep --datasets boston energy concrete --wandb --wandb_group bayeslinear-convergence`
-
-AP-FSVI is implemented under `src/ap_fsvi` with a supplied posterior
-`generative_function`, data/near-data/domain measurement points, and a
-configurable function-space discrepancy. The UCI benchmark default is the
-current selected sample-sliced candidate: frozen BNN prior,
-`sample_sliced_kl`, random projections, `beta=1`, `S=32`, `Sp=64`, `M=64`,
-and `L=128`. The benchmark scripts pass the same generator-family objects used
-by the other methods, so the posterior architecture is defined outside
-AP-FSVI.
 The regression benchmarks write per-run JSON files and also emit comparison
 tables plus JSON/CSV comparison summaries when several models are run together.
