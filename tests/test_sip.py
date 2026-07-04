@@ -50,13 +50,25 @@ class TestSIPConstruction:
             SIP(bnn, Z, OUTPUT_DIM, "poisson", NUM_DATA,
                  device=DEVICE, dtype=DTYPE)
 
-    def test_variational_params_shape(self, bnn):
+    def test_implicit_posterior_and_critic_shapes(self, bnn):
         Z = _make_inducing()
         model = SIP(bnn, Z, OUTPUT_DIM, "regression", NUM_DATA,
                       device=DEVICE, dtype=DTYPE, seed=SEED)
-        assert model.m_u.shape == (NUM_INDUCING, OUTPUT_DIM)
-        tri_len = NUM_INDUCING * (NUM_INDUCING + 1) // 2
-        assert model.L_u_tri.shape == (tri_len, OUTPUT_DIM)
+        assert model.posterior_noise_dim == 100
+        assert model.posterior_noise_mean.shape == (1, 100)
+        assert model.posterior_noise_log_var.shape == (1, 100)
+        u = model._sample_u(4)
+        assert u.shape == (4, NUM_INDUCING, OUTPUT_DIM)
+        logits = model.critic(model._flat_u(u))
+        assert logits.shape == (4, 1)
+
+    def test_vi_parameters_exclude_critic(self, bnn):
+        Z = _make_inducing()
+        model = SIP(bnn, Z, OUTPUT_DIM, "regression", NUM_DATA,
+                      device=DEVICE, dtype=DTYPE, seed=SEED)
+        critic_ids = {id(param) for param in model.critic.parameters()}
+        vi_ids = {id(param) for param in model.vi_parameters()}
+        assert critic_ids.isdisjoint(vi_ids)
 
     def test_inducing_fixed_by_default(self, bnn):
         Z = _make_inducing()
@@ -179,6 +191,18 @@ class TestSIPTraining:
                       device=DEVICE, dtype=DTYPE, seed=SEED)
         model.fit(regression_loader, iterations=3)
         assert len(model.KLs) == 3
+        assert len(model.betas) == 3
+        assert len(model.critic_losses) == 3
+        assert len(model.critic_accuracies) == 3
+        assert len(model.critic_saturation_fractions) == 3
+
+    def test_beta_warmup(self, bnn, regression_loader):
+        Z = _make_inducing()
+        model = SIP(bnn, Z, OUTPUT_DIM, "regression", NUM_DATA,
+                      num_prior_samples=10, beta=1.0, beta_warmup_steps=4,
+                      device=DEVICE, dtype=DTYPE, seed=SEED)
+        model.fit(regression_loader, iterations=2)
+        assert model.betas == [0.25, 0.5]
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +218,8 @@ class TestSIPPrediction:
                       device=DEVICE, dtype=DTYPE, seed=SEED)
         model.eval()
         means, stds = model.predict(regression_loader)
-        # predict concatenates forward() outputs along dim=0
-        total_points = means.shape[-2] * means.shape[0] if means.dim() == 3 else means.shape[0]
-        assert total_points == NUM_DATA
+        assert means.shape[-2:] == (NUM_DATA, OUTPUT_DIM)
+        assert stds.shape == means.shape
 
     def test_predict_no_grad(self, bnn, regression_data):
         Z = _make_inducing()
@@ -252,7 +275,6 @@ class TestSIPLikelihoods:
         assert loss.dim() == 0
         assert loss.requires_grad
 
-    @pytest.mark.xfail(reason="Shape mismatch in prob_is_largest with unsqueezed Fmu")
     def test_multiclass_nelbo(self, bnn_multiclass, multiclass_data):
         Z = _make_inducing()
         X, y = multiclass_data

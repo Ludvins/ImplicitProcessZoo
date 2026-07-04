@@ -583,6 +583,10 @@ def parse_args(argv=None):
                     help="Initialization method for SIP inducing inputs.")
     p.add_argument("--sip_num_prior_samples", type=int, default=512,
                     help="Prior samples used to estimate SIP sparse moments.")
+    p.add_argument("--sip_num_train_samples", type=int, default=None,
+                    help=("Posterior/prior inducing samples used in SIP's "
+                          "Monte Carlo likelihood and critic KL. Defaults to "
+                          "--sip_num_prior_samples."))
     p.add_argument("--sip_num_eval_samples", type=int, default=200,
                     help="Posterior samples used at SIP evaluation time.")
     p.add_argument("--sip_learn_inducing", action=argparse.BooleanOptionalAction,
@@ -595,11 +599,30 @@ def parse_args(argv=None):
     p.add_argument("--sip_detach_covariances", action=argparse.BooleanOptionalAction,
                     default=False,
                     help="Detach SIP empirical covariance estimates from prior gradients.")
-    p.add_argument("--sip_jitter", type=float, default=1e-6,
+    p.add_argument("--sip_jitter", type=float, default=1e-5,
                     help="Diagonal jitter added to SIP K_ZZ.")
     p.add_argument("--sip_fix_random_noise", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Use cached BNN prior noise for SIP moment estimates.")
+                    default=False,
+                    help=("Use cached BNN prior noise for SIP moment estimates "
+                          "and critic prior samples. Default False matches the "
+                          "paper's stochastic prior sampling."))
+    p.add_argument("--sip_beta", type=float, default=1.0,
+                    help="Weight on the SIP critic-estimated inducing KL.")
+    p.add_argument("--sip_beta_warmup_steps", type=int, default=0,
+                    help="Linear warmup steps for the SIP KL weight.")
+    p.add_argument("--sip_critic_hidden_dim", type=int, default=50,
+                    help="Hidden width of the SIP inducing-space critic.")
+    p.add_argument("--sip_critic_lr", type=float, default=1e-3,
+                    help="Learning rate for the SIP inducing-space critic.")
+    p.add_argument("--sip_critic_steps", type=int, default=1,
+                    help="Critic updates per SIP variational update.")
+    p.add_argument("--sip_posterior_noise_dim", type=int, default=100,
+                    help=("Noise dimension for the implicit SIP q_phi(u) sampler. "
+                          "The reference SIP implementation uses 100."))
+    p.add_argument("--sip_posterior_hidden_dim", type=int, default=50,
+                    help="Hidden width of the implicit SIP q_phi(u) sampler.")
+    p.add_argument("--sip_posterior_depth", type=int, default=2,
+                    help="Hidden-layer count of the implicit SIP q_phi(u) sampler.")
 
     # --- FCFSVI-specific ---
     p.add_argument("--fcfsvi_num_context", type=int, default=64,
@@ -1111,7 +1134,7 @@ def build_model(args, train_dataset, model_type=None):
             output_dim=train_dataset.output_dim,
             layer_model=BayesLinear,
             dropout=args.dropout,
-            fix_random_noise=_arg("sip_fix_random_noise", True),
+            fix_random_noise=_arg("sip_fix_random_noise", False),
             zero_mean_prior=not learn_prior,
             weight_log_sigma_init=0.0,
             device=device,
@@ -1127,12 +1150,23 @@ def build_model(args, train_dataset, model_type=None):
             likelihood="regression",
             num_data=len(train_dataset),
             num_prior_samples=_arg("sip_num_prior_samples", 512),
+            num_train_samples=_arg("sip_num_train_samples", None),
+            num_eval_samples=_arg("sip_num_eval_samples", 200),
             bb_alpha=args.bb_alpha,
+            beta=_arg("sip_beta", 1.0),
+            beta_warmup_steps=_arg("sip_beta_warmup_steps", 0),
             learn_inducing=_arg("sip_learn_inducing", False),
             detach_covariances=_arg("sip_detach_covariances", False),
+            critic_hidden_dim=_arg("sip_critic_hidden_dim", 50),
+            critic_lr=_arg("sip_critic_lr", 1e-3),
+            critic_steps=_arg("sip_critic_steps", 1),
+            posterior_noise_dim=_arg("sip_posterior_noise_dim", 100),
+            posterior_hidden_dim=_arg("sip_posterior_hidden_dim", 50),
+            posterior_depth=_arg("sip_posterior_depth", 2),
+            fresh_prior_samples=not _arg("sip_fix_random_noise", False),
             y_mean=train_dataset.targets_mean,
             y_std=train_dataset.targets_std,
-            jitter=_arg("sip_jitter", 1e-6),
+            jitter=_arg("sip_jitter", 1e-5),
             device=device,
             dtype=dtype,
             seed=args.seed,
@@ -1947,16 +1981,27 @@ def _variant_tag(args, model_type):
             else "_fixedprior"
         )
     if model_type == "sip":
+        train_samples = getattr(args, "sip_num_train_samples", None)
+        if train_samples is None:
+            train_samples = getattr(args, "sip_num_prior_samples", 512)
         tag = (
             f"_Z{getattr(args, 'sip_num_inducing', 100)}"
             f"_{getattr(args, 'sip_inducing_method', 'kmeans')}"
             f"_S{getattr(args, 'sip_num_prior_samples', 512)}"
+            f"_Strain{train_samples}"
+            f"_critic{getattr(args, 'sip_critic_steps', 1)}"
+            f"_beta{_compact_float_tag(getattr(args, 'sip_beta', 1.0))}"
         )
         tag = f"{tag}_learnZ" if getattr(args, "sip_learn_inducing", False) else f"{tag}_fixedZ"
         tag = (
             f"{tag}_learnprior"
             if getattr(args, "sip_learn_prior", True)
             else f"{tag}_fixedprior"
+        )
+        tag = (
+            f"{tag}_fixednoise"
+            if getattr(args, "sip_fix_random_noise", False)
+            else f"{tag}_freshnoise"
         )
         return tag
     if model_type != "ap_fsvi":
@@ -2149,6 +2194,7 @@ def _uci_comparable_wandb_tags(args, dataset_name):
     elif args.model == "ftip":
         tags.extend([
             args.flow_type,
+            "warm-start" if args.auto_warm_start else "cold-start",
             "learn-prior" if args.ftip_learn_prior else "fixed-prior",
             f"coeffs-{args.regression_coeffs}",
             f"train-samples-{args.num_samples}",
@@ -2165,11 +2211,24 @@ def _uci_comparable_wandb_tags(args, dataset_name):
             "learn-prior" if args.gmvip_learn_prior else "fixed-prior",
         ])
     elif args.model == "sip":
+        sip_train_samples = (
+            args.sip_num_train_samples
+            if args.sip_num_train_samples is not None
+            else args.sip_num_prior_samples
+        )
         tags.extend([
             args.sip_inducing_method,
             f"Z{args.sip_num_inducing}",
             f"prior-samples-{args.sip_num_prior_samples}",
+            f"train-samples-{sip_train_samples}",
             f"eval-samples-{args.sip_num_eval_samples}",
+            f"beta-{_compact_float_tag(args.sip_beta)}",
+            f"beta-warmup-{args.sip_beta_warmup_steps}",
+            f"critic-steps-{args.sip_critic_steps}",
+            f"critic-hidden-{args.sip_critic_hidden_dim}",
+            f"posterior-noise-{args.sip_posterior_noise_dim}",
+            f"posterior-hidden-{args.sip_posterior_hidden_dim}",
+            "fixed-prior-noise" if args.sip_fix_random_noise else "fresh-prior-noise",
             "learn-Z" if args.sip_learn_inducing else "fixed-Z",
             "learn-prior" if args.sip_learn_prior else "fixed-prior",
         ])
@@ -2255,6 +2314,7 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
         hyperparameters["num_samples"] = args.num_samples
         hyperparameters["eval_samples"] = args.eval_samples
         hyperparameters["ftip_learn_prior"] = args.ftip_learn_prior
+        hyperparameters["auto_warm_start"] = args.auto_warm_start
     if model_type == "mfvi":
         hyperparameters["mfvi_num_eval_samples"] = args.mfvi_num_eval_samples
     if model_type == "vip":
@@ -2353,12 +2413,21 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "sip_num_inducing": args.sip_num_inducing,
             "sip_inducing_method": args.sip_inducing_method,
             "sip_num_prior_samples": args.sip_num_prior_samples,
+            "sip_num_train_samples": args.sip_num_train_samples,
             "sip_num_eval_samples": args.sip_num_eval_samples,
+            "sip_beta": args.sip_beta,
+            "sip_beta_warmup_steps": args.sip_beta_warmup_steps,
             "sip_learn_inducing": args.sip_learn_inducing,
             "sip_learn_prior": args.sip_learn_prior,
             "sip_detach_covariances": args.sip_detach_covariances,
             "sip_jitter": args.sip_jitter,
             "sip_fix_random_noise": args.sip_fix_random_noise,
+            "sip_critic_hidden_dim": args.sip_critic_hidden_dim,
+            "sip_critic_lr": args.sip_critic_lr,
+            "sip_critic_steps": args.sip_critic_steps,
+            "sip_posterior_noise_dim": args.sip_posterior_noise_dim,
+            "sip_posterior_hidden_dim": args.sip_posterior_hidden_dim,
+            "sip_posterior_depth": args.sip_posterior_depth,
         })
     if _is_fcfsvi_model(model_type):
         hyperparameters.update({
@@ -2464,10 +2533,13 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
         hyperparameters["map_l2"] = args.map_l2
         hyperparameters["map_log_variance_init"] = args.map_log_variance_init
 
+    final_step = int(getattr(args, "resume_step_offset", 0) or 0) + len(losses)
+
     result = {
         "dataset": dataset_name,
         "model": model_type,
         "hyperparameters": hyperparameters,
+        "final_step": final_step,
         "train_time_s": round(train_time, 2),
         "train": train_metrics,
         "test": test_metrics,
@@ -2492,7 +2564,7 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
               f"H(in)={ood_metrics['entropy_id_mean']:.4f}+/-{ood_metrics['entropy_id_std']:.4f}  "
               f"H(ood)={ood_metrics['entropy_ood_mean']:.4f}+/-{ood_metrics['entropy_ood_std']:.4f}")
 
-    wandb_log_result(result)
+    wandb_log_result(result, step=final_step)
 
     # Save checkpoint
     if args.save_checkpoint:
@@ -2619,15 +2691,30 @@ def _wandb_run_metadata(args, dataset_name):
         z_slug = "learn_Z" if args.sip_learn_inducing else "fixed_Z"
         prior_slug = "tunable_prior" if args.sip_learn_prior else "fixed_prior"
         name = f"UCI 120k | {dataset_name} | sip | {z_slug} | {prior_slug} | seed {args.seed}"
+        sip_train_samples = (
+            args.sip_num_train_samples
+            if args.sip_num_train_samples is not None
+            else args.sip_num_prior_samples
+        )
         tags = [
             "uci",
             "120k",
             dataset_name,
             "sip",
+            "critic-kl",
             "bnn",
             f"Z{args.sip_num_inducing}",
             args.sip_inducing_method,
             f"Sprior{args.sip_num_prior_samples}",
+            f"Strain{sip_train_samples}",
+            f"Seval{args.sip_num_eval_samples}",
+            f"beta-{_compact_float_tag(args.sip_beta)}",
+            f"beta-warmup-{args.sip_beta_warmup_steps}",
+            f"critic-steps-{args.sip_critic_steps}",
+            f"critic-hidden-{args.sip_critic_hidden_dim}",
+            f"posterior-noise-{args.sip_posterior_noise_dim}",
+            f"posterior-hidden-{args.sip_posterior_hidden_dim}",
+            "fixed-prior-noise" if args.sip_fix_random_noise else "fresh-prior-noise",
             "learn-prior" if args.sip_learn_prior else "fixed-prior",
         ]
         if args.sip_learn_inducing:

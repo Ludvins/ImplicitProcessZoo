@@ -1,6 +1,7 @@
 import pytest
+import sys
 
-from scripts.benchmark_utils import training_decomposition
+from scripts.benchmark_utils import training_decomposition, wandb_log_result
 
 
 class DummyModel:
@@ -55,3 +56,33 @@ def test_training_decomposition_for_ftip_flow_components():
     assert values["train/kl"] == 0.7
     assert values["train/ftip_base_kl"] == 0.9
     assert values["train/ftip_flow_ldj"] == -0.2
+
+
+def test_wandb_log_result_uses_explicit_step(monkeypatch):
+    class DummyRun:
+        def __init__(self):
+            self.summary = {}
+
+    class DummyWandb:
+        def __init__(self):
+            self.run = DummyRun()
+            self.logged = []
+
+        def log(self, payload, step=None):
+            self.logged.append((payload, step))
+
+    dummy = DummyWandb()
+    monkeypatch.setitem(sys.modules, "wandb", dummy)
+
+    wandb_log_result(
+        {
+            "train_time_s": 1.5,
+            "train": {"RMSE": 0.1},
+            "test": {"RMSE": 0.2},
+            "prior": {},
+        },
+        step=30000,
+    )
+
+    assert dummy.logged[0][1] == 30000
+    assert dummy.run.summary["final/test/RMSE"] == 0.2

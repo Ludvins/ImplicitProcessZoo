@@ -75,10 +75,18 @@ SYNTHETIC_BB_ALPHA = {
 SYNTHETIC_SIP_DEFAULTS = {
     "sip_inducing_method": "train_quantiles",
     "sip_jitter": 1e-4,
+    "sip_learn_prior": False,
 }
 SYNTHETIC_SIP_FLAGS = {
     "sip_inducing_method": ("--sip_inducing_method",),
     "sip_jitter": ("--sip_jitter",),
+    "sip_learn_prior": ("--sip_learn_prior", "--no-sip_learn_prior"),
+}
+SYNTHETIC_VIP_DEFAULTS = {
+    "vip_learn_prior": False,
+}
+SYNTHETIC_VIP_FLAGS = {
+    "vip_learn_prior": ("--vip_learn_prior", "--no-vip_learn_prior"),
 }
 SYNTHETIC_TFSVI_DEFAULTS = {
     "tfsvi_S_ctx": 3,
@@ -416,6 +424,10 @@ def args_for_run(base_args, synthetic_args, model_type):
     if model_type == "sip":
         for attr, value in SYNTHETIC_SIP_DEFAULTS.items():
             if not _flag_supplied(synthetic_args, *SYNTHETIC_SIP_FLAGS[attr]):
+                setattr(args, attr, value)
+    if model_type == "vip":
+        for attr, value in SYNTHETIC_VIP_DEFAULTS.items():
+            if not _flag_supplied(synthetic_args, *SYNTHETIC_VIP_FLAGS[attr]):
                 setattr(args, attr, value)
     if model_type == "tfsvi":
         for attr, value in SYNTHETIC_TFSVI_DEFAULTS.items():

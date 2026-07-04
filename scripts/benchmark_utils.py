@@ -294,6 +294,27 @@ def training_decomposition(model, model_type=None):
                 value = metrics.get(metric_name)
                 if value is not None:
                     payload[f"train/gmvip/{metric_name}"] = _to_float(value)
+        if normalized_type == "sip":
+            critic_loss = _last_scalar(model, "critic_losses")
+            critic_accuracy = _last_scalar(model, "critic_accuracies")
+            critic_saturation = _last_scalar(model, "critic_saturation_fractions")
+            forward_kl = _last_scalar(model, "kl_forwards")
+            reverse_kl = _last_scalar(model, "kl_reverses")
+            if critic_loss is not None:
+                payload["train/sip_critic_loss"] = critic_loss
+                payload["train/sip/critic_loss"] = critic_loss
+            if critic_accuracy is not None:
+                payload["train/sip_critic_accuracy"] = critic_accuracy
+                payload["train/sip/critic_accuracy"] = critic_accuracy
+            if critic_saturation is not None:
+                payload["train/sip_critic_saturation_fraction"] = critic_saturation
+                payload["train/sip/critic_saturation_fraction"] = critic_saturation
+            if forward_kl is not None:
+                payload["train/sip_forward_kl_estimate"] = forward_kl
+                payload["train/sip/forward_kl_estimate"] = forward_kl
+            if reverse_kl is not None:
+                payload["train/sip_reverse_kl_estimate"] = reverse_kl
+                payload["train/sip/reverse_kl_estimate"] = reverse_kl
 
     else:
         if kl is not None:
@@ -518,7 +539,7 @@ def wandb_log_eval(step, train_metrics=None, validation_metrics=None):
     wandb_log(payload, step=step)
 
 
-def wandb_log_result(result):
+def wandb_log_result(result, step=None):
     """Log final train/test metrics and update the W&B summary."""
     wandb = sys.modules.get("wandb")
     if wandb is None or getattr(wandb, "run", None) is None:
@@ -532,7 +553,10 @@ def wandb_log_result(result):
     if "ood" in result:
         payload.update(_prefix_metrics("final/ood", result.get("ood", {})))
     payload = {k: v for k, v in payload.items() if v is not None}
-    wandb.log(_json_safe_dict(payload))
+    if step is None:
+        wandb.log(_json_safe_dict(payload))
+    else:
+        wandb.log(_json_safe_dict(payload), step=int(step))
     wandb.run.summary.update(_json_safe_dict(payload))
 
 
