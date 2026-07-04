@@ -76,6 +76,9 @@ class Test_Dataset(Dataset):
 
 uci_base = "http://archive.ics.uci.edu/ml/machine-learning-databases/"
 data_base = "./data"
+airline_csv_url = (
+    "https://media.githubusercontent.com/media/Ludvins/Variational-LLA/main/data/airline.csv"
+)
 
 
 def _torchvision_datasets_transforms():
@@ -1003,12 +1006,29 @@ class Airline_Dataset(CustomDataset):
         self.type = "regression"
         self.output_dim = 1
 
-        if not os.path.exists("./data/airline.csv"):
-            raise FileNotFoundError(
-                "Airline dataset expects ./data/airline.csv. "
-                "Place the preprocessed Variational-LLA Airline CSV there."
-            )
-        data = pd.read_csv("./data/airline.csv")
+        data_path = os.path.join(data_base, "airline.csv")
+        if not os.path.exists(data_path):
+            print("Downloading Airline Dataset...")
+            os.makedirs(data_base, exist_ok=True)
+            tmp_path = f"{data_path}.tmp"
+            try:
+                with urlopen(airline_csv_url) as response, open(tmp_path, "wb") as f:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                os.replace(tmp_path, data_path)
+            except Exception as exc:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise RuntimeError(
+                    "Could not download Airline dataset from "
+                    f"{airline_csv_url}. Place the CSV at {data_path} or check "
+                    "network access."
+                ) from exc
+
+        data = pd.read_csv(data_path)
         # Convert time of day from hhmm to minutes since midnight
         data.ArrTime = 60 * np.floor(data.ArrTime / 100) + np.mod(data.ArrTime, 100)
         data.DepTime = 60 * np.floor(data.DepTime / 100) + np.mod(data.DepTime, 100)
