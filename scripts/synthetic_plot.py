@@ -76,11 +76,17 @@ SYNTHETIC_SIP_DEFAULTS = {
     "sip_inducing_method": "train_quantiles",
     "sip_jitter": 1e-4,
     "sip_learn_prior": False,
+    "sip_beta": 2.0,
+    "sip_critic_steps": 5,
+    "sip_critic_hidden_dim": 128,
 }
 SYNTHETIC_SIP_FLAGS = {
     "sip_inducing_method": ("--sip_inducing_method",),
     "sip_jitter": ("--sip_jitter",),
     "sip_learn_prior": ("--sip_learn_prior", "--no-sip_learn_prior"),
+    "sip_beta": ("--sip_beta",),
+    "sip_critic_steps": ("--sip_critic_steps",),
+    "sip_critic_hidden_dim": ("--sip_critic_hidden_dim",),
 }
 SYNTHETIC_VIP_DEFAULTS = {
     "vip_learn_prior": False,
@@ -730,7 +736,12 @@ def predictive_components(model, model_type, args, x_grid):
         elif model_type == "sip":
             mean = model.predict_f_samples(x_grid, S)
             mean = mean * model.y_std + model.y_mean
-            std = torch.exp(0.5 * model.log_variance).view(1, 1, 1) * model.y_std
+            log_variance = (
+                model.effective_log_variance()
+                if hasattr(model, "effective_log_variance")
+                else model.log_variance
+            )
+            std = torch.exp(0.5 * log_variance).view(1, 1, 1) * model.y_std
             std = std.expand_as(mean)
         elif model_type == "vip" and getattr(args, "vip_sample_functions", False):
             S = int(getattr(args, "eval_samples", S))

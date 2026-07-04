@@ -102,6 +102,8 @@ class SIP(nn.Module):
         y_std=1.0,
         num_classes=None,
         jitter=1e-5,
+        log_variance_init=-5.0,
+        min_log_variance=None,
         device=None,
         dtype=torch.float64,
         seed=2147483647,
@@ -144,6 +146,9 @@ class SIP(nn.Module):
         self.critic_steps = int(critic_steps)
         self.fresh_prior_samples = bool(fresh_prior_samples)
         self.jitter = float(jitter)
+        self.min_log_variance = (
+            None if min_log_variance is None else float(min_log_variance)
+        )
 
         self.register_buffer(
             "y_mean", torch.as_tensor(y_mean, dtype=dtype, device=self.device)
@@ -159,7 +164,7 @@ class SIP(nn.Module):
 
         if likelihood == "regression":
             self.log_variance = nn.Parameter(
-                torch.tensor(-5.0, dtype=dtype, device=self.device)
+                torch.tensor(float(log_variance_init), dtype=dtype, device=self.device)
             )
         if likelihood in ("binary", "multiclass"):
             self.num_gauss_hermite_points = 20
@@ -216,6 +221,12 @@ class SIP(nn.Module):
         self.critic_saturation_fractions = []
         self.kl_forwards = []
         self.kl_reverses = []
+
+    def effective_log_variance(self):
+        log_variance = self.log_variance
+        if self.min_log_variance is not None:
+            log_variance = torch.clamp(log_variance, min=self.min_log_variance)
+        return log_variance
 
     # ------------------------------------------------------------------
     # Parameter groups and prior sampling
@@ -471,14 +482,16 @@ class SIP(nn.Module):
 
     def _logp(self, F_samples, Y):
         if self.likelihood_type == "regression":
-            return gaussian_logp(F_samples, Y, self.log_variance)
+            return gaussian_logp(F_samples, Y, self.effective_log_variance())
         if self.likelihood_type == "binary":
             return bernoulli_logp(F_samples, Y)
         return multiclass_logp(F_samples, Y, self.num_classes, self.epsilon)
 
     def _predict_mean_and_var(self, Fmu, Fvar):
         if self.likelihood_type == "regression":
-            return predict_mean_and_var_regression(Fmu, Fvar, self.log_variance)
+            return predict_mean_and_var_regression(
+                Fmu, Fvar, self.effective_log_variance()
+            )
         if self.likelihood_type == "binary":
             return predict_mean_and_var_binary(Fmu, Fvar)
         return predict_mean_and_var_multiclass(
@@ -542,7 +555,7 @@ class SIP(nn.Module):
     def predict_y_samples(self, X, S):
         F_samples = self.predict_f_samples(X, S)
         if self.likelihood_type == "regression":
-            std = torch.sqrt(torch.exp(self.log_variance))
+            std = torch.sqrt(torch.exp(self.effective_log_variance()))
             return F_samples + std * torch.randn_like(F_samples)
         return F_samples
 
@@ -554,7 +567,7 @@ class SIP(nn.Module):
         if self.likelihood_type == "regression":
             F_samples = self.predict_f_samples(predict_at, self.num_eval_samples)
             means = F_samples * self.y_std + self.y_mean
-            std = torch.sqrt(torch.exp(self.log_variance)) * self.y_std
+            std = torch.sqrt(torch.exp(self.effective_log_variance())) * self.y_std
             return means, torch.ones_like(means) * std
 
         Fmean, Fvar = self.predict_f(predict_at)

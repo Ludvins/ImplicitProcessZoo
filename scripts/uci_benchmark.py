@@ -601,6 +601,10 @@ def parse_args(argv=None):
                     help="Detach SIP empirical covariance estimates from prior gradients.")
     p.add_argument("--sip_jitter", type=float, default=1e-5,
                     help="Diagonal jitter added to SIP K_ZZ.")
+    p.add_argument("--sip_log_variance_init", type=float, default=-5.0,
+                    help="Initial log observation-noise variance for SIP regression.")
+    p.add_argument("--sip_min_log_variance", type=float, default=None,
+                    help="Optional lower bound for SIP regression log observation-noise variance.")
     p.add_argument("--sip_fix_random_noise", action=argparse.BooleanOptionalAction,
                     default=False,
                     help=("Use cached BNN prior noise for SIP moment estimates "
@@ -1167,6 +1171,8 @@ def build_model(args, train_dataset, model_type=None):
             y_mean=train_dataset.targets_mean,
             y_std=train_dataset.targets_std,
             jitter=_arg("sip_jitter", 1e-5),
+            log_variance_init=_arg("sip_log_variance_init", -5.0),
+            min_log_variance=_arg("sip_min_log_variance", None),
             device=device,
             dtype=dtype,
             seed=args.seed,
@@ -2421,6 +2427,8 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
             "sip_learn_prior": args.sip_learn_prior,
             "sip_detach_covariances": args.sip_detach_covariances,
             "sip_jitter": args.sip_jitter,
+            "sip_log_variance_init": args.sip_log_variance_init,
+            "sip_min_log_variance": args.sip_min_log_variance,
             "sip_fix_random_noise": args.sip_fix_random_noise,
             "sip_critic_hidden_dim": args.sip_critic_hidden_dim,
             "sip_critic_lr": args.sip_critic_lr,
