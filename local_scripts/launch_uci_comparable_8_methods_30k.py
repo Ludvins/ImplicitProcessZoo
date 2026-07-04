@@ -23,7 +23,7 @@ def main() -> None:
 
     cmd = [
         str(PYTHON),
-        "scripts/run_uci_comparable_8_methods_30k.py",
+        "local_scripts/run_uci_comparable_8_methods_30k.py",
         *sys.argv[1:],
     ]
     with OUT_LOG.open("wb") as stdout, ERR_LOG.open("wb") as stderr:

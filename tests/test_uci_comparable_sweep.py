@@ -7,7 +7,11 @@ from scripts.uci_benchmark import (
     build_model,
     parse_args,
 )
-from scripts.run_uci_comparable_8_methods_30k import VARIANTS, build_command, select_variants
+from local_scripts.run_uci_comparable_8_methods_30k import (
+    VARIANTS,
+    build_command,
+    select_variants,
+)
 
 
 class TinyTrainDataset:
