@@ -40,11 +40,6 @@ from src.utils.metrics import MetricsClassification
 from src.utils.utils import infinite_loader
 from src.vip import VIP
 
-try:
-    from src.ap_fsvi import APFSVI
-except ModuleNotFoundError:
-    APFSVI = None
-
 from scripts.benchmark_utils import (
     add_wandb_args,
     finish_wandb_run,
@@ -58,109 +53,6 @@ from scripts.benchmark_utils import (
 
 CLASSIFICATION_DATASETS = ["FashionMNIST", "CIFAR10"]
 CLASSIFICATION_MODELS = ["map", "vip", "fbnn"]
-
-AP_VARIANTS = {
-    "mmd": {
-        "display": "MMD",
-        "discrepancy": "mmd",
-        "sample_projection_mode": "random",
-    },
-    "energy": {
-        "display": "Energy",
-        "discrepancy": "energy",
-        "sample_projection_mode": "random",
-    },
-    "sample_sliced_random": {
-        "display": "Sample Sliced KL",
-        "discrepancy": "sample_sliced_kl",
-        "sample_projection_mode": "random",
-    },
-    "sample_sliced_fixed_random": {
-        "display": "Sample Sliced KL Fixed",
-        "discrepancy": "sample_sliced_kl",
-        "sample_projection_mode": "fixed_random",
-    },
-    "sample_sliced_knn_random": {
-        "display": "Sample Sliced kNN KL",
-        "discrepancy": "sample_sliced_knn_kl",
-        "sample_projection_mode": "random",
-    },
-    "sample_sliced_gaussian_random": {
-        "display": "Sample Sliced Gaussian KL",
-        "discrepancy": "sample_sliced_gaussian_kl",
-        "sample_projection_mode": "random",
-    },
-    "sample_sliced_quantile_transport_random": {
-        "display": "Sliced Quantile-Transport KL",
-        "discrepancy": "sample_sliced_quantile_transport_kl",
-        "sample_projection_mode": "random",
-    },
-    "sample_sliced_rank_random": {
-        "display": "Sample Sliced Rank KL",
-        "discrepancy": "sample_sliced_rank_kl",
-        "sample_projection_mode": "random",
-    },
-    "sample_sliced_flow_random": {
-        "display": "Sliced Flow KL",
-        "discrepancy": "sample_sliced_flow_kl",
-        "sample_projection_mode": "random",
-    },
-    "sample_sliced_flow_fixed_random": {
-        "display": "Sliced Flow KL Fixed",
-        "discrepancy": "sample_sliced_flow_kl",
-        "sample_projection_mode": "fixed_random",
-    },
-    "projective_dual": {
-        "display": "Projective-Dual KL",
-        "discrepancy": "projective_dual_kl",
-        "sample_projection_mode": "random",
-    },
-    "projected_partition": {
-        "display": "Projected Partition KL",
-        "discrepancy": "projected_partition_kl",
-        "sample_projection_mode": "random",
-    },
-    "spectral_projected": {
-        "display": "Spectral Projected KL",
-        "discrepancy": "spectral_projected_kl",
-        "sample_projection_mode": "random",
-    },
-}
-
-AP_VARIANT_ALIASES = {
-    "sample_sliced": "sample_sliced_random",
-    "sample_sliced_kl": "sample_sliced_random",
-    "sample_sliced_knn": "sample_sliced_knn_random",
-    "sample_sliced_knn_kl": "sample_sliced_knn_random",
-    "sliced_knn_kl": "sample_sliced_knn_random",
-    "sample_sliced_spacing_kl": "sample_sliced_knn_random",
-    "sliced_spacing_kl": "sample_sliced_knn_random",
-    "sample_sliced_gaussian": "sample_sliced_gaussian_random",
-    "sample_sliced_gaussian_kl": "sample_sliced_gaussian_random",
-    "sample_sliced_quantile_transport": "sample_sliced_quantile_transport_random",
-    "sample_sliced_quantile_transport_kl": "sample_sliced_quantile_transport_random",
-    "sliced_quantile_transport_kl": "sample_sliced_quantile_transport_random",
-    "sqtkl": "sample_sliced_quantile_transport_random",
-    "sample_sliced_rank": "sample_sliced_rank_random",
-    "sample_sliced_rank_kl": "sample_sliced_rank_random",
-    "sample_sliced_rank_statistic_kl": "sample_sliced_rank_random",
-    "sliced_rank_kl": "sample_sliced_rank_random",
-    "rank_sliced_kl": "sample_sliced_rank_random",
-    "rsfkl": "sample_sliced_rank_random",
-    "ssrkl": "sample_sliced_rank_random",
-    "sample_sliced_flow": "sample_sliced_flow_fixed_random",
-    "sample_sliced_flow_kl": "sample_sliced_flow_fixed_random",
-    "sliced_flow_kl": "sample_sliced_flow_fixed_random",
-    "flow_sliced_kl": "sample_sliced_flow_fixed_random",
-    "ssflkl": "sample_sliced_flow_fixed_random",
-    "projective_dual_kl": "projective_dual",
-    "projective_dual": "projective_dual",
-    "pd_kl": "projective_dual",
-    "apd_fsvi": "projective_dual",
-    "projected_partition_kl": "projected_partition",
-    "projected_partition": "projected_partition",
-    "spectral_projected_kl": "spectral_projected",
-}
 
 
 def parse_args():
@@ -307,143 +199,6 @@ def parse_args():
         help="Let FBNN prior parameters train. Default is a fixed BNN prior.",
     )
 
-    # AP-FSVI.
-    p.add_argument(
-        "--ap_variant",
-        default="sample_sliced_random",
-        choices=list(AP_VARIANTS.keys()) + list(AP_VARIANT_ALIASES.keys()) + ["all"],
-        help="AP-FSVI discrepancy preset.",
-    )
-    p.add_argument(
-        "--ap_fsvi_prior",
-        choices=["bnn", "gp"],
-        default="bnn",
-        help="AP-FSVI prior. BNN is the image-classification default.",
-    )
-    p.add_argument(
-        "--ap_fsvi_num_samples",
-        type=int,
-        default=32,
-        help="AP-FSVI posterior samples per step.",
-    )
-    p.add_argument("--ap_fsvi_num_prior_samples", type=int, default=64)
-    p.add_argument("--ap_fsvi_num_measurement", type=int, default=64)
-    p.add_argument("--ap_fsvi_beta", type=float, default=1.0)
-    p.add_argument("--ap_fsvi_beta_start", type=float, default=0.0)
-    p.add_argument("--ap_fsvi_beta_warmup_steps", type=int, default=1000)
-    p.add_argument("--ap_fsvi_data_pretrain_steps", type=int, default=0)
-    p.add_argument(
-        "--ap_fsvi_data_loss",
-        choices=["expected_nll", "predictive_nll"],
-        default="expected_nll",
-    )
-    p.add_argument(
-        "--ap_fsvi_discrepancy_projections",
-        type=int,
-        default=128,
-        help="Projection/mode count for sliced or spectral AP-FSVI variants.",
-    )
-    p.add_argument("--ap_fsvi_partition_num_bins", type=int, default=32)
-    p.add_argument("--ap_fsvi_partition_alpha_inc", type=float, default=0.5)
-    p.add_argument("--ap_fsvi_partition_temperature", type=float, default=None)
-    p.add_argument("--ap_fsvi_projected_partition_topk", type=int, default=None)
-    p.add_argument(
-        "--ap_fsvi_spectral_estimator",
-        choices=["full_gaussian", "gaussian", "knn_entropy"],
-        default="full_gaussian",
-    )
-    p.add_argument("--ap_fsvi_spectral_cov_shrinkage", type=float, default=0.05)
-    p.add_argument("--ap_fsvi_sample_gaussian_shrinkage", type=float, default=0.05)
-    p.add_argument(
-        "--ap_fsvi_sample_knn_k",
-        type=int,
-        default=3,
-        help="Neighbor count for AP-FSVI sample sliced kNN KL.",
-    )
-    p.add_argument(
-        "--ap_fsvi_quantile_transport_k",
-        type=int,
-        default=3,
-        help="Local spacing window for AP-FSVI sliced quantile-transport KL.",
-    )
-    p.add_argument(
-        "--ap_fsvi_sample_rank_resolution",
-        type=int,
-        default=16,
-        help="Rank histogram resolution K for AP-FSVI sample sliced rank KL.",
-    )
-    p.add_argument(
-        "--ap_fsvi_sample_rank_temperature",
-        type=float,
-        default=0.2,
-        help="Soft CDF temperature multiplier for AP-FSVI sample sliced rank KL.",
-    )
-    p.add_argument(
-        "--ap_fsvi_sample_rank_bin_temperature",
-        type=float,
-        default=0.5,
-        help="Soft histogram bin temperature for AP-FSVI sample sliced rank KL.",
-    )
-    p.add_argument("--ap_fsvi_sample_flow_depth", type=int, default=2)
-    p.add_argument("--ap_fsvi_sample_flow_hidden_dim", type=int, default=64)
-    p.add_argument("--ap_fsvi_sample_flow_num_bins", type=int, default=8)
-    p.add_argument("--ap_fsvi_sample_flow_bound", type=float, default=3.0)
-    p.add_argument("--ap_fsvi_sample_flow_lr", type=float, default=1e-3)
-    p.add_argument("--ap_fsvi_sample_flow_batch_size", type=int, default=512)
-    p.add_argument("--ap_fsvi_sample_flow_prior_steps", type=int, default=20)
-    p.add_argument("--ap_fsvi_sample_flow_posterior_steps", type=int, default=1)
-    p.add_argument("--ap_fsvi_sample_flow_prior_fit_every", type=int, default=100)
-    p.add_argument("--ap_fsvi_pd_critic_hidden_dim", type=int, default=128)
-    p.add_argument("--ap_fsvi_pd_critic_lr", type=float, default=1e-4)
-    p.add_argument("--ap_fsvi_pd_critic_steps", type=int, default=2)
-    p.add_argument(
-        "--ap_fsvi_pd_critic_use_context_inputs",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Include flattened image inputs in the projective-dual critic.",
-    )
-    p.add_argument("--ap_fsvi_pd_critic_unbounded", action="store_true", default=False)
-    p.add_argument("--ap_fsvi_pd_critic_output_bound", type=float, default=10.0)
-    p.add_argument("--ap_fsvi_pd_critic_spectral_norm", action="store_true", default=False)
-    p.add_argument(
-        "--ap_fsvi_measurement_weights",
-        type=float,
-        nargs=3,
-        default=[0.4, 0.4, 0.2],
-        metavar=("DATA", "NEAR", "DOMAIN"),
-    )
-    p.add_argument("--ap_fsvi_near_data_noise", type=float, default=0.05)
-    p.add_argument("--ap_fsvi_domain_std", type=float, default=1.0)
-    p.add_argument(
-        "--no_ap_fsvi_unit_domain_bounds",
-        action="store_true",
-        help="Do not constrain AP-FSVI domain measurement points to [0, 1].",
-    )
-    p.add_argument(
-        "--ap_fsvi_fixed_measure_points",
-        action="store_true",
-        default=False,
-        help="Use a fixed AP-FSVI measurement set sampled before training.",
-    )
-    p.add_argument(
-        "--ap_fsvi_adaptive_measure_points",
-        action="store_true",
-        default=False,
-        help="Enable AP-FSVI adaptive measurement-point optimization.",
-    )
-    p.add_argument(
-        "--ap_fsvi_adaptive_measure_mode",
-        choices=["gradient", "candidate", "candidate_then_one_step"],
-        default="gradient",
-    )
-    p.add_argument("--ap_fsvi_adaptive_measure_steps", type=int, default=1)
-    p.add_argument("--ap_fsvi_adaptive_measure_every", type=int, default=1)
-    p.add_argument("--ap_fsvi_adaptive_measure_lr", type=float, default=0.02)
-    p.add_argument("--ap_fsvi_adaptive_measure_diversity_weight", type=float, default=0.0)
-    p.add_argument("--ap_fsvi_adaptive_measure_diversity_lengthscale", type=float, default=None)
-    p.add_argument("--ap_fsvi_reservoir_size", type=int, default=5000)
-    p.add_argument("--ap_fsvi_max_grad_norm", type=float, default=None)
-
     # Training.
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--eval_batch_size", type=int, default=512)
@@ -485,10 +240,6 @@ def parse_args():
         args.epochs = None
     if args.fbnn_num_samples is None:
         args.fbnn_num_samples = args.num_samples
-    if args.ap_fsvi_num_samples is None:
-        args.ap_fsvi_num_samples = args.num_samples
-    if args.ap_variant in AP_VARIANT_ALIASES:
-        args.ap_variant = AP_VARIANT_ALIASES[args.ap_variant]
     return args
 
 
@@ -816,104 +567,6 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             dtype=dtype,
         )
 
-    if model_type == "ap_fsvi":
-        if APFSVI is None:
-            raise ImportError(
-                "AP-FSVI was requested, but src.ap_fsvi is not available in this workspace."
-            )
-        if ap_variant is None:
-            ap_variant = args.ap_variant
-        spec = AP_VARIANTS[ap_variant]
-        gen_fn = build_bayesian_classifier(
-            args,
-            train_dataset,
-            num_samples=args.ap_fsvi_num_samples,
-            seed=args.seed,
-            fix_random_noise=False,
-            weight_log_sigma_init=args.weight_log_sigma_init,
-        )
-        prior_fn = None
-        if args.ap_fsvi_prior == "bnn":
-            prior_fn = build_bayesian_classifier(
-                args,
-                train_dataset,
-                num_samples=args.ap_fsvi_num_prior_samples,
-                seed=args.seed + 1,
-                fix_random_noise=False,
-                weight_log_sigma_init=args.prior_weight_log_sigma_init,
-            )
-        domain_bounds = None if args.no_ap_fsvi_unit_domain_bounds else [0.0, 1.0]
-        return APFSVI(
-            generative_function=gen_fn,
-            prior_function=prior_fn,
-            input_dim=input_dim,
-            output_dim=output_dim,
-            likelihood="multiclass",
-            num_classes=num_classes,
-            num_data=len(train_dataset),
-            num_samples=args.ap_fsvi_num_samples,
-            num_prior_samples=args.ap_fsvi_num_prior_samples,
-            num_measurement=args.ap_fsvi_num_measurement,
-            beta=args.ap_fsvi_beta,
-            beta_start=args.ap_fsvi_beta_start,
-            beta_warmup_steps=args.ap_fsvi_beta_warmup_steps,
-            data_pretrain_steps=args.ap_fsvi_data_pretrain_steps,
-            data_loss=args.ap_fsvi_data_loss,
-            measurement_weights=args.ap_fsvi_measurement_weights,
-            near_data_noise=args.ap_fsvi_near_data_noise,
-            domain_bounds=domain_bounds,
-            domain_std=args.ap_fsvi_domain_std,
-            adaptive_measure_points=args.ap_fsvi_adaptive_measure_points,
-            adaptive_measure_mode=args.ap_fsvi_adaptive_measure_mode,
-            adaptive_measure_steps=args.ap_fsvi_adaptive_measure_steps,
-            adaptive_measure_every=args.ap_fsvi_adaptive_measure_every,
-            adaptive_measure_lr=args.ap_fsvi_adaptive_measure_lr,
-            adaptive_measure_diversity_weight=(
-                args.ap_fsvi_adaptive_measure_diversity_weight
-            ),
-            adaptive_measure_diversity_lengthscale=(
-                args.ap_fsvi_adaptive_measure_diversity_lengthscale
-            ),
-            fixed_measure_points=args.ap_fsvi_fixed_measure_points,
-            function_discrepancy=spec["discrepancy"],
-            discrepancy_num_projections=args.ap_fsvi_discrepancy_projections,
-            partition_num_bins=args.ap_fsvi_partition_num_bins,
-            partition_alpha_inc=args.ap_fsvi_partition_alpha_inc,
-            partition_temperature=args.ap_fsvi_partition_temperature,
-            projected_partition_num_projections=args.ap_fsvi_discrepancy_projections,
-            projected_partition_topk=args.ap_fsvi_projected_partition_topk,
-            sample_projection_mode=spec["sample_projection_mode"],
-            sample_knn_k=args.ap_fsvi_sample_knn_k,
-            quantile_transport_k=args.ap_fsvi_quantile_transport_k,
-            sample_rank_resolution=args.ap_fsvi_sample_rank_resolution,
-            sample_rank_temperature=args.ap_fsvi_sample_rank_temperature,
-            sample_rank_bin_temperature=args.ap_fsvi_sample_rank_bin_temperature,
-            sample_flow_depth=args.ap_fsvi_sample_flow_depth,
-            sample_flow_hidden_dim=args.ap_fsvi_sample_flow_hidden_dim,
-            sample_flow_num_bins=args.ap_fsvi_sample_flow_num_bins,
-            sample_flow_bound=args.ap_fsvi_sample_flow_bound,
-            sample_flow_lr=args.ap_fsvi_sample_flow_lr,
-            sample_flow_batch_size=args.ap_fsvi_sample_flow_batch_size,
-            sample_flow_prior_steps=args.ap_fsvi_sample_flow_prior_steps,
-            sample_flow_posterior_steps=args.ap_fsvi_sample_flow_posterior_steps,
-            sample_flow_prior_fit_every=args.ap_fsvi_sample_flow_prior_fit_every,
-            pd_critic_hidden_dim=args.ap_fsvi_pd_critic_hidden_dim,
-            pd_critic_lr=args.ap_fsvi_pd_critic_lr,
-            pd_critic_steps=args.ap_fsvi_pd_critic_steps,
-            pd_critic_use_context_inputs=args.ap_fsvi_pd_critic_use_context_inputs,
-            pd_critic_bounded_output=not args.ap_fsvi_pd_critic_unbounded,
-            pd_critic_output_bound=args.ap_fsvi_pd_critic_output_bound,
-            pd_critic_spectral_normalization=args.ap_fsvi_pd_critic_spectral_norm,
-            spectral_estimator=args.ap_fsvi_spectral_estimator,
-            spectral_cov_shrinkage=args.ap_fsvi_spectral_cov_shrinkage,
-            sample_gaussian_shrinkage=args.ap_fsvi_sample_gaussian_shrinkage,
-            reservoir_size=args.ap_fsvi_reservoir_size,
-            max_grad_norm=args.ap_fsvi_max_grad_norm,
-            device=device,
-            dtype=dtype,
-            seed=args.seed,
-        )
-
     raise ValueError(f"Unknown model_type: {model_type}")
 
 
@@ -927,8 +580,6 @@ def predict_logits_samples(model, xb, args, model_type):
         model.num_mc_samples = old
         return samples
     if model_type == "fbnn":
-        return model.predict(xb, S=args.eval_samples)
-    if model_type == "ap_fsvi":
         return model.predict(xb, S=args.eval_samples)
     raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -975,11 +626,6 @@ def evaluate_classification(
 def initialize_function_context(model, model_type, train_loader):
     if model_type == "fbnn" and hasattr(model, "_fill_reservoir"):
         model._fill_reservoir(train_loader)
-    if model_type == "ap_fsvi":
-        if hasattr(model, "_fill_reservoir"):
-            model._fill_reservoir(train_loader)
-        if hasattr(model, "_initialize_fixed_measurement_set"):
-            model._initialize_fixed_measurement_set(train_loader)
 
 
 def train_with_metrics(
@@ -1143,9 +789,6 @@ def count_parameters(model):
 
 def result_file_name(dataset_name, model_type, args, ap_variant):
     parts = [dataset_name, model_type]
-    if model_type == "ap_fsvi":
-        parts.append(ap_variant)
-        parts.append(args.ap_fsvi_prior)
     parts.append(args.backbone)
     if args.full_bayes_cnn:
         parts.append("fullbayescnn")
@@ -1175,10 +818,7 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
     if args.backbone == "resnet18" and dataset_name != "CIFAR10":
         raise ValueError("resnet18 backbone is only supported for CIFAR10.")
 
-    variant_label = None
-    if model_type == "ap_fsvi":
-        variant_label = ap_variant or args.ap_variant
-    model = build_model(args, train_dataset, model_type, variant_label)
+    model = build_model(args, train_dataset, model_type, ap_variant)
     params = count_parameters(model)
 
     use_cuda = "cuda" in str(args.device).lower()
@@ -1192,16 +832,13 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
 
     display_model = pretty_model_name(model_type)
     display_suffix = None
-    if model_type == "ap_fsvi":
-        spec = AP_VARIANTS[variant_label]
-        display_suffix = f"{spec['display']} | {args.ap_fsvi_prior.upper()} prior"
     run_name = classification_run_name(
         dataset_name,
         model_type,
         args.seed,
         display_suffix,
     )
-    group = classification_group(dataset_name, model_type, args, variant_label)
+    group = classification_group(dataset_name, model_type, args, ap_variant)
     tags = [
         "classification",
         dataset_name,
@@ -1209,8 +846,6 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
         args.backbone,
         "BayesLinear",
     ]
-    if model_type == "ap_fsvi":
-        tags.extend([variant_label, f"prior:{args.ap_fsvi_prior}"])
     run = init_wandb_run(
         args,
         name=run_name,
@@ -1219,7 +854,6 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
         config={
             "dataset_name": dataset_name,
             "model_type": model_type,
-            "ap_variant": variant_label,
             "parameter_count": params,
         },
     )
@@ -1256,9 +890,8 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
 
         result = {
             "dataset": dataset_name,
-            "model": model_type if model_type != "ap_fsvi" else f"ap_fsvi_{variant_label}",
+            "model": model_type,
             "model_type": model_type,
-            "ap_variant": variant_label,
             "train_time_s": round(train_time, 2),
             "train": train_metrics,
             "test": test_metrics,
@@ -1266,13 +899,13 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
             "metrics_history": metrics_history,
             "diagnostics": diagnostics,
             "parameter_count": params,
-            "hyperparameters": result_hyperparameters(args, model_type, variant_label),
+            "hyperparameters": result_hyperparameters(args, model_type, ap_variant),
         }
 
         os.makedirs(args.output_dir, exist_ok=True)
         result_path = os.path.join(
             args.output_dir,
-            result_file_name(dataset_name, model_type, args, variant_label),
+            result_file_name(dataset_name, model_type, args, ap_variant),
         )
         with open(result_path, "w") as f:
             json.dump(result, f, indent=2)
@@ -1281,7 +914,7 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
         if args.save_checkpoint:
             ckpt_path = os.path.join(
                 args.output_dir,
-                checkpoint_file_name(dataset_name, model_type, args, variant_label),
+                checkpoint_file_name(dataset_name, model_type, args, ap_variant),
             )
             torch.save(
                 {
@@ -1313,8 +946,6 @@ def classification_run_name(dataset_name, model_type, seed, suffix=None):
 
 def classification_group(dataset_name, model_type, args, ap_variant=None):
     parts = ["classification", dataset_name.lower(), model_type]
-    if model_type == "ap_fsvi":
-        parts.extend([args.ap_fsvi_prior, ap_variant])
     parts.append(args.backbone)
     if args.full_bayes_cnn:
         parts.append("full_bayes_cnn")
@@ -1362,75 +993,6 @@ def result_hyperparameters(args, model_type, ap_variant):
                 "fbnn_learn_prior": args.fbnn_learn_prior,
             }
         )
-    if model_type == "ap_fsvi":
-        spec = AP_VARIANTS[ap_variant]
-        h.update(
-            {
-                "ap_variant": ap_variant,
-                "ap_fsvi_prior": args.ap_fsvi_prior,
-                "ap_fsvi_discrepancy": spec["discrepancy"],
-                "ap_fsvi_sample_projection_mode": spec["sample_projection_mode"],
-                "ap_fsvi_num_samples": args.ap_fsvi_num_samples,
-                "ap_fsvi_num_prior_samples": args.ap_fsvi_num_prior_samples,
-                "ap_fsvi_num_measurement": args.ap_fsvi_num_measurement,
-                "ap_fsvi_beta": args.ap_fsvi_beta,
-                "ap_fsvi_beta_start": args.ap_fsvi_beta_start,
-                "ap_fsvi_beta_warmup_steps": args.ap_fsvi_beta_warmup_steps,
-                "ap_fsvi_data_pretrain_steps": args.ap_fsvi_data_pretrain_steps,
-                "ap_fsvi_data_loss": args.ap_fsvi_data_loss,
-                "ap_fsvi_discrepancy_projections": args.ap_fsvi_discrepancy_projections,
-                "ap_fsvi_partition_num_bins": args.ap_fsvi_partition_num_bins,
-                "ap_fsvi_partition_alpha_inc": args.ap_fsvi_partition_alpha_inc,
-                "ap_fsvi_partition_temperature": args.ap_fsvi_partition_temperature,
-                "ap_fsvi_projected_partition_topk": args.ap_fsvi_projected_partition_topk,
-                "ap_fsvi_spectral_estimator": args.ap_fsvi_spectral_estimator,
-                "ap_fsvi_spectral_cov_shrinkage": args.ap_fsvi_spectral_cov_shrinkage,
-                "ap_fsvi_sample_knn_k": args.ap_fsvi_sample_knn_k,
-                "ap_fsvi_sample_gaussian_shrinkage": args.ap_fsvi_sample_gaussian_shrinkage,
-                "ap_fsvi_quantile_transport_k": args.ap_fsvi_quantile_transport_k,
-                "ap_fsvi_sample_rank_resolution": args.ap_fsvi_sample_rank_resolution,
-                "ap_fsvi_sample_rank_temperature": args.ap_fsvi_sample_rank_temperature,
-                "ap_fsvi_sample_rank_bin_temperature": args.ap_fsvi_sample_rank_bin_temperature,
-                "ap_fsvi_sample_flow_depth": args.ap_fsvi_sample_flow_depth,
-                "ap_fsvi_sample_flow_hidden_dim": args.ap_fsvi_sample_flow_hidden_dim,
-                "ap_fsvi_sample_flow_num_bins": args.ap_fsvi_sample_flow_num_bins,
-                "ap_fsvi_sample_flow_bound": args.ap_fsvi_sample_flow_bound,
-                "ap_fsvi_sample_flow_lr": args.ap_fsvi_sample_flow_lr,
-                "ap_fsvi_sample_flow_batch_size": args.ap_fsvi_sample_flow_batch_size,
-                "ap_fsvi_sample_flow_prior_steps": args.ap_fsvi_sample_flow_prior_steps,
-                "ap_fsvi_sample_flow_posterior_steps": args.ap_fsvi_sample_flow_posterior_steps,
-                "ap_fsvi_sample_flow_prior_fit_every": args.ap_fsvi_sample_flow_prior_fit_every,
-                "ap_fsvi_pd_critic_hidden_dim": args.ap_fsvi_pd_critic_hidden_dim,
-                "ap_fsvi_pd_critic_lr": args.ap_fsvi_pd_critic_lr,
-                "ap_fsvi_pd_critic_steps": args.ap_fsvi_pd_critic_steps,
-                "ap_fsvi_pd_critic_use_context_inputs": (
-                    args.ap_fsvi_pd_critic_use_context_inputs
-                ),
-                "ap_fsvi_pd_critic_bounded_output": (
-                    not args.ap_fsvi_pd_critic_unbounded
-                ),
-                "ap_fsvi_pd_critic_output_bound": args.ap_fsvi_pd_critic_output_bound,
-                "ap_fsvi_pd_critic_spectral_norm": args.ap_fsvi_pd_critic_spectral_norm,
-                "ap_fsvi_measurement_weights": args.ap_fsvi_measurement_weights,
-                "ap_fsvi_near_data_noise": args.ap_fsvi_near_data_noise,
-                "ap_fsvi_domain_std": args.ap_fsvi_domain_std,
-                "ap_fsvi_unit_domain_bounds": not args.no_ap_fsvi_unit_domain_bounds,
-                "ap_fsvi_fixed_measure_points": args.ap_fsvi_fixed_measure_points,
-                "ap_fsvi_adaptive_measure_points": args.ap_fsvi_adaptive_measure_points,
-                "ap_fsvi_adaptive_measure_mode": args.ap_fsvi_adaptive_measure_mode,
-                "ap_fsvi_adaptive_measure_steps": args.ap_fsvi_adaptive_measure_steps,
-                "ap_fsvi_adaptive_measure_every": args.ap_fsvi_adaptive_measure_every,
-                "ap_fsvi_adaptive_measure_lr": args.ap_fsvi_adaptive_measure_lr,
-                "ap_fsvi_adaptive_measure_diversity_weight": (
-                    args.ap_fsvi_adaptive_measure_diversity_weight
-                ),
-                "ap_fsvi_adaptive_measure_diversity_lengthscale": (
-                    args.ap_fsvi_adaptive_measure_diversity_lengthscale
-                ),
-                "ap_fsvi_reservoir_size": args.ap_fsvi_reservoir_size,
-                "ap_fsvi_max_grad_norm": args.ap_fsvi_max_grad_norm,
-            }
-        )
     return h
 
 
@@ -1450,16 +1012,7 @@ def expand_jobs(args):
     jobs = []
     for dataset_name in datasets:
         for model_type in models:
-            if model_type == "ap_fsvi":
-                variants = (
-                    list(AP_VARIANTS.keys())
-                    if args.ap_variant == "all"
-                    else [args.ap_variant]
-                )
-                for variant in variants:
-                    jobs.append((dataset_name, model_type, variant))
-            else:
-                jobs.append((dataset_name, model_type, None))
+            jobs.append((dataset_name, model_type, None))
     return jobs
 
 

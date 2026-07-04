@@ -53,7 +53,6 @@ from scripts.uci_benchmark import (
     _ckpt_path,
     _fbnn_pred_components,
     _gmvip_pred_components,
-    _is_fcfsvi_model,
     _tfsvi_pred_components,
     build_model,
     parse_args as parse_uci_args,
@@ -111,9 +110,7 @@ SYNTHETIC_DATASET_LABEL = "Variational-LLA"
 STEP_OVERRIDE_MODELS = list(REGRESSION_MODELS)
 SAMPLE_BAND_MODELS = {
     "sip",
-    "ap_fsvi",
     "fbnn",
-    "fcfsvi",
     "ftip",
     "gmvip",
     "mfvi",
@@ -127,8 +124,6 @@ MODEL_COLORS = {
     "vip": "#1f77b4",
     "tfsvi": "#9467bd",
     "ftip": "#d62728",
-    "ap_fsvi": "#17becf",
-    "fcfsvi": "#8c564b",
     "gmvip": "#bcbd22",
     "sip": "#e377c2",
     "map": "#4d4d4d",
@@ -392,10 +387,6 @@ def resolve_models(models):
 
 
 def missing_model_reason(model_type):
-    if model_type == "ap_fsvi" and getattr(uci_benchmark, "APFSVI", None) is None:
-        return "src.ap_fsvi is not available in this workspace"
-    if _is_fcfsvi_model(model_type) and getattr(uci_benchmark, "FCFSVI", None) is None:
-        return "src.fcfsvi is not available in this workspace"
     return None
 
 
@@ -411,7 +402,7 @@ def args_for_model(base_args, model_type):
     args.model = model_type
     if model_type == "mfvi" and not args._bb_alpha_user_supplied:
         args.bb_alpha = 0.5
-    if (_is_fcfsvi_model(model_type) or model_type == "gmvip") and not args._bb_alpha_user_supplied:
+    if model_type == "gmvip" and not args._bb_alpha_user_supplied:
         args.bb_alpha = 0.0
     return args
 
@@ -674,12 +665,8 @@ def _component_eval_samples(args, model_type):
         return int(args.mfvi_num_eval_samples)
     if model_type == "gmvip":
         return int(args.gmvip_num_eval_samples)
-    if _is_fcfsvi_model(model_type):
-        return int(args.fcfsvi_num_eval_samples)
     if model_type == "sip":
         return int(args.sip_num_eval_samples)
-    if model_type == "ap_fsvi":
-        return int(args.ap_fsvi_num_eval_samples)
     return int(args.regression_coeffs)
 
 
@@ -765,15 +752,6 @@ def predictive_components(model, model_type, args, x_grid):
             mean = mean * model.y_std + model.y_mean
             std = torch.exp(0.5 * model.log_variance).view(1, 1, 1) * model.y_std
             std = std.expand_as(mean)
-        elif model_type in {"ap_fsvi"} or _is_fcfsvi_model(model_type):
-            old_samples = getattr(model, "num_samples", None)
-            if old_samples is not None:
-                model.num_samples = S
-            try:
-                mean, std = model(x_grid)
-            finally:
-                if old_samples is not None:
-                    model.num_samples = old_samples
         else:
             mean, std = model(x_grid)
 
