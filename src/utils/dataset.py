@@ -1003,6 +1003,11 @@ class Airline_Dataset(CustomDataset):
         self.type = "regression"
         self.output_dim = 1
 
+        if not os.path.exists("./data/airline.csv"):
+            raise FileNotFoundError(
+                "Airline dataset expects ./data/airline.csv. "
+                "Place the preprocessed Variational-LLA Airline CSV there."
+            )
         data = pd.read_csv("./data/airline.csv")
         # Convert time of day from hhmm to minutes since midnight
         data.ArrTime = 60 * np.floor(data.ArrTime / 100) + np.mod(data.ArrTime, 100)
@@ -1022,7 +1027,8 @@ class Airline_Dataset(CustomDataset):
         ]
         X = data[names].values[:800000]
 
-        self.n_train = 700000
+        self.len_data = X.shape[0]
+        self.n_train = min(700000, self.len_data)
         self.train = Training_Dataset(X[: self.n_train], Y[: self.n_train])
 
         self.train_test = Test_Dataset(
@@ -1196,10 +1202,8 @@ class Taxi_Dataset(CustomDataset):
                 )
             data.to_csv("data/taxi.csv", index=False)
 
-        print(data.columns)
         data["tpep_pickup_datetime"] = pd.to_datetime(data["tpep_pickup_datetime"])
         data["tpep_dropoff_datetime"] = pd.to_datetime(data["tpep_dropoff_datetime"])
-        print(data)
         data["day_of_week"] = data["tpep_pickup_datetime"].dt.dayofweek
         data["day_of_month"] = data["tpep_pickup_datetime"].dt.day
         data["month"] = data["tpep_pickup_datetime"].dt.month
@@ -1224,7 +1228,6 @@ class Taxi_Dataset(CustomDataset):
         data = data[data["trip_duration"] >= 10]
         data = data[data["trip_duration"] <= 5 * 3600]
         data = data.astype(float)
-        print(data)
         data = data.values
         self.split_data(data)
 
@@ -1455,6 +1458,7 @@ def get_dataset(dataset_name):
         "year": Year_Dataset,
         "yearpredictionmsd": Year_Dataset,
         "Airline": Airline_Dataset,
+        "airline": Airline_Dataset,
         "HIGGS": HIGGS_Dataset,
         "SUSY": SUSY_Dataset,
         "taxi": Taxi_Dataset,

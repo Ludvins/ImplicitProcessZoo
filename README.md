@@ -65,6 +65,7 @@ src/
 
 scripts/
   uci_benchmark.py        UCI-style scalar regression benchmark
+  regression_benchmark.py Year/Airline/Taxi large regression benchmark
   classification_benchmark.py
                            image classification benchmark
   synthetic_plot.py       Variational-LLA synthetic plotting runner
@@ -721,6 +722,37 @@ python -m scripts.uci_benchmark \
   --gmvip_max_log_noise none \
   --gmvip_learn_prior
 ```
+
+## Large Regression
+
+`scripts.regression_benchmark` reuses the same model/training code as the UCI
+runner, but restricts the dataset set to the larger Variational-LLA-style
+regression tasks:
+
+```text
+year, airline, taxi
+```
+
+Example:
+
+```bash
+python -m scripts.regression_benchmark \
+  --model gmvip \
+  --dataset year \
+  --iterations 30000 \
+  --bb_alpha 0 \
+  --batch_size 100 \
+  --lr 0.001 \
+  --hidden_dims 10 10 \
+  --activation tanh \
+  --layer_model BayesLinear \
+  --device cuda
+```
+
+`year` downloads `YearPredictionMSD.txt` through the dataset loader when needed.
+`airline` expects the preprocessed Variational-LLA Airline file at
+`data/airline.csv`. `taxi` uses `data/taxi.csv` when present, otherwise it can
+create it from the NYC yellow taxi parquet source if `pyarrow` is installed.
 
 ## Synthetic Plot Runner
 

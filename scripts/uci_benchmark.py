@@ -270,9 +270,17 @@ def evaluate_ood(model, test_dataset, args, model_type=None, seed=42):
     }
 
 
-def parse_args(argv=None):
+def parse_args(
+    argv=None,
+    *,
+    description="UCI regression benchmark",
+    dataset_names=None,
+    dataset_group_label="UCI regression datasets",
+    default_output_dir="results",
+):
+    dataset_names = list(UCI_REGRESSION_DATASETS if dataset_names is None else dataset_names)
     p = argparse.ArgumentParser(
-        description="UCI regression benchmark",
+        description=description,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -281,7 +289,8 @@ def parse_args(argv=None):
                     choices=REGRESSION_MODELS + ["all"],
                     help="Model to train.")
     p.add_argument("--dataset", type=str, required=True,
-                    help="Dataset name or 'all' for all UCI regression datasets.")
+                    choices=dataset_names + ["all"],
+                    help=f"Dataset name or 'all' for all {dataset_group_label}.")
     p.add_argument("--seed", type=int, default=42, help="Random seed.")
     p.add_argument("--test_size", type=float, default=0.1,
                     help="Fraction of data used for testing.")
@@ -291,7 +300,7 @@ def parse_args(argv=None):
                     help="Torch device (default: cuda if available, else cpu).")
     p.add_argument("--test_ood", action="store_true", default=False,
                     help="Evaluate OOD detection using predictive entropy as score.")
-    p.add_argument("--output_dir", type=str, default="results",
+    p.add_argument("--output_dir", type=str, default=default_output_dir,
                     help="Directory to save result JSON files.")
 
     # --- BayesianNN (generative function / prior) ---
@@ -1867,12 +1876,13 @@ def _run_single(dataset_name, args):
     return results
 
 
-def main():
-    args = parse_args()
+def run_from_args(args, *, dataset_names=None, default_iters=None):
+    dataset_names = list(UCI_REGRESSION_DATASETS if dataset_names is None else dataset_names)
+    default_iters = DEFAULT_UCI_ITERS if default_iters is None else default_iters
     torch.manual_seed(args.seed)
 
     if args.dataset == "all":
-        datasets = UCI_REGRESSION_DATASETS
+        datasets = dataset_names
     else:
         datasets = [args.dataset]
 
@@ -1886,7 +1896,7 @@ def main():
             # Per-dataset default iters when the user didn't supply a budget.
             # vip_iterations defaults to the same value (used for FTIP warm).
             if not run_args._iters_user_supplied:
-                run_args.iterations = DEFAULT_UCI_ITERS.get(ds, 30_000)
+                run_args.iterations = default_iters.get(ds, 30_000)
                 # MFVI gets a larger default budget than the flow-based models.
                 if run_args.model == "mfvi":
                     run_args.iterations *= 10
@@ -1922,6 +1932,13 @@ def main():
             with open(out_path, "w") as f:
                 json.dump(ds_results, f, indent=2)
             print(f"  Results saved to {out_path}")
+
+    return all_results
+
+
+def main():
+    args = parse_args()
+    return run_from_args(args)
 
 
 if __name__ == "__main__":

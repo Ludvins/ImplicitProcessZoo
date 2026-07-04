@@ -30,6 +30,7 @@ MODEL_DISPLAY_NAMES = {
 }
 
 DATASET_DISPLAY_NAMES = {
+    "airline": "Airline",
     "boston": "Boston",
     "concrete": "Concrete",
     "energy": "Energy",
@@ -37,6 +38,7 @@ DATASET_DISPLAY_NAMES = {
     "naval": "Naval",
     "power": "Power",
     "protein": "Protein",
+    "taxi": "Taxi",
     "wine": "Wine",
     "year": "Year",
     "Year": "Year",
@@ -514,4 +516,3 @@ def _format_cell(value):
     if isinstance(value, float):
         return f"{value:.4f}"
     return str(value)
-
