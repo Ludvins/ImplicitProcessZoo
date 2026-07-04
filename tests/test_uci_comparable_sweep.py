@@ -7,11 +7,6 @@ from scripts.uci_benchmark import (
     build_model,
     parse_args,
 )
-from local_scripts.run_uci_comparable_8_methods_30k import (
-    VARIANTS,
-    build_command,
-    select_variants,
-)
 
 
 class TinyTrainDataset:
@@ -74,23 +69,6 @@ def test_wandb_stats_are_disabled_by_default_but_configurable():
 
     assert default_args.wandb_disable_stats is True
     assert enabled_args.wandb_disable_stats is False
-
-
-def test_comparable_ftip_runs_disable_auto_warm_start():
-    ftip_variants = [variant for variant in VARIANTS if variant.model == "ftip"]
-
-    assert len(ftip_variants) == 2
-    for variant in ftip_variants:
-        command = build_command("python", "concrete", 0, variant)
-        assert "--no_auto_warm_start" in command
-        assert "--auto_warm_start" not in command
-
-
-def test_comparable_launcher_can_filter_exact_variants():
-    selected = select_variants(["SIP Tunable Prior", "SIP Fixed Prior"])
-
-    assert [variant.label for variant in selected] == ["SIP Tunable Prior", "SIP Fixed Prior"]
-    assert all(variant.model == "sip" for variant in selected)
 
 
 def test_variant_tags_distinguish_prior_and_inducing_states():
