@@ -206,6 +206,19 @@ class TFSVI(nn.Module):
     # Parameter utilities
     # ------------------------------------------------------------------
 
+    def vi_parameters(self):
+        """Trainable variational parameters.
+
+        ``base_net`` is a frozen architecture template.  Keeping it as a
+        submodule is useful for ``functional_call``, but optimizers should only
+        see TFSVI's flat variational parameters and, for regression, the
+        likelihood noise parameter.
+        """
+        params = [self.mu, self.log_sigma]
+        if hasattr(self, "log_variance"):
+            params.append(self.log_variance)
+        return params
+
     def _unflatten_params(self, flat):
         """Reshape flat parameter vector to named dict."""
         return _unflatten_params_fn(flat, self._param_names, self._param_shapes)

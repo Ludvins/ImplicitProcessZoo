@@ -1285,8 +1285,16 @@ class ExactGP(GenerativeFunction):
         if key is not None and key == self._cached_cholesky_key:
             return self._cached_cholesky
         K = self._rbf(X)
-        K = K + self.jitter * torch.eye(X.shape[0], dtype=self.dtype, device=K.device)
-        L = torch.linalg.cholesky(K)
+        eye = torch.eye(X.shape[0], dtype=self.dtype, device=K.device)
+        jitter = float(self.jitter)
+        L = None
+        for _ in range(6):
+            L, info = torch.linalg.cholesky_ex(K + jitter * eye)
+            if int(info.max().detach().cpu()) == 0:
+                break
+            jitter *= 10.0
+        else:
+            L = torch.linalg.cholesky(K + jitter * eye)
         if key is not None:
             self._cached_cholesky_key = key
             self._cached_cholesky = L

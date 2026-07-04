@@ -1,5 +1,6 @@
 """Small reporting helpers shared by benchmark entrypoints."""
 
+import argparse
 import csv
 import json
 import os
@@ -23,6 +24,7 @@ MODEL_DISPLAY_NAMES = {
     "gmvip": "GMVIP",
     "map": "MAP",
     "mfvi": "MFVI",
+    "sip": "SIP",
     "tfsvi": "TFSVI",
     "vip": "VIP",
 }
@@ -51,6 +53,10 @@ DISCREPANCY_DISPLAY_NAMES = {
     "sample_sliced_gaussian_kl": "Sample Sliced Gaussian KL",
     "sample_sliced_quantile_transport_kl": "Sliced Quantile-Transport KL",
     "sample_sliced_rank_kl": "Sample Sliced Rank KL",
+    "sample_sliced_flow_kl": "Sliced Flow KL",
+    "projective_dual_kl": "Projective-Dual KL",
+    "partition_kl": "SP-FSVI Partition KL",
+    "projected_partition_kl": "Projected Partition KL",
     "spectral_projected_kl": "Spectral Projected KL",
     "spectral_sliced_kl": "Spectral Sliced KL",
     "sliced_wasserstein": "Sliced Wasserstein",
@@ -132,6 +138,16 @@ def add_wandb_args(parser):
         default=100,
         help="Training-step interval for logging scalar loss/LR to W&B.",
     )
+    parser.add_argument(
+        "--wandb_disable_stats",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Disable W&B system/GPU stats collection. Scalar metric logging "
+            "still works; this avoids W&B's background GPU monitor touching "
+            "the NVIDIA driver during long CUDA sweeps."
+        ),
+    )
 
 
 def init_wandb_run(args, *, name=None, group=None, tags=None, config=None):
@@ -165,6 +181,10 @@ def init_wandb_run(args, *, name=None, group=None, tags=None, config=None):
     if config:
         run_config.update(_json_safe_dict(config))
 
+    settings = None
+    if getattr(args, "wandb_disable_stats", True):
+        settings = wandb.Settings(x_disable_stats=True)
+
     return wandb.init(
         project=getattr(args, "wandb_project", "gmvip"),
         entity=getattr(args, "wandb_entity", None),
@@ -176,6 +196,7 @@ def init_wandb_run(args, *, name=None, group=None, tags=None, config=None):
         dir=run_dir,
         id=getattr(args, "wandb_run_id", None),
         resume=getattr(args, "wandb_resume", None),
+        settings=settings,
     )
 
 
@@ -231,6 +252,9 @@ def training_decomposition(model, model_type=None):
             elif normalized_type == "gmvip":
                 payload["train/gmvip_kl"] = function_term
                 payload["train/gmvip/latent_kl_unweighted"] = function_term
+            elif normalized_type == "sip":
+                payload["train/sip_kl"] = function_term
+                payload["train/sip/kl_unweighted"] = function_term
             else:
                 payload["train/ap_fsvi_discrepancy"] = function_term
                 payload["train/apfsvi/discrepancy_unweighted"] = function_term
@@ -242,6 +266,9 @@ def training_decomposition(model, model_type=None):
             elif normalized_type == "gmvip":
                 payload["train/gmvip_beta"] = beta
                 payload["train/gmvip/beta"] = beta
+            elif normalized_type == "sip":
+                payload["train/sip_beta"] = beta
+                payload["train/sip/beta"] = beta
             else:
                 payload["train/ap_fsvi_beta"] = beta
                 payload["train/apfsvi/beta"] = beta
@@ -254,6 +281,9 @@ def training_decomposition(model, model_type=None):
             elif normalized_type == "gmvip":
                 payload["train/gmvip_weighted_kl"] = weighted
                 payload["train/gmvip/latent_kl_weighted"] = weighted
+            elif normalized_type == "sip":
+                payload["train/sip_weighted_kl"] = weighted
+                payload["train/sip/kl_weighted"] = weighted
             else:
                 payload["train/ap_fsvi_weighted_discrepancy"] = weighted
                 payload["train/apfsvi/discrepancy_weighted"] = weighted
@@ -381,6 +411,91 @@ def training_decomposition(model, model_type=None):
             payload["train/fcfsvi_context_opt_updates"] = context_opt_update_count
         if context_input_norm is not None:
             payload["train/fcfsvi_context_input_norm"] = context_input_norm
+
+    if normalized_type == "ap_fsvi":
+        flow_kl_raw = _last_scalar(model, "sliced_flow_kl_raws")
+        prior_flow_nll = _last_scalar(model, "sliced_flow_prior_nlls")
+        posterior_flow_nll = _last_scalar(model, "sliced_flow_posterior_nlls")
+        prior_flow_updates = _last_scalar(model, "sliced_flow_prior_update_counts")
+        posterior_flow_updates = _last_scalar(
+            model, "sliced_flow_posterior_update_counts"
+        )
+        if flow_kl_raw is not None:
+            payload["train/ap_fsvi_sliced_flow_kl_raw"] = flow_kl_raw
+            payload["train/apfsvi/sliced_flow_kl_raw"] = flow_kl_raw
+        if prior_flow_nll is not None:
+            payload["train/ap_fsvi_sliced_flow_prior_nll"] = prior_flow_nll
+            payload["train/apfsvi/sliced_flow_prior_nll"] = prior_flow_nll
+        if posterior_flow_nll is not None:
+            payload["train/ap_fsvi_sliced_flow_posterior_nll"] = posterior_flow_nll
+            payload["train/apfsvi/sliced_flow_posterior_nll"] = posterior_flow_nll
+        if prior_flow_updates is not None:
+            payload["train/ap_fsvi_sliced_flow_prior_updates"] = prior_flow_updates
+        if posterior_flow_updates is not None:
+            payload["train/ap_fsvi_sliced_flow_posterior_updates"] = (
+                posterior_flow_updates
+            )
+
+        pd_critic_loss = _last_scalar(model, "pd_critic_losses")
+        pd_critic_grad_norm = _last_scalar(model, "pd_critic_grad_norms")
+        pd_tq_mean = _last_scalar(model, "pd_kl_T_q_means")
+        pd_tp_mean = _last_scalar(model, "pd_kl_T_p_means")
+        pd_tp_logexp = _last_scalar(model, "pd_kl_T_p_logexps")
+        pd_tq_max = _last_scalar(model, "pd_kl_T_q_maxes")
+        pd_tp_max = _last_scalar(model, "pd_kl_T_p_maxes")
+        pd_func_kl = _last_scalar(model, "pd_kl_func_kls")
+        pd_bound = _last_scalar(model, "pd_kl_critic_bounds")
+        pd_sat_q = _last_scalar(model, "pd_kl_saturation_fraction_qs")
+        pd_sat_p = _last_scalar(model, "pd_kl_saturation_fraction_ps")
+        pd_ceiling_frac = _last_scalar(model, "pd_kl_fraction_of_ceilings")
+        partition_marg = _last_scalar(model, "partition_kl_marg_means")
+        partition_marg_max = _last_scalar(model, "partition_kl_marg_maxes")
+        partition_inc = _last_scalar(model, "partition_kl_inc_means")
+        partition_projected = _last_scalar(model, "partition_kl_projected_means")
+        partition_total = _last_scalar(model, "partition_kl_totals")
+        adaptive_diversity = _last_scalar(
+            model, "adaptive_measure_diversity_values"
+        )
+        if pd_critic_loss is not None:
+            payload["train/ap_fsvi_pd_critic_loss"] = pd_critic_loss
+            payload["train/apfsvi/pd_critic_loss"] = pd_critic_loss
+        if pd_critic_grad_norm is not None:
+            payload["train/ap_fsvi_pd_critic_grad_norm"] = pd_critic_grad_norm
+        if pd_tq_mean is not None:
+            payload["train/ap_fsvi_pd_T_q_mean"] = pd_tq_mean
+        if pd_tp_mean is not None:
+            payload["train/ap_fsvi_pd_T_p_mean"] = pd_tp_mean
+        if pd_tp_logexp is not None:
+            payload["train/ap_fsvi_pd_T_p_logexp"] = pd_tp_logexp
+        if pd_tq_max is not None:
+            payload["train/ap_fsvi_pd_T_q_max"] = pd_tq_max
+        if pd_tp_max is not None:
+            payload["train/ap_fsvi_pd_T_p_max"] = pd_tp_max
+        if pd_func_kl is not None:
+            payload["train/ap_fsvi_pd_func_kl"] = pd_func_kl
+        if pd_bound is not None:
+            payload["train/ap_fsvi_pd_critic_bound"] = pd_bound
+        if pd_sat_q is not None:
+            payload["train/ap_fsvi_pd_saturation_fraction_q"] = pd_sat_q
+        if pd_sat_p is not None:
+            payload["train/ap_fsvi_pd_saturation_fraction_p"] = pd_sat_p
+        if pd_ceiling_frac is not None:
+            payload["train/ap_fsvi_pd_func_kl_fraction_of_ceiling"] = pd_ceiling_frac
+        if partition_marg is not None:
+            payload["train/ap_fsvi_partition_kl_marg_mean"] = partition_marg
+            payload["train/apfsvi/partition_kl_marg_mean"] = partition_marg
+        if partition_marg_max is not None:
+            payload["train/ap_fsvi_partition_kl_marg_max"] = partition_marg_max
+        if partition_inc is not None:
+            payload["train/ap_fsvi_partition_kl_inc_mean"] = partition_inc
+            payload["train/apfsvi/partition_kl_inc_mean"] = partition_inc
+        if partition_projected is not None:
+            payload["train/ap_fsvi_partition_kl_projected_mean"] = partition_projected
+        if partition_total is not None:
+            payload["train/ap_fsvi_partition_kl_total"] = partition_total
+            payload["train/apfsvi/partition_kl_total"] = partition_total
+        if adaptive_diversity is not None:
+            payload["train/ap_fsvi_adaptive_measure_diversity"] = adaptive_diversity
 
     base_kl = _last_scalar(model, "base_KLs")
     flow_ldj = _last_scalar(model, "flow_ldj")

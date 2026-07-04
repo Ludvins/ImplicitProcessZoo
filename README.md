@@ -40,5 +40,6 @@ Examples:
 
 - `python -m scripts.uci_benchmark --model gmvip --dataset boston --wandb`
 - `python -m scripts.synthetic_benchmark --models all --datasets bimodal --wandb --wandb_group synthetic-bimodal`
+
 The regression benchmarks write per-run JSON files and also emit comparison
 tables plus JSON/CSV comparison summaries when several models are run together.

@@ -6,7 +6,6 @@ import os
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
-from torchvision import datasets, transforms
 from sklearn.model_selection import train_test_split
 from scipy.stats import norm
 
@@ -77,6 +76,17 @@ class Test_Dataset(Dataset):
 
 uci_base = "http://archive.ics.uci.edu/ml/machine-learning-databases/"
 data_base = "./data"
+
+
+def _torchvision_datasets_transforms():
+    try:
+        from torchvision import datasets, transforms
+    except ImportError as exc:
+        raise ImportError(
+            "torchvision is required for MNIST/FashionMNIST/CIFAR10 datasets. "
+            "Install torchvision or use a non-image dataset."
+        ) from exc
+    return datasets, transforms
 
 
 class CustomDataset(Dataset):
@@ -369,6 +379,125 @@ class Gap_Dataset(CustomDataset):
         self.targets = y[..., np.newaxis]
 
 
+class SPGPSnelson_Dataset(CustomDataset):
+    """Snelson/SPGP 1D regression data from ``data/spgp_snelson``.
+
+    The public data bundle provides 200 labelled training observations and a
+    301-point input grid used for plotting. It does not include labelled test
+    targets for that grid, so ``get_split`` returns the training observations
+    for evaluation while exposing the grid as ``plot_inputs``.
+    """
+
+    def __init__(self):
+        self.type = "regression"
+        self.output_dim = 1
+
+        data_dir = os.path.join(data_base, "spgp_snelson")
+        train_inputs_path = os.path.join(data_dir, "snelson_train_inputs.dat")
+        train_outputs_path = os.path.join(data_dir, "snelson_train_outputs.dat")
+        test_inputs_path = os.path.join(data_dir, "snelson_test_inputs.dat")
+
+        missing = [
+            path
+            for path in (train_inputs_path, train_outputs_path, test_inputs_path)
+            if not os.path.exists(path)
+        ]
+        if missing:
+            raise FileNotFoundError(
+                "Missing SPGP Snelson data files. Expected files under "
+                f"{data_dir!r}; missing: {missing}"
+            )
+
+        inputs = np.loadtxt(train_inputs_path, dtype=np.float64).reshape(-1, 1)
+        targets = np.loadtxt(train_outputs_path, dtype=np.float64).reshape(-1, 1)
+        self.plot_inputs = np.loadtxt(test_inputs_path, dtype=np.float64).reshape(-1, 1)
+        self.plot_domain = (
+            float(np.min(self.plot_inputs)),
+            float(np.max(self.plot_inputs)),
+        )
+
+        self.inputs = inputs
+        self.targets = targets
+
+        self.train = Training_Dataset(inputs, targets)
+        self.train_test = Test_Dataset(
+            inputs,
+            targets,
+            self.train.inputs_mean,
+            self.train.inputs_std,
+        )
+        self.test = Test_Dataset(
+            inputs,
+            targets,
+            self.train.inputs_mean,
+            self.train.inputs_std,
+        )
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def get_split(self, *args):
+        return self.train, self.train_test, self.test
+
+    def len_train(self, test_size):
+        return len(self.train)
+
+
+class VariationalLLA_Dataset(CustomDataset):
+    """Synthetic regression data from ``Ludvins/Variational-LLA``."""
+
+    def __init__(self):
+        self.type = "regression"
+        self.output_dim = 1
+
+        data_path = os.path.join(data_base, "variational_lla", "data.npy")
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(
+                "Missing Variational-LLA data file. Expected "
+                f"{data_path!r}. Download it from "
+                "https://raw.githubusercontent.com/Ludvins/Variational-LLA/"
+                "898ec63da3c1aa9c79f3c7d9d802453f83f80466/data/data.npy"
+            )
+
+        data = np.load(data_path).astype(np.float64)
+        if data.ndim != 2 or data.shape[1] != 2:
+            raise ValueError(
+                f"Expected Variational-LLA data with shape [N, 2], got {data.shape}"
+            )
+
+        order = np.argsort(data[:, 0])
+        data = data[order]
+        self.inputs = data[:, :1]
+        self.targets = data[:, 1:2]
+        self.plot_domain = (
+            float(np.min(self.inputs)),
+            float(np.max(self.inputs)),
+        )
+
+        self.train = Training_Dataset(self.inputs, self.targets)
+        self.train_test = Test_Dataset(
+            self.inputs,
+            self.targets,
+            self.train.inputs_mean,
+            self.train.inputs_std,
+        )
+        self.test = Test_Dataset(
+            self.inputs,
+            self.targets,
+            self.train.inputs_mean,
+            self.train.inputs_std,
+        )
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def get_split(self, *args):
+        return self.train, self.train_test, self.test
+
+    def len_train(self, test_size):
+        return len(self.train)
+
+
 class Skewed_Dataset(CustomDataset):
     """1D regression whose conditional p(y|x) is skewed (not Gaussian).
 
@@ -575,6 +704,7 @@ class MNIST_Dataset(CustomDataset):
         self.type = "multiclass"
         self.classes = 10
         self.output_dim = 10
+        datasets, transforms = _torchvision_datasets_transforms()
         train = datasets.MNIST(
             root="./data", train=True, download=True, transform=transforms.ToTensor()
         )
@@ -633,6 +763,7 @@ class FashionMNIST_Dataset(CustomDataset):
         self.type = "multiclass"
         self.classes = 10
         self.output_dim = 10
+        datasets, transforms = _torchvision_datasets_transforms()
         train = datasets.FashionMNIST(
             root="./data", train=True, download=True, transform=transforms.ToTensor()
         )
@@ -687,6 +818,7 @@ class CIFAR10_Dataset(CustomDataset):
         self.type = "multiclass"
         self.classes = 10
         self.output_dim = 10
+        datasets, transforms = _torchvision_datasets_transforms()
         train = datasets.CIFAR10(
             root="./data", train=True, download=True, transform=transforms.ToTensor()
         )
@@ -728,6 +860,7 @@ class MNIST_regression_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
+        datasets, transforms = _torchvision_datasets_transforms()
         train = datasets.MNIST(
             root="./data", train=True, download=True, transform=transforms.ToTensor()
         )
@@ -1296,6 +1429,10 @@ def get_dataset(dataset_name):
         "constant": Constant_Dataset,
         "linear": Linear_Dataset,
         "gap": Gap_Dataset,
+        "spgp_snelson": SPGPSnelson_Dataset,
+        "snelson": SPGPSnelson_Dataset,
+        "variational_lla": VariationalLLA_Dataset,
+        "valla": VariationalLLA_Dataset,
         "heterocedastic": Heterocedastic_Dataset,
         "skewed": Skewed_Dataset,
         "boston": Boston_Dataset,

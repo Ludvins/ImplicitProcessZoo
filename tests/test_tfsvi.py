@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from src.tfsvi import TFSVI
+from src.priors.generative_functions import BayesianNN, BayesLinear
 from tests.conftest import (
     DEVICE, DTYPE, SEED, INPUT_DIM, OUTPUT_DIM, NUM_SAMPLES, NUM_DATA, BATCH_SIZE,
     HIDDEN,
@@ -47,6 +48,46 @@ class TestTFSVIConstruction:
         assert hasattr(model, "mu")
         assert hasattr(model, "log_sigma")
         assert model.mu.shape == model.log_sigma.shape
+
+    def test_bayeslinear_template_params_are_not_vi_parameters(self):
+        gen_fn = BayesianNN(
+            structure=HIDDEN,
+            activation=torch.nn.Tanh(),
+            num_samples=1,
+            input_dim=INPUT_DIM,
+            output_dim=OUTPUT_DIM,
+            layer_model=BayesLinear,
+            seed=SEED,
+            fix_random_noise=True,
+            device=DEVICE,
+            dtype=DTYPE,
+        )
+        model = TFSVI(
+            INPUT_DIM,
+            OUTPUT_DIM,
+            HIDDEN,
+            torch.nn.Tanh(),
+            "regression",
+            NUM_DATA,
+            generative_function=gen_fn,
+            device=DEVICE,
+            dtype=DTYPE,
+        )
+
+        all_params = list(model.parameters())
+        vi_params = list(model.vi_parameters())
+        vi_param_ids = {id(param) for param in vi_params}
+
+        assert len({id(param) for param in all_params}) == len(all_params)
+        assert vi_param_ids == {
+            id(model.mu),
+            id(model.log_sigma),
+            id(model.log_variance),
+        }
+        assert all(param.requires_grad for param in vi_params)
+        assert all(not param.requires_grad for param in model.base_net.parameters())
+        assert not vi_param_ids.intersection(id(param) for param in model.base_net.parameters())
+        assert sum(param.numel() for param in model.base_net.parameters()) == model._total_params
 
 
 # ---------------------------------------------------------------------------
