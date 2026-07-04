@@ -98,13 +98,23 @@ class MFVI(torch.nn.Module):
     # ------------------------------------------------------------------
 
     def _set_num_samples(self, S):
-        """Update BNN sample count so the next forward pass draws S samples."""
-        old = self.generative_function.num_samples
-        self.generative_function.num_samples = S
-        for layer in self.generative_function.layers:
-            layer.num_samples = S
-            if hasattr(layer, 'fix_random_noise') and layer.fix_random_noise and S != old:
-                layer.noise = layer.get_noise(first_call=True)
+        """Update any Bayesian generator's sample count.
+
+        Older code assumed an MLP-style ``.layers`` attribute. Image
+        classifiers keep stochastic modules under ``.head`` or nested conv
+        blocks, so traverse the module tree instead.
+        """
+        for module in self.generative_function.modules():
+            if not hasattr(module, "num_samples"):
+                continue
+            old = module.num_samples
+            module.num_samples = S
+            if (
+                getattr(module, "fix_random_noise", False)
+                and hasattr(module, "get_noise")
+                and S != old
+            ):
+                module.noise = module.get_noise(first_call=True)
 
     def predict_f_samples(self, X, S):
         """

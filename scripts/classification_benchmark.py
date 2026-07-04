@@ -1,8 +1,10 @@
 """Image classification benchmark for FashionMNIST and CIFAR10.
 
-Runs MAP, VIP, and FBNN with CNN generative functions. The Bayesian
-layers are always the full ``BayesLinear`` implementation, matching the current
-UCI benchmark policy.
+Runs the repository's classification-capable methods with CNN generative
+functions. The Bayesian layers are always the full ``BayesLinear``
+implementation, matching the current UCI benchmark policy. GMVIP uses a
+benchmark-level independent-logit wrapper around the scalar canonical GMVIP
+model.
 
 Examples
 --------
@@ -29,13 +31,20 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src.fbnn import FBNN
+from src.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
+from src.ftip import FTIP
+from src.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
+from src.mfvi import MFVI
 from src.priors.generative_functions import (
     BayesLinear,
     BayesianCNN,
     BayesianCNNFull,
     BayesianResNet,
 )
+from src.sip import SIP
+from src.tfsvi import TFSVI
 from src.utils.dataset import get_dataset
+from src.utils.likelihood import multiclass_logp
 from src.utils.metrics import MetricsClassification
 from src.utils.utils import infinite_loader
 from src.vip import VIP
@@ -52,10 +61,19 @@ from scripts.benchmark_utils import (
 
 
 CLASSIFICATION_DATASETS = ["FashionMNIST", "CIFAR10"]
-CLASSIFICATION_MODELS = ["map", "vip", "fbnn"]
+CLASSIFICATION_MODELS = [
+    "map",
+    "mfvi",
+    "fbnn",
+    "tfsvi",
+    "vip",
+    "ftip",
+    "gmvip",
+    "sip",
+]
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description="FashionMNIST/CIFAR10 classification benchmark",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -168,9 +186,53 @@ def parse_args():
         default=1.0,
         help="Scale for optional prior regularizers.",
     )
+    p.add_argument(
+        "--regularizer_mode",
+        type=str,
+        default="evidence",
+        choices=["evidence", "KL"],
+        help="Optional prior regularizer mode for VIP/FTIP.",
+    )
 
     # MAP.
     p.add_argument("--map_l2", type=float, default=1e-4)
+
+    # VIP / FTIP.
+    p.add_argument(
+        "--vip_learn_prior",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Train the VIP Bayesian CNN generator/prior parameters.",
+    )
+    p.add_argument(
+        "--ftip_learn_prior",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Train the FTIP Bayesian CNN generator/prior parameters.",
+    )
+    p.add_argument(
+        "--ftip_num_samples",
+        type=int,
+        default=None,
+        help="FTIP flow posterior samples per training step. Defaults to --num_samples.",
+    )
+    p.add_argument(
+        "--ftip_eval_samples",
+        type=int,
+        default=None,
+        help="FTIP posterior samples at evaluation. Defaults to --eval_samples.",
+    )
+    p.add_argument(
+        "--flow_type",
+        type=str,
+        default="spline_1x1",
+        choices=["affine", "spline", "spline_1x1"],
+        help="FTIP coefficient normalizing flow.",
+    )
+    p.add_argument("--flow_depth", type=int, default=2)
+    p.add_argument("--flow_num_bins", type=int, default=8)
+    p.add_argument("--flow_domain", type=float, default=3.0)
+    p.add_argument("--ftip_max_grad_norm", type=float, default=None)
 
     # FBNN.
     p.add_argument(
@@ -198,6 +260,116 @@ def parse_args():
         default=False,
         help="Let FBNN prior parameters train. Default is a fixed BNN prior.",
     )
+
+    # MFVI.
+    p.add_argument(
+        "--mfvi_num_eval_samples",
+        type=int,
+        default=None,
+        help="MFVI posterior samples at evaluation. Defaults to --eval_samples.",
+    )
+
+    # TFSVI.
+    p.add_argument("--tfsvi_sigma_prior", type=float, default=1.0)
+    p.add_argument("--tfsvi_S_ctx", type=int, default=3)
+    p.add_argument("--tfsvi_K_ctx", type=int, default=16)
+    p.add_argument(
+        "--tfsvi_num_train_samples",
+        type=int,
+        default=None,
+        help="TFSVI likelihood samples per step. Defaults to --num_samples.",
+    )
+    p.add_argument(
+        "--tfsvi_num_eval_samples",
+        type=int,
+        default=None,
+        help="TFSVI posterior samples at evaluation. Defaults to --eval_samples.",
+    )
+
+    # SIP.
+    p.add_argument("--sip_num_inducing", type=int, default=32)
+    p.add_argument(
+        "--sip_inducing_method",
+        type=str,
+        default="random_subset",
+        choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+    )
+    p.add_argument("--sip_num_prior_samples", type=int, default=64)
+    p.add_argument("--sip_num_train_samples", type=int, default=None)
+    p.add_argument("--sip_num_eval_samples", type=int, default=None)
+    p.add_argument(
+        "--sip_learn_inducing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument(
+        "--sip_learn_prior",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p.add_argument(
+        "--sip_detach_covariances",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument("--sip_jitter", type=float, default=1e-4)
+    p.add_argument(
+        "--sip_fix_random_noise",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument("--sip_beta", type=float, default=1.0)
+    p.add_argument("--sip_beta_warmup_steps", type=int, default=0)
+    p.add_argument("--sip_critic_hidden_dim", type=int, default=50)
+    p.add_argument("--sip_critic_lr", type=float, default=1e-3)
+    p.add_argument("--sip_critic_steps", type=int, default=1)
+    p.add_argument("--sip_posterior_noise_dim", type=int, default=100)
+    p.add_argument("--sip_posterior_hidden_dim", type=int, default=50)
+    p.add_argument("--sip_posterior_depth", type=int, default=2)
+
+    # GMVIP.
+    p.add_argument("--gmvip_operator_type", choices=["empirical", "rbf"], default="empirical")
+    p.add_argument(
+        "--gmvip_posterior_type",
+        choices=["gaussian", "realnvp"],
+        default="gaussian",
+    )
+    p.add_argument("--gmvip_num_inducing", type=int, default=16)
+    p.add_argument(
+        "--gmvip_inducing_method",
+        type=str,
+        default="random_subset",
+        choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+    )
+    p.add_argument("--gmvip_num_operator_bank_samples", type=int, default=64)
+    p.add_argument("--gmvip_num_train_samples", type=int, default=None)
+    p.add_argument("--gmvip_num_eval_samples", type=int, default=None)
+    p.add_argument(
+        "--gmvip_learn_prior",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p.add_argument(
+        "--gmvip_learn_Z",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument(
+        "--gmvip_learn_kernel",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p.add_argument("--gmvip_beta", type=float, default=1.0)
+    p.add_argument("--gmvip_beta_warmup_steps", type=int, default=0)
+    p.add_argument("--gmvip_data_alpha", type=float, default=0.0)
+    p.add_argument("--gmvip_jitter", type=float, default=1e-4)
+    p.add_argument("--gmvip_shrinkage", type=float, default=0.02)
+    p.add_argument("--gmvip_flow_depth", type=int, default=2)
+    p.add_argument("--gmvip_flow_hidden_dim", type=int, default=64)
+    p.add_argument("--gmvip_flow_num_layers", type=int, default=2)
+    p.add_argument("--gmvip_flow_dropout", type=float, default=0.0)
+    p.add_argument("--gmvip_flow_scale_bound", type=float, default=2.0)
+    p.add_argument("--gmvip_max_grad_norm", type=float, default=None)
 
     # Training.
     p.add_argument("--batch_size", type=int, default=128)
@@ -229,7 +401,7 @@ def parse_args():
 
     add_wandb_args(p)
 
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if args.device is None:
         args.device = "cuda" if torch.cuda.is_available() else "cpu"
     if args.no_cosine_annealing:
@@ -240,6 +412,24 @@ def parse_args():
         args.epochs = None
     if args.fbnn_num_samples is None:
         args.fbnn_num_samples = args.num_samples
+    if args.ftip_num_samples is None:
+        args.ftip_num_samples = args.num_samples
+    if args.ftip_eval_samples is None:
+        args.ftip_eval_samples = args.eval_samples
+    if args.mfvi_num_eval_samples is None:
+        args.mfvi_num_eval_samples = args.eval_samples
+    if args.tfsvi_num_train_samples is None:
+        args.tfsvi_num_train_samples = args.num_samples
+    if args.tfsvi_num_eval_samples is None:
+        args.tfsvi_num_eval_samples = args.eval_samples
+    if args.sip_num_train_samples is None:
+        args.sip_num_train_samples = args.sip_num_prior_samples
+    if args.sip_num_eval_samples is None:
+        args.sip_num_eval_samples = args.eval_samples
+    if args.gmvip_num_train_samples is None:
+        args.gmvip_num_train_samples = args.num_samples
+    if args.gmvip_num_eval_samples is None:
+        args.gmvip_num_eval_samples = args.eval_samples
     return args
 
 
@@ -322,9 +512,9 @@ class DeterministicCNNMAP(torch.nn.Module):
                 torch.nn.Conv2d(6, 16, kernel_size=5),
                 torch.nn.ReLU(),
                 torch.nn.AvgPool2d(kernel_size=2, stride=2),
-            )
+            ).to(device=device, dtype=dtype)
             with torch.no_grad():
-                dummy = torch.zeros(1, *self.image_shape, dtype=dtype)
+                dummy = torch.zeros(1, *self.image_shape, dtype=dtype, device=device)
                 feat_dim = self.features(dummy).reshape(1, -1).shape[1]
             if head_dims is None:
                 head_dims = [120, 84]
@@ -436,11 +626,12 @@ def build_bayesian_classifier(
     seed,
     fix_random_noise=True,
     weight_log_sigma_init=None,
+    output_dim_override=None,
 ):
     device = torch.device(args.device)
     dtype = dtype_from_args(args)
     input_dim = train_dataset.input_dim
-    output_dim = train_dataset.output_dim
+    output_dim = train_dataset.output_dim if output_dim_override is None else int(output_dim_override)
     weight_log_sigma_init = (
         args.weight_log_sigma_init
         if weight_log_sigma_init is None
@@ -484,6 +675,154 @@ def build_bayesian_classifier(
     )
 
 
+def freeze_if_requested(module, learn_prior):
+    if learn_prior:
+        return
+    if hasattr(module, "freeze_parameters"):
+        module.freeze_parameters()
+        return
+    for param in module.parameters():
+        param.requires_grad_(False)
+
+
+def build_flow(args, input_dim, device, dtype):
+    common = dict(
+        depth=args.flow_depth,
+        input_dim=int(input_dim),
+        device=device,
+        dtype=dtype,
+        seed=args.seed,
+    )
+    if args.flow_type == "affine":
+        return CouplingFlow(**common)
+    if args.flow_type == "spline":
+        return SplineCouplingFlow(
+            **common,
+            num_bins=args.flow_num_bins,
+            B=args.flow_domain,
+        )
+    if args.flow_type == "spline_1x1":
+        return SplineCoupling1x1Flow(
+            **common,
+            num_bins=args.flow_num_bins,
+            B=args.flow_domain,
+        )
+    raise ValueError(f"Unknown flow_type: {args.flow_type!r}")
+
+
+class IndependentGMVIPClassifier(torch.nn.Module):
+    """Multiclass wrapper using one scalar GMVIP logit process per class."""
+
+    def __init__(
+        self,
+        class_models,
+        *,
+        num_data,
+        num_classes,
+        num_train_samples,
+        num_eval_samples,
+        beta=1.0,
+        beta_warmup_steps=0,
+        data_alpha=0.0,
+        max_grad_norm=None,
+        device=None,
+        dtype=torch.float32,
+    ):
+        super().__init__()
+        self.class_models = torch.nn.ModuleList(class_models)
+        self.num_data = int(num_data)
+        self.output_dim = int(num_classes)
+        self.num_classes = int(num_classes)
+        self.num_train_samples = int(num_train_samples)
+        self.num_eval_samples = int(num_eval_samples)
+        self.beta = float(beta)
+        self.beta_warmup_steps = int(beta_warmup_steps)
+        self.data_alpha = float(data_alpha)
+        self.max_grad_norm = None if max_grad_norm is None else float(max_grad_norm)
+        self.device = device
+        self.dtype = dtype
+        self.epsilon = 1e-3
+        self._step = 0
+        self.KLs = []
+        self.bb_alphas = []
+        self.data_terms = []
+        self.function_terms = []
+        self.betas = []
+
+    def _scheduled_beta(self):
+        if self.beta_warmup_steps <= 0:
+            return self.beta
+        return self.beta * min(1.0, self._step / float(self.beta_warmup_steps))
+
+    def _as_inputs(self, X):
+        return X.to(device=self.device, dtype=self.dtype)
+
+    def _as_targets(self, y):
+        if y.ndim == 1:
+            y = y.unsqueeze(-1)
+        return y.to(device=self.device).long()
+
+    def _sample_logits_with_kl(self, X, num_samples):
+        logits = []
+        kls = []
+        for model in self.class_models:
+            values, kl_terms, _ = model.sample_posterior_values_with_kl(
+                X,
+                int(num_samples),
+            )
+            logits.append(values)
+            kls.append(kl_terms.mean())
+        return torch.stack(logits, dim=-1), torch.stack(kls).sum()
+
+    def predict_f_samples(self, X, S):
+        X = self._as_inputs(X)
+        logits = [
+            model.sample_posterior_values(X, int(S))
+            for model in self.class_models
+        ]
+        return torch.stack(logits, dim=-1)
+
+    def _data_fit(self, logp):
+        if abs(self.data_alpha) < 1e-12:
+            return logp.sum(dim=-1).mean()
+        sample_count = int(logp.shape[0])
+        log_mean_exp = (
+            torch.logsumexp(self.data_alpha * logp, dim=0)
+            - np.log(sample_count)
+        )
+        return log_mean_exp.sum() / self.data_alpha
+
+    def nelbo(self, X, y):
+        X = self._as_inputs(X)
+        y = self._as_targets(y)
+        logits, kl = self._sample_logits_with_kl(X, self.num_train_samples)
+        logp = multiclass_logp(logits, y, self.num_classes, self.epsilon).sum(dim=-1)
+        data_fit = self._data_fit(logp)
+        scale = self.num_data / X.shape[0]
+        beta = self._scheduled_beta()
+        data_loss = -scale * data_fit
+        loss = data_loss + beta * kl
+        self.bb_alphas.append(float(data_loss.detach().cpu()))
+        self.data_terms.append(data_loss.detach())
+        self.KLs.append(float(kl.detach().cpu()))
+        self.function_terms.append(kl.detach())
+        self.betas.append(float(beta))
+        return loss
+
+    def _train_step(self, optimizer, X, y):
+        self._step += 1
+        optimizer.zero_grad(set_to_none=True)
+        loss = self.nelbo(X, y)
+        loss.backward()
+        if self.max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
+        optimizer.step()
+        return loss
+
+    def forward(self, X):
+        return self.predict_f_samples(X, self.num_eval_samples), None
+
+
 def build_model(args, train_dataset, model_type, ap_variant=None):
     device = torch.device(args.device)
     dtype = dtype_from_args(args)
@@ -504,6 +843,97 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             dtype=dtype,
         )
 
+    if model_type == "gmvip":
+        train_inputs = torch.as_tensor(
+            train_dataset.inputs,
+            dtype=dtype,
+            device=device,
+        )
+        inducing_inputs = initialize_inducing_points(
+            train_inputs,
+            num_inducing=args.gmvip_num_inducing,
+            method=args.gmvip_inducing_method,
+            seed=args.seed + 31,
+        )
+        prior_samples = max(
+            int(args.gmvip_num_operator_bank_samples),
+            int(args.gmvip_num_train_samples),
+            2,
+        )
+        learn_prior = bool(args.gmvip_learn_prior)
+        if args.gmvip_operator_type == "empirical":
+            mean_mode = "prior_sample"
+            inducing_scale = "prior_cholesky"
+        else:
+            mean_mode = "zero"
+            inducing_scale = "rbf_cholesky"
+        class_models = []
+        for class_idx in range(num_classes):
+            prior = build_bayesian_classifier(
+                args,
+                train_dataset,
+                num_samples=prior_samples,
+                seed=args.seed + 101 + class_idx,
+                fix_random_noise=True,
+                weight_log_sigma_init=args.prior_weight_log_sigma_init,
+                output_dim_override=1,
+            )
+            freeze_if_requested(prior, learn_prior)
+            class_models.append(
+                GeneralizedMatheronVIP(
+                    base_prior=prior,
+                    inducing_points=inducing_inputs,
+                    operator_type=args.gmvip_operator_type,
+                    posterior_type=args.gmvip_posterior_type,
+                    num_operator_bank_samples=args.gmvip_num_operator_bank_samples,
+                    learn_noise=False,
+                    init_log_noise=-10.0,
+                    min_log_noise=None,
+                    max_log_noise=None,
+                    freeze_base_prior=not learn_prior,
+                    detach_prior_samples=not learn_prior,
+                    jitter=args.gmvip_jitter,
+                    shrinkage=args.gmvip_shrinkage,
+                    learn_Z=args.gmvip_learn_Z,
+                    learn_kernel=bool(
+                        args.gmvip_learn_kernel
+                        and args.gmvip_operator_type == "rbf"
+                    ),
+                    ard=True,
+                    init_lengthscale="median",
+                    init_outputscale="prior_marginal",
+                    inducing_scale=inducing_scale,
+                    mean_mode=mean_mode,
+                    posterior_max_log_std=None,
+                    flow_depth=args.gmvip_flow_depth,
+                    flow_hidden_dim=args.gmvip_flow_hidden_dim,
+                    flow_num_layers=args.gmvip_flow_num_layers,
+                    flow_dropout=args.gmvip_flow_dropout,
+                    flow_scale_bound=args.gmvip_flow_scale_bound,
+                    antithetic_samples=True,
+                    num_data=len(train_dataset),
+                    num_train_samples=args.gmvip_num_train_samples,
+                    beta=args.gmvip_beta,
+                    beta_warmup_steps=args.gmvip_beta_warmup_steps,
+                    data_alpha=args.gmvip_data_alpha,
+                    max_grad_norm=args.gmvip_max_grad_norm,
+                    operator_bank_seed=args.seed + 1009 + class_idx,
+                )
+            )
+        return IndependentGMVIPClassifier(
+            class_models,
+            num_data=len(train_dataset),
+            num_classes=num_classes,
+            num_train_samples=args.gmvip_num_train_samples,
+            num_eval_samples=args.gmvip_num_eval_samples,
+            beta=args.gmvip_beta,
+            beta_warmup_steps=args.gmvip_beta_warmup_steps,
+            data_alpha=args.gmvip_data_alpha,
+            max_grad_norm=args.gmvip_max_grad_norm,
+            device=device,
+            dtype=dtype,
+        )
+
     if model_type == "vip":
         gen_fn = build_bayesian_classifier(
             args,
@@ -513,6 +943,7 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             fix_random_noise=True,
             weight_log_sigma_init=args.weight_log_sigma_init,
         )
+        freeze_if_requested(gen_fn, args.vip_learn_prior)
         return VIP(
             generative_function=gen_fn,
             num_regression_coeffs=args.num_samples,
@@ -524,9 +955,93 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             num_mc_samples=args.eval_samples,
             use_prior_regularizer=args.use_prior_regularizer,
             prior_regularizer_scaler=args.prior_regularizer_scaler,
+            regularizer_mode=args.regularizer_mode,
             device=device,
             dtype=dtype,
             seed=args.seed,
+        )
+
+    if model_type == "ftip":
+        gen_fn = build_bayesian_classifier(
+            args,
+            train_dataset,
+            num_samples=args.num_samples,
+            seed=args.seed,
+            fix_random_noise=True,
+            weight_log_sigma_init=args.weight_log_sigma_init,
+        )
+        freeze_if_requested(gen_fn, args.ftip_learn_prior)
+        flow = build_flow(
+            args,
+            input_dim=args.num_samples * output_dim,
+            device=device,
+            dtype=dtype,
+        )
+        return FTIP(
+            generative_function=gen_fn,
+            num_regression_coeffs=args.num_samples,
+            output_dim=output_dim,
+            flow=flow,
+            likelihood="multiclass",
+            num_data=len(train_dataset),
+            num_samples=args.ftip_num_samples,
+            bb_alpha=args.bb_alpha,
+            num_classes=num_classes,
+            use_prior_regularizer=args.use_prior_regularizer,
+            prior_regularizer_scaler=args.prior_regularizer_scaler,
+            regularizer_mode=args.regularizer_mode,
+            max_grad_norm=args.ftip_max_grad_norm,
+            device=device,
+            dtype=dtype,
+            seed=args.seed,
+        )
+
+    if model_type == "mfvi":
+        gen_fn = build_bayesian_classifier(
+            args,
+            train_dataset,
+            num_samples=args.num_samples,
+            seed=args.seed,
+            fix_random_noise=False,
+            weight_log_sigma_init=args.weight_log_sigma_init,
+        )
+        return MFVI(
+            generative_function=gen_fn,
+            output_dim=output_dim,
+            likelihood="multiclass",
+            num_data=len(train_dataset),
+            num_samples=args.num_samples,
+            bb_alpha=args.bb_alpha,
+            num_classes=num_classes,
+            device=device,
+            dtype=dtype,
+        )
+
+    if model_type == "tfsvi":
+        gen_fn = build_bayesian_classifier(
+            args,
+            train_dataset,
+            num_samples=1,
+            seed=args.seed,
+            fix_random_noise=True,
+            weight_log_sigma_init=args.weight_log_sigma_init,
+        )
+        return TFSVI(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            structure=[],
+            activation=torch.nn.ReLU(),
+            likelihood="multiclass",
+            num_data=len(train_dataset),
+            sigma_prior=args.tfsvi_sigma_prior,
+            num_samples=args.tfsvi_num_train_samples,
+            bb_alpha=args.bb_alpha,
+            S_ctx=args.tfsvi_S_ctx,
+            K_ctx=args.tfsvi_K_ctx,
+            num_classes=num_classes,
+            generative_function=gen_fn,
+            device=device,
+            dtype=dtype,
         )
 
     if model_type == "fbnn":
@@ -567,6 +1082,60 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             dtype=dtype,
         )
 
+    if model_type == "sip":
+        train_inputs = torch.as_tensor(
+            train_dataset.inputs,
+            dtype=dtype,
+            device=device,
+        )
+        inducing_inputs = initialize_inducing_points(
+            train_inputs,
+            num_inducing=args.sip_num_inducing,
+            method=args.sip_inducing_method,
+            seed=args.seed + 17,
+        )
+        prior_samples = max(
+            int(args.sip_num_prior_samples),
+            int(args.sip_num_train_samples),
+            2,
+        )
+        prior_fn = build_bayesian_classifier(
+            args,
+            train_dataset,
+            num_samples=prior_samples,
+            seed=args.seed + 1,
+            fix_random_noise=args.sip_fix_random_noise,
+            weight_log_sigma_init=args.prior_weight_log_sigma_init,
+        )
+        freeze_if_requested(prior_fn, args.sip_learn_prior)
+        return SIP(
+            generative_function=prior_fn,
+            inducing_inputs=inducing_inputs,
+            output_dim=output_dim,
+            likelihood="multiclass",
+            num_data=len(train_dataset),
+            num_prior_samples=args.sip_num_prior_samples,
+            num_train_samples=args.sip_num_train_samples,
+            num_eval_samples=args.sip_num_eval_samples,
+            bb_alpha=args.bb_alpha,
+            beta=args.sip_beta,
+            beta_warmup_steps=args.sip_beta_warmup_steps,
+            learn_inducing=args.sip_learn_inducing,
+            detach_covariances=args.sip_detach_covariances,
+            critic_hidden_dim=args.sip_critic_hidden_dim,
+            critic_lr=args.sip_critic_lr,
+            critic_steps=args.sip_critic_steps,
+            posterior_noise_dim=args.sip_posterior_noise_dim,
+            posterior_hidden_dim=args.sip_posterior_hidden_dim,
+            posterior_depth=args.sip_posterior_depth,
+            fresh_prior_samples=not args.sip_fix_random_noise,
+            num_classes=num_classes,
+            jitter=args.sip_jitter,
+            device=device,
+            dtype=dtype,
+            seed=args.seed,
+        )
+
     raise ValueError(f"Unknown model_type: {model_type}")
 
 
@@ -579,8 +1148,18 @@ def predict_logits_samples(model, xb, args, model_type):
         samples, _ = model(xb)
         model.num_mc_samples = old
         return samples
+    if model_type == "ftip":
+        return model.predict_y(xb, S=args.ftip_eval_samples)
+    if model_type == "mfvi":
+        return model.predict(xb, S=args.mfvi_num_eval_samples)
     if model_type == "fbnn":
         return model.predict(xb, S=args.eval_samples)
+    if model_type == "tfsvi":
+        return model.predict(xb, S=args.tfsvi_num_eval_samples)
+    if model_type == "sip":
+        return model.predict_f_samples(xb, S=args.sip_num_eval_samples)
+    if model_type == "gmvip":
+        return model.predict_f_samples(xb, S=args.gmvip_num_eval_samples)
     raise ValueError(f"Unknown model_type: {model_type}")
 
 
@@ -626,6 +1205,12 @@ def evaluate_classification(
 def initialize_function_context(model, model_type, train_loader):
     if model_type == "fbnn" and hasattr(model, "_fill_reservoir"):
         model._fill_reservoir(train_loader)
+    if model_type == "tfsvi" and hasattr(model, "_train_inputs"):
+        device = torch.device(model.device)
+        chunks = []
+        for inputs, _ in train_loader:
+            chunks.append(inputs.to(device=device, dtype=model.dtype))
+        model._train_inputs = torch.cat(chunks, dim=0)
 
 
 def train_with_metrics(
@@ -789,6 +1374,9 @@ def count_parameters(model):
 
 def result_file_name(dataset_name, model_type, args, ap_variant):
     parts = [dataset_name, model_type]
+    variant = classification_variant_slug(args, model_type)
+    if variant:
+        parts.append(variant)
     parts.append(args.backbone)
     if args.full_bayes_cnn:
         parts.append("fullbayescnn")
@@ -831,7 +1419,7 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
     )
 
     display_model = pretty_model_name(model_type)
-    display_suffix = None
+    display_suffix = classification_variant_label(args, model_type)
     run_name = classification_run_name(
         dataset_name,
         model_type,
@@ -946,10 +1534,43 @@ def classification_run_name(dataset_name, model_type, seed, suffix=None):
 
 def classification_group(dataset_name, model_type, args, ap_variant=None):
     parts = ["classification", dataset_name.lower(), model_type]
+    variant = classification_variant_slug(args, model_type)
+    if variant:
+        parts.append(variant)
     parts.append(args.backbone)
     if args.full_bayes_cnn:
         parts.append("full_bayes_cnn")
     return "_".join(str(p) for p in parts if p)
+
+
+def classification_variant_label(args, model_type):
+    if model_type == "vip":
+        return "Tunable Prior" if args.vip_learn_prior else "Fixed Prior"
+    if model_type == "ftip":
+        return "Tunable Prior" if args.ftip_learn_prior else "Fixed Prior"
+    if model_type == "fbnn":
+        return "Tunable Prior" if args.fbnn_learn_prior else "Fixed Prior"
+    if model_type == "sip":
+        prior = "Tunable Prior" if args.sip_learn_prior else "Fixed Prior"
+        z = "Learn Z" if args.sip_learn_inducing else "Fixed Z"
+        return f"{prior}, {z}"
+    if model_type == "gmvip":
+        prior = "Tunable Prior" if args.gmvip_learn_prior else "Fixed Prior"
+        z = "Learn Z" if args.gmvip_learn_Z else "Fixed Z"
+        return f"{prior}, {z}, {args.gmvip_operator_type.upper()}"
+    return None
+
+
+def classification_variant_slug(args, model_type):
+    label = classification_variant_label(args, model_type)
+    if not label:
+        return None
+    return (
+        label.lower()
+        .replace(",", "")
+        .replace(" ", "_")
+        .replace("/", "_")
+    )
 
 
 def result_hyperparameters(args, model_type, ap_variant):
@@ -978,6 +1599,23 @@ def result_hyperparameters(args, model_type, ap_variant):
     h = {key: getattr(args, key) for key in keys}
     if model_type == "map":
         h["map_l2"] = args.map_l2
+    if model_type == "vip":
+        h["vip_learn_prior"] = args.vip_learn_prior
+    if model_type == "ftip":
+        h.update(
+            {
+                "ftip_learn_prior": args.ftip_learn_prior,
+                "ftip_num_samples": args.ftip_num_samples,
+                "ftip_eval_samples": args.ftip_eval_samples,
+                "flow_type": args.flow_type,
+                "flow_depth": args.flow_depth,
+                "flow_num_bins": args.flow_num_bins,
+                "flow_domain": args.flow_domain,
+                "ftip_max_grad_norm": args.ftip_max_grad_norm,
+            }
+        )
+    if model_type == "mfvi":
+        h["mfvi_num_eval_samples"] = args.mfvi_num_eval_samples
     if model_type == "fbnn":
         h.update(
             {
@@ -991,6 +1629,65 @@ def result_hyperparameters(args, model_type, ap_variant):
                 "fbnn_nugget": args.fbnn_nugget,
                 "fbnn_reservoir_size": args.fbnn_reservoir_size,
                 "fbnn_learn_prior": args.fbnn_learn_prior,
+            }
+        )
+    if model_type == "tfsvi":
+        h.update(
+            {
+                "tfsvi_sigma_prior": args.tfsvi_sigma_prior,
+                "tfsvi_S_ctx": args.tfsvi_S_ctx,
+                "tfsvi_K_ctx": args.tfsvi_K_ctx,
+                "tfsvi_num_train_samples": args.tfsvi_num_train_samples,
+                "tfsvi_num_eval_samples": args.tfsvi_num_eval_samples,
+            }
+        )
+    if model_type == "gmvip":
+        h.update(
+            {
+                "gmvip_operator_type": args.gmvip_operator_type,
+                "gmvip_posterior_type": args.gmvip_posterior_type,
+                "gmvip_num_inducing": args.gmvip_num_inducing,
+                "gmvip_inducing_method": args.gmvip_inducing_method,
+                "gmvip_num_operator_bank_samples": args.gmvip_num_operator_bank_samples,
+                "gmvip_num_train_samples": args.gmvip_num_train_samples,
+                "gmvip_num_eval_samples": args.gmvip_num_eval_samples,
+                "gmvip_learn_prior": args.gmvip_learn_prior,
+                "gmvip_learn_Z": args.gmvip_learn_Z,
+                "gmvip_learn_kernel": args.gmvip_learn_kernel,
+                "gmvip_beta": args.gmvip_beta,
+                "gmvip_beta_warmup_steps": args.gmvip_beta_warmup_steps,
+                "gmvip_data_alpha": args.gmvip_data_alpha,
+                "gmvip_jitter": args.gmvip_jitter,
+                "gmvip_shrinkage": args.gmvip_shrinkage,
+                "gmvip_flow_depth": args.gmvip_flow_depth,
+                "gmvip_flow_hidden_dim": args.gmvip_flow_hidden_dim,
+                "gmvip_flow_num_layers": args.gmvip_flow_num_layers,
+                "gmvip_flow_dropout": args.gmvip_flow_dropout,
+                "gmvip_flow_scale_bound": args.gmvip_flow_scale_bound,
+                "gmvip_max_grad_norm": args.gmvip_max_grad_norm,
+            }
+        )
+    if model_type == "sip":
+        h.update(
+            {
+                "sip_num_inducing": args.sip_num_inducing,
+                "sip_inducing_method": args.sip_inducing_method,
+                "sip_num_prior_samples": args.sip_num_prior_samples,
+                "sip_num_train_samples": args.sip_num_train_samples,
+                "sip_num_eval_samples": args.sip_num_eval_samples,
+                "sip_learn_inducing": args.sip_learn_inducing,
+                "sip_learn_prior": args.sip_learn_prior,
+                "sip_detach_covariances": args.sip_detach_covariances,
+                "sip_jitter": args.sip_jitter,
+                "sip_fix_random_noise": args.sip_fix_random_noise,
+                "sip_beta": args.sip_beta,
+                "sip_beta_warmup_steps": args.sip_beta_warmup_steps,
+                "sip_critic_hidden_dim": args.sip_critic_hidden_dim,
+                "sip_critic_lr": args.sip_critic_lr,
+                "sip_critic_steps": args.sip_critic_steps,
+                "sip_posterior_noise_dim": args.sip_posterior_noise_dim,
+                "sip_posterior_hidden_dim": args.sip_posterior_hidden_dim,
+                "sip_posterior_depth": args.sip_posterior_depth,
             }
         )
     return h
@@ -1097,7 +1794,13 @@ def main():
     results = []
     for dataset_name, model_type, ap_variant in jobs:
         run_args = copy.deepcopy(args)
-        result = run_single(dataset_name, model_type, run_args, ap_variant)
+        try:
+            result = run_single(dataset_name, model_type, run_args, ap_variant)
+        except NotImplementedError as exc:
+            if args.model != "all":
+                raise
+            print(f"\nSkipping {dataset_name} | {model_type}: {exc}")
+            continue
         results.append(result)
 
     print_comparison(results)
