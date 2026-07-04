@@ -62,6 +62,14 @@ def test_wandb_stats_are_disabled_by_default_but_configurable():
     assert enabled_args.wandb_disable_stats is False
 
 
+def test_mfvi_defaults_to_alpha_zero():
+    args = _args(["--model", "mfvi"])
+    explicit_args = _args(["--model", "mfvi", "--bb_alpha", "0.5"])
+
+    assert args.bb_alpha == 0.0
+    assert explicit_args.bb_alpha == 0.5
+
+
 def test_variant_tags_distinguish_prior_and_inducing_states():
     ftip_learn = _args(["--model", "ftip", "--ftip_learn_prior"])
     ftip_fixed = _args(["--model", "ftip", "--no-ftip_learn_prior"])

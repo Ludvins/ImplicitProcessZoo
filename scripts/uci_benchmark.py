@@ -314,7 +314,7 @@ def parse_args(argv=None):
                     help="Number of regression coefficients (S).")
     p.add_argument("--bb_alpha", type=float, default=None,
                     help="BB-alpha parameter (0 = ELBO, 1 = BB-alpha energy). "
-                         "If unset: 0.0 globally, but 0.5 for --model mfvi.")
+                         "If unset: 0.0 for all models.")
     p.add_argument("--use_prior_regularizer", action="store_true", default=False,
                     help="Enable the method's optional prior regularizer.")
     p.add_argument("--no_prior_regularizer", action="store_true",
@@ -640,8 +640,8 @@ def parse_args(argv=None):
     args._iters_user_supplied = (
         args.iterations is not None or args.epochs is not None
     )
-    # Detect whether the user passed --bb_alpha so MFVI can use its
-    # benchmark default without overriding an explicit choice.
+    # Detect whether the user passed --bb_alpha so wrappers can preserve an
+    # explicit choice while defaulting all models to alpha=0.
     args._bb_alpha_user_supplied = args.bb_alpha is not None
     if args.bb_alpha is None:
         args.bb_alpha = 0.0
@@ -1894,12 +1894,9 @@ def main():
                 if run_args.vip_epochs is None and run_args.vip_iterations is None:
                     run_args.vip_iterations = run_args.iterations
                     run_args.vip_epochs = None
-            # MFVI keeps its benchmark alpha=0.5 default. GMVIP does
-            # not use BB-alpha, so keep alpha=0.0 in filenames/metadata unless
-            # the user explicitly sets it.
-            if run_args.model == "mfvi" and not run_args._bb_alpha_user_supplied:
-                run_args.bb_alpha = 0.5
-            if run_args.model == "gmvip" and not run_args._bb_alpha_user_supplied:
+            # Keep alpha=0.0 in filenames/metadata unless the user explicitly
+            # sets it.
+            if not run_args._bb_alpha_user_supplied:
                 run_args.bb_alpha = 0.0
             # Check if results already exist
             alpha_tag = f"_alpha{run_args.bb_alpha}"

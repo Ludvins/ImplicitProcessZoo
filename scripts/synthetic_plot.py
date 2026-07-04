@@ -400,8 +400,6 @@ def seed_everything(seed):
 def args_for_model(base_args, model_type):
     args = copy.copy(base_args)
     args.model = model_type
-    if model_type == "mfvi" and not args._bb_alpha_user_supplied:
-        args.bb_alpha = 0.5
     if model_type == "gmvip" and not args._bb_alpha_user_supplied:
         args.bb_alpha = 0.0
     return args
