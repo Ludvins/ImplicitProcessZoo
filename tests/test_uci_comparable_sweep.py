@@ -3,7 +3,6 @@ import torch
 
 from scripts.uci_benchmark import (
     _variant_tag,
-    _wandb_run_metadata,
     build_model,
     parse_args,
 )
@@ -41,26 +40,18 @@ def _args(extra):
     )
 
 
-def test_comparable_wandb_names_and_groups_are_exact():
-    cases = [
-        ("map", [], "Boston | MAP | seed 0", "Boston | MAP"),
-        ("mfvi", [], "Boston | MFVI | seed 0", "Boston | MFVI"),
-        ("fbnn", [], "Boston | FBNN | seed 0", "Boston | FBNN"),
-        ("tfsvi", [], "Boston | TFSVI | seed 0", "Boston | TFSVI"),
-        ("vip", ["--vip_learn_prior"], "Boston | VIP Tunable Prior | seed 0", "Boston | VIP Tunable Prior"),
-        ("vip", ["--no-vip_learn_prior"], "Boston | VIP Fixed Prior | seed 0", "Boston | VIP Fixed Prior"),
-        ("ftip", ["--ftip_learn_prior"], "Boston | FTIP Tunable Prior | seed 0", "Boston | FTIP Tunable Prior"),
-        ("ftip", ["--no-ftip_learn_prior"], "Boston | FTIP Fixed Prior | seed 0", "Boston | FTIP Fixed Prior"),
-        ("gmvip", ["--gmvip_learn_prior"], "Boston | GMVIP Tunable Prior | seed 0", "Boston | GMVIP Tunable Prior"),
-        ("gmvip", ["--no-gmvip_learn_prior"], "Boston | GMVIP Fixed Prior | seed 0", "Boston | GMVIP Fixed Prior"),
-        ("sip", ["--sip_learn_prior"], "Boston | SIP Tunable Prior | seed 0", "Boston | SIP Tunable Prior"),
-        ("sip", ["--no-sip_learn_prior"], "Boston | SIP Fixed Prior | seed 0", "Boston | SIP Fixed Prior"),
-    ]
-    for model, extra, expected_name, expected_group in cases:
-        args = _args(["--model", model, "--seed", "0", *extra])
-        name, group, _ = _wandb_run_metadata(args, "boston")
-        assert name == expected_name
-        assert group == expected_group
+def test_wandb_names_and_groups_are_launcher_controlled():
+    args = _args([
+        "--model",
+        "gmvip",
+        "--wandb_name",
+        "Boston | GMVIP Tunable Prior | seed 0",
+        "--wandb_group",
+        "Boston | GMVIP Tunable Prior",
+    ])
+
+    assert args.wandb_name == "Boston | GMVIP Tunable Prior | seed 0"
+    assert args.wandb_group == "Boston | GMVIP Tunable Prior"
 
 
 def test_wandb_stats_are_disabled_by_default_but_configurable():

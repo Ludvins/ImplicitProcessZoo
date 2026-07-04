@@ -46,11 +46,9 @@ from scripts.benchmark_utils import (
     canonical_model_type,
     finish_wandb_run,
     init_wandb_run,
-    pretty_dataset_name,
     wandb_log_eval,
     wandb_log_result,
     wandb_log_train_step,
-    wandb_run_name,
 )
 
 UCI_REGRESSION_DATASETS = [
@@ -1478,174 +1476,6 @@ def _ckpt_path(args, dataset_name, model_type):
     )
 
 
-def _uci_wandb_suffix(args, model_type):
-    if model_type == "vip":
-        prior_state = (
-            "Tunable Prior"
-            if getattr(args, "vip_learn_prior", True)
-            else "Fixed Prior"
-        )
-        return f"{prior_state}, bb_alpha={args.bb_alpha:g}"
-    if model_type == "gmvip":
-        return _gmvip_wandb_method_slug(args)
-    return None
-
-
-def _uci_wandb_group(dataset_name, model_type, args):
-    if model_type == "gmvip":
-        return _gmvip_wandb_group(dataset_name, args)
-    if model_type == "vip":
-        return f"{pretty_dataset_name(dataset_name)} | VIP | bb_alpha={args.bb_alpha:g} |"
-    if model_type == "sip":
-        z_state = "Learn Z" if getattr(args, "sip_learn_inducing", False) else "Fixed Z"
-        prior_state = (
-            "Tunable Prior" if getattr(args, "sip_learn_prior", True) else "Fixed Prior"
-        )
-        return f"{pretty_dataset_name(dataset_name)} | SIP | BNN | {z_state} | {prior_state} |"
-    parts = ["uci", dataset_name, model_type]
-    return "_".join(str(part) for part in parts)
-
-
-def _pretty_gmvip_operator(operator_type):
-    operator = str(operator_type).replace("_", " ")
-    if operator.lower() == "rbf":
-        return "RBF"
-    return operator.title()
-
-
-def _pretty_gmvip_posterior(posterior_type):
-    if str(posterior_type).lower() == "realnvp":
-        return "RealNVP"
-    return str(posterior_type).replace("_", " ").title()
-
-
-def _gmvip_wandb_method_slug(args):
-    slug = (
-        f"gmvip_{args.gmvip_operator_type}_{args.gmvip_posterior_type}"
-        f"_{args.gmvip_mean_mode}_{args.gmvip_inducing_scale}"
-    )
-    if getattr(args, "gmvip_learn_prior", False):
-        slug = f"{slug}_learnprior"
-    return slug
-
-
-def _gmvip_z_state(args):
-    return "Unfixed Z" if getattr(args, "gmvip_learn_Z", False) else "Fixed Z"
-
-
-def _gmvip_prior_state(args):
-    return "Unfixed Prior" if getattr(args, "gmvip_learn_prior", False) else "Fixed Prior"
-
-
-def _gmvip_ablation_run_name(dataset_name, args):
-    return (
-        f"{pretty_dataset_name(dataset_name)} | GMVIP | "
-        f"{_gmvip_z_state(args)} | {_gmvip_prior_state(args)} | "
-        f"{_pretty_gmvip_operator(args.gmvip_operator_type)}"
-    )
-
-
-def _gmvip_wandb_group(dataset_name, args):
-    return f"{pretty_dataset_name(dataset_name)} | GMVIP | Operator Z Prior Ablation |"
-
-
-def _uci_comparable_method_label(args):
-    """Human W&B method/variant label for comparable UCI sweeps."""
-    if args.model == "map":
-        return "MAP"
-    if args.model == "mfvi":
-        return "MFVI"
-    if args.model == "fbnn":
-        return "FBNN"
-    if args.model == "tfsvi":
-        return "TFSVI"
-    if args.model == "vip":
-        prior = "Tunable Prior" if getattr(args, "vip_learn_prior", True) else "Fixed Prior"
-        return f"VIP {prior}"
-    if args.model == "ftip":
-        prior = "Tunable Prior" if getattr(args, "ftip_learn_prior", True) else "Fixed Prior"
-        return f"FTIP {prior}"
-    if args.model == "gmvip":
-        prior = "Tunable Prior" if getattr(args, "gmvip_learn_prior", False) else "Fixed Prior"
-        return f"GMVIP {prior}"
-    if args.model == "sip":
-        prior = "Tunable Prior" if getattr(args, "sip_learn_prior", True) else "Fixed Prior"
-        return f"SIP {prior}"
-    return str(args.model).upper()
-
-
-def _uci_comparable_wandb_tags(args, dataset_name):
-    tags = [
-        "uci",
-        "comparable-8-methods",
-        "30k" if getattr(args, "iterations", None) == 30_000 else f"{args.iterations}iter",
-        dataset_name,
-        args.model,
-    ]
-    if args.model == "vip":
-        tags.extend([
-            "learn-prior" if args.vip_learn_prior else "fixed-prior",
-            f"coeffs-{args.regression_coeffs}",
-        ])
-    elif args.model == "ftip":
-        tags.extend([
-            args.flow_type,
-            "warm-start" if args.auto_warm_start else "cold-start",
-            "learn-prior" if args.ftip_learn_prior else "fixed-prior",
-            f"coeffs-{args.regression_coeffs}",
-            f"train-samples-{args.num_samples}",
-            f"eval-samples-{args.eval_samples}",
-        ])
-    if args.model == "gmvip":
-        tags.extend([
-            args.gmvip_operator_type,
-            args.gmvip_posterior_type,
-            args.gmvip_inducing_method,
-            f"Z{args.gmvip_num_inducing}",
-            f"S{args.gmvip_num_train_samples}",
-            "learn-Z" if args.gmvip_learn_Z else "fixed-Z",
-            "learn-prior" if args.gmvip_learn_prior else "fixed-prior",
-        ])
-    elif args.model == "sip":
-        sip_train_samples = (
-            args.sip_num_train_samples
-            if args.sip_num_train_samples is not None
-            else args.sip_num_prior_samples
-        )
-        tags.extend([
-            args.sip_inducing_method,
-            f"Z{args.sip_num_inducing}",
-            f"prior-samples-{args.sip_num_prior_samples}",
-            f"train-samples-{sip_train_samples}",
-            f"eval-samples-{args.sip_num_eval_samples}",
-            f"beta-{_compact_float_tag(args.sip_beta)}",
-            f"beta-warmup-{args.sip_beta_warmup_steps}",
-            f"critic-steps-{args.sip_critic_steps}",
-            f"critic-hidden-{args.sip_critic_hidden_dim}",
-            f"posterior-noise-{args.sip_posterior_noise_dim}",
-            f"posterior-hidden-{args.sip_posterior_hidden_dim}",
-            "fixed-prior-noise" if args.sip_fix_random_noise else "fresh-prior-noise",
-            "learn-Z" if args.sip_learn_inducing else "fixed-Z",
-            "learn-prior" if args.sip_learn_prior else "fixed-prior",
-        ])
-    elif args.model == "fbnn":
-        tags.extend([
-            args.fbnn_prior,
-            "freeze-prior" if args.fbnn_freeze_prior else "learn-prior",
-        ])
-    elif args.model == "mfvi":
-        tags.extend([
-            f"coeffs-{args.regression_coeffs}",
-            f"eval-samples-{args.mfvi_num_eval_samples}",
-        ])
-    elif args.model == "tfsvi":
-        tags.extend([
-            f"train-samples-{args.tfsvi_num_train_samples}",
-            f"eval-samples-{args.tfsvi_num_eval_samples}",
-        ])
-    return tags
-
-
 def _build_result(dataset_name, model_type, model, args, train_loader,
                   train_test_dataset, test_dataset, lr=None,
                   epochs=None, iterations=None, desc="Training"):
@@ -1844,135 +1674,11 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
     return result, model
 
 
-def _wandb_run_metadata(args, dataset_name):
-    if args.model in REGRESSION_MODELS:
-        dataset_pretty = pretty_dataset_name(dataset_name)
-        method_label = _uci_comparable_method_label(args)
-        group = f"{dataset_pretty} | {method_label}"
-        name = f"{group} | seed {args.seed}"
-        tags = _uci_comparable_wandb_tags(args, dataset_name)
-        return name, group, tags
-
-    suffix = None
-    group_parts = ["uci_120k_cluster", dataset_name, args.model]
-    if args.model == "gmvip":
-        group = _gmvip_wandb_group(dataset_name, args)
-        name = _gmvip_ablation_run_name(dataset_name, args)
-        tags = [
-            "uci",
-            "30k" if args.iterations == 30_000 else f"{args.iterations}iter",
-            dataset_name,
-            args.model,
-            args.gmvip_operator_type,
-            args.gmvip_posterior_type,
-            args.gmvip_mean_mode,
-            args.gmvip_inducing_scale,
-            _gmvip_z_state(args),
-            _gmvip_prior_state(args),
-            args.gmvip_inducing_method,
-            f"Z{args.gmvip_num_inducing}",
-            f"S{args.gmvip_num_train_samples}",
-            f"beta-{_compact_float_tag(args.gmvip_beta)}",
-            f"beta-warmup-{args.gmvip_beta_warmup_steps}",
-            f"prior-logsigma-{_compact_float_tag(args.gmvip_weight_log_sigma_init)}",
-        ]
-        if args.gmvip_learn_Z:
-            tags.append("learn-Z")
-        if args.gmvip_learn_prior:
-            tags.append("learn-prior")
-        if args.gmvip_learn_prior and args.gmvip_detach_operator_prior_grad:
-            tags.append("detach-operator-prior-grad")
-        if not args.gmvip_learn_kernel:
-            tags.append("fixed-kernel")
-        if args.gmvip_posterior_type == "realnvp":
-            tags.extend([
-                f"flow-depth-{args.gmvip_flow_depth}",
-                f"flow-hidden-{args.gmvip_flow_hidden_dim}",
-            ])
-        return name, group, tags
-    elif args.model == "vip":
-        suffix = _uci_wandb_suffix(args, "vip")
-        group = _uci_wandb_group(dataset_name, "vip", args)
-        name = wandb_run_name(
-            "UCI 120k",
-            dataset=dataset_name,
-            model=args.model,
-            suffix=suffix,
-            seed=args.seed,
-        )
-        tags = [
-            "uci",
-            "120k",
-            dataset_name,
-            args.model,
-            "learn-prior" if args.vip_learn_prior else "fixed-prior",
-            f"bb-alpha-{_compact_float_tag(args.bb_alpha)}",
-        ]
-        return name, group, tags
-    elif args.model == "map":
-        group = f"{pretty_dataset_name(dataset_name)} | MAP |"
-        name = wandb_run_name(
-            "UCI 120k",
-            dataset=dataset_name,
-            model=args.model,
-            seed=args.seed,
-        )
-        tags = ["uci", "120k", dataset_name, args.model]
-        return name, group, tags
-    elif args.model == "sip":
-        group = _uci_wandb_group(dataset_name, "sip", args)
-        z_slug = "learn_Z" if args.sip_learn_inducing else "fixed_Z"
-        prior_slug = "tunable_prior" if args.sip_learn_prior else "fixed_prior"
-        name = f"UCI 120k | {dataset_name} | sip | {z_slug} | {prior_slug} | seed {args.seed}"
-        sip_train_samples = (
-            args.sip_num_train_samples
-            if args.sip_num_train_samples is not None
-            else args.sip_num_prior_samples
-        )
-        tags = [
-            "uci",
-            "120k",
-            dataset_name,
-            "sip",
-            "critic-kl",
-            "bnn",
-            f"Z{args.sip_num_inducing}",
-            args.sip_inducing_method,
-            f"Sprior{args.sip_num_prior_samples}",
-            f"Strain{sip_train_samples}",
-            f"Seval{args.sip_num_eval_samples}",
-            f"beta-{_compact_float_tag(args.sip_beta)}",
-            f"beta-warmup-{args.sip_beta_warmup_steps}",
-            f"critic-steps-{args.sip_critic_steps}",
-            f"critic-hidden-{args.sip_critic_hidden_dim}",
-            f"posterior-noise-{args.sip_posterior_noise_dim}",
-            f"posterior-hidden-{args.sip_posterior_hidden_dim}",
-            "fixed-prior-noise" if args.sip_fix_random_noise else "fresh-prior-noise",
-            "learn-prior" if args.sip_learn_prior else "fixed-prior",
-        ]
-        if args.sip_learn_inducing:
-            tags.append("learn-Z")
-        else:
-            tags.append("fixed-Z")
-        return name, group, tags
-
-    name = wandb_run_name(
-        "UCI 120k",
-        dataset=dataset_name,
-        model=args.model,
-        suffix=suffix,
-        seed=args.seed,
-    )
-    tags = ["uci", "120k", dataset_name, args.model]
-    group = "_".join(str(part) for part in group_parts)
-    return name, group, tags
-
-
 def run_single(dataset_name, args):
     """Run benchmark on a single dataset. Returns a list of result dicts."""
-    wandb_name, wandb_group, wandb_tags = _wandb_run_metadata(args, dataset_name)
     wandb_run = init_wandb_run(
-        args, name=wandb_name, group=wandb_group, tags=wandb_tags
+        args,
+        config={"dataset_name": dataset_name, "model_type": args.model},
     )
 
     try:
@@ -2223,4 +1929,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
