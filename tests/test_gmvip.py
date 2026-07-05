@@ -18,13 +18,13 @@ DTYPE = torch.float64
 DEVICE = torch.device("cpu")
 
 
-def _make_prior(num_samples=48, seed=0, input_dim=1):
+def _make_prior(num_samples=48, seed=0, input_dim=1, output_dim=1):
     prior = BayesianNN(
         structure=[8],
         activation=torch.nn.Tanh(),
         num_samples=num_samples,
         input_dim=input_dim,
-        output_dim=1,
+        output_dim=output_dim,
         layer_model=BayesLinear,
         seed=seed,
         fix_random_noise=True,
@@ -40,6 +40,12 @@ def _make_prior(num_samples=48, seed=0, input_dim=1):
 def _toy_data(num_points=32):
     X = torch.linspace(-1.8, 1.8, num_points, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
     y = torch.sin(2.0 * X[:, 0]) + 0.15 * X[:, 0]
+    return X, y
+
+
+def _toy_classification_data(num_points=12, num_classes=3):
+    X = torch.linspace(-1.8, 1.8, num_points, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    y = (torch.arange(num_points, device=DEVICE) % num_classes).long()
     return X, y
 
 
@@ -72,6 +78,45 @@ def _make_model(
     return model
 
 
+def _make_multiclass_model(
+    operator_type="rbf",
+    posterior_type="gaussian",
+    num_inducing=5,
+    num_operator_bank_samples=12,
+    num_classes=3,
+    seed=0,
+):
+    Z = torch.linspace(-1.5, 1.5, num_inducing, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    if operator_type == "empirical":
+        mean_mode = "prior_sample"
+        inducing_scale = "prior_cholesky"
+    else:
+        mean_mode = "zero"
+        inducing_scale = "rbf_cholesky"
+    return GeneralizedMatheronVIP(
+        base_prior=_make_prior(
+            num_samples=num_operator_bank_samples,
+            seed=seed,
+            output_dim=num_classes,
+        ),
+        inducing_points=Z,
+        operator_type=operator_type,
+        posterior_type=posterior_type,
+        likelihood="multiclass",
+        output_dim=num_classes,
+        num_classes=num_classes,
+        num_operator_bank_samples=num_operator_bank_samples,
+        jitter=1e-5,
+        shrinkage=0.02,
+        mean_mode=mean_mode,
+        inducing_scale=inducing_scale,
+        learn_kernel=False,
+        operator_bank_seed=seed + 100,
+        num_train_samples=4,
+        max_grad_norm=None,
+    )
+
+
 def test_supported_configs_instantiate_and_removed_posterior_raises():
     empirical = _make_model(operator_type="empirical", posterior_type="gaussian", seed=1)
     rbf = _make_model(operator_type="rbf", posterior_type="gaussian", seed=2)
@@ -89,6 +134,42 @@ def test_supported_configs_instantiate_and_removed_posterior_raises():
         _make_model(operator_type="rbf", posterior_type="unsupported", seed=6)
 
 
+def test_deprecated_gaussian_likelihood_type_maps_to_regression():
+    Z = torch.linspace(-1.5, 1.5, 5, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    model = GeneralizedMatheronVIP(
+        base_prior=_make_prior(num_samples=12, seed=3),
+        inducing_points=Z,
+        operator_type="rbf",
+        posterior_type="gaussian",
+        likelihood_type="gaussian",
+        num_operator_bank_samples=12,
+        operator_bank_seed=103,
+    )
+
+    assert model.likelihood_type == "regression"
+
+
+@pytest.mark.parametrize("operator_type", ["empirical", "rbf"])
+def test_multiclass_supported_configs_sample_shapes_and_zero_kl(operator_type):
+    model = _make_multiclass_model(operator_type=operator_type, seed=11)
+    X, _ = _toy_classification_data(num_points=7, num_classes=3)
+
+    posterior = model.sample_posterior_values(X, num_samples=5)
+    prior = model.sample_prior_values(X, num_samples=6)
+
+    assert model.likelihood_type == "multiclass"
+    assert posterior.shape == (5, X.shape[0], 3)
+    assert prior.shape == (6, X.shape[0], 3)
+    assert torch.isfinite(posterior).all()
+    assert torch.isfinite(prior).all()
+    assert torch.allclose(model.kl_divergence(), torch.zeros((), dtype=DTYPE), atol=1e-12)
+
+
+def test_multiclass_realnvp_is_not_supported():
+    with pytest.raises(NotImplementedError, match="RealNVP"):
+        _make_multiclass_model(operator_type="rbf", posterior_type="realnvp", seed=12)
+
+
 def test_cholesky_gaussian_posterior_shapes_and_zero_kl():
     posterior = CholeskyGaussianCoefficientPosterior(16, device=DEVICE, dtype=DTYPE)
     samples = posterior.rsample(num_samples=7)
@@ -96,6 +177,20 @@ def test_cholesky_gaussian_posterior_shapes_and_zero_kl():
 
     assert samples.shape == (7, 16)
     assert posterior.scale_tril.shape == (16, 16)
+    assert kl.ndim == 0
+    assert torch.allclose(kl, torch.zeros((), dtype=DTYPE), atol=1e-12)
+
+
+def test_multiclass_cholesky_gaussian_posterior_shapes_and_zero_kl():
+    posterior = CholeskyGaussianCoefficientPosterior(5, output_dim=3, device=DEVICE, dtype=DTYPE)
+    samples = posterior.rsample(num_samples=7)
+    prior = posterior.sample_prior(num_samples=6)
+    kl = posterior.kl_to_standard_normal()
+
+    assert samples.shape == (7, 5, 3)
+    assert prior.shape == (6, 5, 3)
+    assert posterior.scale_tril.shape == (3, 5, 5)
+    assert posterior.std.shape == (5, 3)
     assert kl.ndim == 0
     assert torch.allclose(kl, torch.zeros((), dtype=DTYPE), atol=1e-12)
 
@@ -154,6 +249,24 @@ def test_rbf_kernel_and_cardinal_identity():
     assert torch.allclose(Psi_Z, torch.eye(5, dtype=DTYPE), atol=1e-12, rtol=1e-12)
 
 
+def test_multiclass_operator_identity_shapes():
+    empirical = _make_multiclass_model(operator_type="empirical", num_inducing=4, seed=13)
+    rbf = _make_multiclass_model(operator_type="rbf", num_inducing=4, seed=14)
+
+    empirical_psi = empirical.operator.psi(empirical.Z)
+    rbf_psi = rbf.operator.psi(rbf.Z)
+
+    assert empirical_psi.shape == (3, 4, 4)
+    assert rbf_psi.shape == (4, 4)
+    assert torch.allclose(
+        empirical_psi,
+        torch.eye(4, dtype=DTYPE, device=DEVICE).unsqueeze(0).expand(3, -1, -1),
+        atol=1e-12,
+        rtol=1e-12,
+    )
+    assert torch.allclose(rbf_psi, torch.eye(4, dtype=DTYPE, device=DEVICE), atol=1e-12, rtol=1e-12)
+
+
 def test_empirical_operator_and_linalg_shapes_are_finite():
     values_x = torch.randn(20, 7, dtype=DTYPE)
     values_z = torch.randn(20, 5, dtype=DTYPE)
@@ -172,6 +285,26 @@ def test_empirical_operator_and_linalg_shapes_are_finite():
     assert torch.isfinite(model_Psi).all()
 
 
+def test_vector_empirical_covariance_and_linalg_shapes_are_finite():
+    values_x = torch.randn(20, 7, 3, dtype=DTYPE)
+    values_z = torch.randn(20, 5, 3, dtype=DTYPE)
+    mean_x = empirical_mean(values_x)
+    mean_z = empirical_mean(values_z)
+    K_xz = empirical_cross_cov(values_x, values_z, mean_x, mean_z)
+    K_zz = empirical_cross_cov(values_z, values_z, mean_z, mean_z)
+    L = safe_cholesky(
+        K_zz + 1e-4 * torch.eye(5, dtype=DTYPE).unsqueeze(0),
+        initial_jitter=1e-6,
+    )
+    Psi = right_cholesky_solve(K_xz, L)
+
+    assert mean_x.shape == (7, 3)
+    assert K_xz.shape == (3, 7, 5)
+    assert L.shape == (3, 5, 5)
+    assert Psi.shape == (3, 7, 5)
+    assert torch.isfinite(Psi).all()
+
+
 def test_prior_bank_evaluates_same_functions_across_inputs():
     prior = _make_prior(num_samples=24, seed=7)
     bank = PriorFunctionBank(prior, num_bank_samples=24, seed=88)
@@ -184,6 +317,16 @@ def test_prior_bank_evaluates_same_functions_across_inputs():
 
     assert torch.allclose(separate_x, joint[:, : X.shape[0]])
     assert torch.allclose(separate_z, joint[:, X.shape[0] :])
+
+
+def test_prior_bank_preserves_vector_outputs():
+    prior = _make_prior(num_samples=10, seed=7, output_dim=3)
+    bank = PriorFunctionBank(prior, num_bank_samples=10, seed=88)
+    X = torch.linspace(-2.0, -0.5, 5, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    values = bank.evaluate(X)
+
+    assert values.shape == (10, X.shape[0], 3)
+    assert torch.isfinite(values).all()
 
 
 def test_coherent_sampler_offsets_same_shaped_layer_noise():
@@ -502,6 +645,57 @@ def test_gaussian_elbo_backward_reaches_variational_parameters():
     assert torch.isfinite(model.coefficients.raw_scale_tril.grad).all()
 
 
+@pytest.mark.parametrize("operator_type", ["empirical", "rbf"])
+def test_multiclass_elbo_backward_reaches_variational_and_prior_parameters(operator_type):
+    torch.manual_seed(39)
+    Z = torch.linspace(-1.4, 1.4, 5, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    prior = _make_prior(num_samples=16, seed=39, output_dim=3)
+    prior.defreeze_parameters()
+    mean_mode = "prior_sample" if operator_type == "empirical" else "zero"
+    inducing_scale = "prior_cholesky" if operator_type == "empirical" else "rbf_cholesky"
+    model = GeneralizedMatheronVIP(
+        base_prior=prior,
+        inducing_points=Z,
+        operator_type=operator_type,
+        posterior_type="gaussian",
+        likelihood="multiclass",
+        output_dim=3,
+        num_classes=3,
+        num_operator_bank_samples=16,
+        freeze_base_prior=False,
+        detach_prior_samples=False,
+        learn_kernel=False,
+        jitter=1e-5,
+        shrinkage=0.02,
+        mean_mode=mean_mode,
+        inducing_scale=inducing_scale,
+        operator_bank_seed=139,
+        max_grad_norm=None,
+    )
+    X, y = _toy_classification_data(num_points=9, num_classes=3)
+
+    loss, diagnostics = model.elbo_loss(X, y, num_samples=4, num_data=X.shape[0])
+    loss.backward()
+    prior_grad = sum(
+        (
+            param.grad.abs().sum()
+            for param in prior.parameters()
+            if param.grad is not None
+        ),
+        torch.tensor(0.0, dtype=DTYPE, device=DEVICE),
+    )
+
+    assert torch.isfinite(loss)
+    assert diagnostics["kl"].ndim == 0
+    assert "noise" not in diagnostics
+    assert model.coefficients.loc.grad is not None
+    assert model.coefficients.raw_scale_tril.grad is not None
+    assert torch.isfinite(model.coefficients.loc.grad).all()
+    assert torch.isfinite(model.coefficients.raw_scale_tril.grad).all()
+    assert torch.isfinite(prior_grad)
+    assert prior_grad > 0.0
+
+
 def test_realnvp_elbo_backward_reaches_flow_parameters():
     torch.manual_seed(27)
     model = _make_model(operator_type="rbf", posterior_type="realnvp", seed=27)
@@ -602,7 +796,8 @@ def test_train_step_accepts_alpha_objective():
 def test_runner_batched_full_train_eval_matches_direct_gaussian_objective():
     from types import SimpleNamespace
 
-    from scripts.run_gmvip_gap import full_train_eval
+    run_gmvip_gap = pytest.importorskip("scripts.run_gmvip_gap")
+    full_train_eval = run_gmvip_gap.full_train_eval
 
     torch.manual_seed(23)
     model = _make_model(operator_type="rbf", posterior_type="gaussian", seed=23)

@@ -7,8 +7,8 @@ def safe_cholesky(
     max_tries: int = 7,
 ) -> torch.Tensor:
     """Return a lower Cholesky factor of ``K + jitter I``."""
-    if K.ndim != 2 or K.shape[0] != K.shape[1]:
-        raise ValueError("K must be a square matrix.")
+    if K.ndim not in (2, 3) or K.shape[-1] != K.shape[-2]:
+        raise ValueError("K must be a square matrix or a batch of square matrices.")
 
     eye = torch.eye(K.shape[-1], dtype=K.dtype, device=K.device)
     jitter = float(initial_jitter)
@@ -27,10 +27,18 @@ def safe_cholesky(
 
 def right_cholesky_solve(K_xz: torch.Tensor, L_zz: torch.Tensor) -> torch.Tensor:
     """Compute ``K_xz @ inv(K_zz)`` from the Cholesky factor of ``K_zz``."""
-    if K_xz.ndim != 2:
-        raise ValueError("K_xz must have shape [N, M].")
-    if L_zz.ndim != 2 or L_zz.shape[0] != L_zz.shape[1]:
-        raise ValueError("L_zz must be a square Cholesky factor.")
-    if K_xz.shape[1] != L_zz.shape[0]:
+    if K_xz.ndim not in (2, 3):
+        raise ValueError("K_xz must have shape [N, M] or [K, N, M].")
+    if L_zz.ndim not in (2, 3) or L_zz.shape[-1] != L_zz.shape[-2]:
+        raise ValueError("L_zz must be a square Cholesky factor or a batch of factors.")
+    if K_xz.shape[-1] != L_zz.shape[-1]:
         raise ValueError("K_xz and L_zz dimensions are incompatible.")
-    return torch.cholesky_solve(K_xz.T, L_zz).T
+    if K_xz.ndim == 2:
+        if L_zz.ndim != 2:
+            raise ValueError("Batched L_zz requires batched K_xz.")
+        return torch.cholesky_solve(K_xz.T, L_zz).T
+    if L_zz.ndim == 2:
+        L_zz = L_zz.expand(K_xz.shape[0], -1, -1)
+    if K_xz.shape[0] != L_zz.shape[0]:
+        raise ValueError("Batched K_xz and L_zz must have the same batch size.")
+    return torch.cholesky_solve(K_xz.transpose(-1, -2), L_zz).transpose(-1, -2)

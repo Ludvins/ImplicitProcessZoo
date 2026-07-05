@@ -28,15 +28,19 @@ def _noise_to(noise, *, device, dtype):
     return noise
 
 
-def _squeeze_scalar_output(values: torch.Tensor) -> torch.Tensor:
+def _normalize_prior_output(values: torch.Tensor) -> torch.Tensor:
     if values.ndim == 3 and values.shape[-1] == 1:
-        values = values[..., 0]
-    if values.ndim != 2:
+        return values[..., 0]
+    if values.ndim not in (2, 3):
         raise ValueError(
-            "Scalar prior samples must have shape [S, N] or [S, N, 1], "
+            "Prior samples must have shape [S, N], [S, N, 1], or [S, N, D], "
             f"got {tuple(values.shape)}."
         )
     return values
+
+
+def _squeeze_scalar_output(values: torch.Tensor) -> torch.Tensor:
+    return _normalize_prior_output(values)
 
 
 def _has_first_call_get_noise(module: nn.Module) -> bool:
@@ -147,11 +151,11 @@ class CoherentPriorFunctionSampler:
     def evaluate_latents(self, latents, X: torch.Tensor) -> torch.Tensor:
         if self.mode == "latents":
             values = self.prior.evaluate_latents(latents, X)
-            return _squeeze_scalar_output(values)
+            return _normalize_prior_output(values)
 
         if self.mode == "functions":
             values = torch.stack([fn(X) for fn in latents], dim=0)
-            return _squeeze_scalar_output(values)
+            return _normalize_prior_output(values)
 
         old_states = []
         was_training = self.prior.training
@@ -187,7 +191,7 @@ class CoherentPriorFunctionSampler:
                 if fix_random_noise is not None and hasattr(module, "fix_random_noise"):
                     module.fix_random_noise = fix_random_noise
 
-        return _squeeze_scalar_output(values)
+        return _normalize_prior_output(values)
 
     def sample_values(
         self,

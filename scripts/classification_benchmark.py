@@ -2,9 +2,8 @@
 
 Runs the repository's classification-capable methods with CNN generative
 functions. The Bayesian layers are always the full ``BayesLinear``
-implementation, matching the current UCI benchmark policy. GMVIP uses a
-benchmark-level independent-logit wrapper around the scalar canonical GMVIP
-model.
+implementation, matching the current UCI benchmark policy. GMVIP uses its
+native vector-valued multiclass likelihood.
 
 Examples
 --------
@@ -44,7 +43,6 @@ from src.priors.generative_functions import (
 from src.sip import SIP
 from src.tfsvi import TFSVI
 from src.utils.dataset import get_dataset
-from src.utils.likelihood import multiclass_logp
 from src.utils.metrics import MetricsClassification
 from src.utils.utils import infinite_loader
 from src.vip import VIP
@@ -710,119 +708,6 @@ def build_flow(args, input_dim, device, dtype):
     raise ValueError(f"Unknown flow_type: {args.flow_type!r}")
 
 
-class IndependentGMVIPClassifier(torch.nn.Module):
-    """Multiclass wrapper using one scalar GMVIP logit process per class."""
-
-    def __init__(
-        self,
-        class_models,
-        *,
-        num_data,
-        num_classes,
-        num_train_samples,
-        num_eval_samples,
-        beta=1.0,
-        beta_warmup_steps=0,
-        data_alpha=0.0,
-        max_grad_norm=None,
-        device=None,
-        dtype=torch.float32,
-    ):
-        super().__init__()
-        self.class_models = torch.nn.ModuleList(class_models)
-        self.num_data = int(num_data)
-        self.output_dim = int(num_classes)
-        self.num_classes = int(num_classes)
-        self.num_train_samples = int(num_train_samples)
-        self.num_eval_samples = int(num_eval_samples)
-        self.beta = float(beta)
-        self.beta_warmup_steps = int(beta_warmup_steps)
-        self.data_alpha = float(data_alpha)
-        self.max_grad_norm = None if max_grad_norm is None else float(max_grad_norm)
-        self.device = device
-        self.dtype = dtype
-        self.epsilon = 1e-3
-        self._step = 0
-        self.KLs = []
-        self.bb_alphas = []
-        self.data_terms = []
-        self.function_terms = []
-        self.betas = []
-
-    def _scheduled_beta(self):
-        if self.beta_warmup_steps <= 0:
-            return self.beta
-        return self.beta * min(1.0, self._step / float(self.beta_warmup_steps))
-
-    def _as_inputs(self, X):
-        return X.to(device=self.device, dtype=self.dtype)
-
-    def _as_targets(self, y):
-        if y.ndim == 1:
-            y = y.unsqueeze(-1)
-        return y.to(device=self.device).long()
-
-    def _sample_logits_with_kl(self, X, num_samples):
-        logits = []
-        kls = []
-        for model in self.class_models:
-            values, kl_terms, _ = model.sample_posterior_values_with_kl(
-                X,
-                int(num_samples),
-            )
-            logits.append(values)
-            kls.append(kl_terms.mean())
-        return torch.stack(logits, dim=-1), torch.stack(kls).sum()
-
-    def predict_f_samples(self, X, S):
-        X = self._as_inputs(X)
-        logits = [
-            model.sample_posterior_values(X, int(S))
-            for model in self.class_models
-        ]
-        return torch.stack(logits, dim=-1)
-
-    def _data_fit(self, logp):
-        if abs(self.data_alpha) < 1e-12:
-            return logp.sum(dim=-1).mean()
-        sample_count = int(logp.shape[0])
-        log_mean_exp = (
-            torch.logsumexp(self.data_alpha * logp, dim=0)
-            - np.log(sample_count)
-        )
-        return log_mean_exp.sum() / self.data_alpha
-
-    def nelbo(self, X, y):
-        X = self._as_inputs(X)
-        y = self._as_targets(y)
-        logits, kl = self._sample_logits_with_kl(X, self.num_train_samples)
-        logp = multiclass_logp(logits, y, self.num_classes, self.epsilon).sum(dim=-1)
-        data_fit = self._data_fit(logp)
-        scale = self.num_data / X.shape[0]
-        beta = self._scheduled_beta()
-        data_loss = -scale * data_fit
-        loss = data_loss + beta * kl
-        self.bb_alphas.append(float(data_loss.detach().cpu()))
-        self.data_terms.append(data_loss.detach())
-        self.KLs.append(float(kl.detach().cpu()))
-        self.function_terms.append(kl.detach())
-        self.betas.append(float(beta))
-        return loss
-
-    def _train_step(self, optimizer, X, y):
-        self._step += 1
-        optimizer.zero_grad(set_to_none=True)
-        loss = self.nelbo(X, y)
-        loss.backward()
-        if self.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
-        optimizer.step()
-        return loss
-
-    def forward(self, X):
-        return self.predict_f_samples(X, self.num_eval_samples), None
-
-
 def build_model(args, train_dataset, model_type, ap_variant=None):
     device = torch.device(args.device)
     dtype = dtype_from_args(args)
@@ -867,71 +752,56 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
         else:
             mean_mode = "zero"
             inducing_scale = "rbf_cholesky"
-        class_models = []
-        for class_idx in range(num_classes):
-            prior = build_bayesian_classifier(
-                args,
-                train_dataset,
-                num_samples=prior_samples,
-                seed=args.seed + 101 + class_idx,
-                fix_random_noise=True,
-                weight_log_sigma_init=args.prior_weight_log_sigma_init,
-                output_dim_override=1,
-            )
-            freeze_if_requested(prior, learn_prior)
-            class_models.append(
-                GeneralizedMatheronVIP(
-                    base_prior=prior,
-                    inducing_points=inducing_inputs,
-                    operator_type=args.gmvip_operator_type,
-                    posterior_type=args.gmvip_posterior_type,
-                    num_operator_bank_samples=args.gmvip_num_operator_bank_samples,
-                    learn_noise=False,
-                    init_log_noise=-10.0,
-                    min_log_noise=None,
-                    max_log_noise=None,
-                    freeze_base_prior=not learn_prior,
-                    detach_prior_samples=not learn_prior,
-                    jitter=args.gmvip_jitter,
-                    shrinkage=args.gmvip_shrinkage,
-                    learn_Z=args.gmvip_learn_Z,
-                    learn_kernel=bool(
-                        args.gmvip_learn_kernel
-                        and args.gmvip_operator_type == "rbf"
-                    ),
-                    ard=True,
-                    init_lengthscale="median",
-                    init_outputscale="prior_marginal",
-                    inducing_scale=inducing_scale,
-                    mean_mode=mean_mode,
-                    posterior_max_log_std=None,
-                    flow_depth=args.gmvip_flow_depth,
-                    flow_hidden_dim=args.gmvip_flow_hidden_dim,
-                    flow_num_layers=args.gmvip_flow_num_layers,
-                    flow_dropout=args.gmvip_flow_dropout,
-                    flow_scale_bound=args.gmvip_flow_scale_bound,
-                    antithetic_samples=True,
-                    num_data=len(train_dataset),
-                    num_train_samples=args.gmvip_num_train_samples,
-                    beta=args.gmvip_beta,
-                    beta_warmup_steps=args.gmvip_beta_warmup_steps,
-                    data_alpha=args.gmvip_data_alpha,
-                    max_grad_norm=args.gmvip_max_grad_norm,
-                    operator_bank_seed=args.seed + 1009 + class_idx,
-                )
-            )
-        return IndependentGMVIPClassifier(
-            class_models,
-            num_data=len(train_dataset),
+        prior = build_bayesian_classifier(
+            args,
+            train_dataset,
+            num_samples=prior_samples,
+            seed=args.seed + 101,
+            fix_random_noise=True,
+            weight_log_sigma_init=args.prior_weight_log_sigma_init,
+        )
+        freeze_if_requested(prior, learn_prior)
+        return GeneralizedMatheronVIP(
+            base_prior=prior,
+            inducing_points=inducing_inputs,
+            operator_type=args.gmvip_operator_type,
+            posterior_type=args.gmvip_posterior_type,
+            likelihood="multiclass",
+            output_dim=output_dim,
             num_classes=num_classes,
+            num_operator_bank_samples=args.gmvip_num_operator_bank_samples,
+            learn_noise=False,
+            init_log_noise=-10.0,
+            min_log_noise=None,
+            max_log_noise=None,
+            freeze_base_prior=not learn_prior,
+            detach_prior_samples=not learn_prior,
+            jitter=args.gmvip_jitter,
+            shrinkage=args.gmvip_shrinkage,
+            learn_Z=args.gmvip_learn_Z,
+            learn_kernel=bool(
+                args.gmvip_learn_kernel
+                and args.gmvip_operator_type == "rbf"
+            ),
+            ard=True,
+            init_lengthscale="median",
+            init_outputscale="prior_marginal",
+            inducing_scale=inducing_scale,
+            mean_mode=mean_mode,
+            posterior_max_log_std=None,
+            flow_depth=args.gmvip_flow_depth,
+            flow_hidden_dim=args.gmvip_flow_hidden_dim,
+            flow_num_layers=args.gmvip_flow_num_layers,
+            flow_dropout=args.gmvip_flow_dropout,
+            flow_scale_bound=args.gmvip_flow_scale_bound,
+            antithetic_samples=True,
+            num_data=len(train_dataset),
             num_train_samples=args.gmvip_num_train_samples,
-            num_eval_samples=args.gmvip_num_eval_samples,
             beta=args.gmvip_beta,
             beta_warmup_steps=args.gmvip_beta_warmup_steps,
             data_alpha=args.gmvip_data_alpha,
             max_grad_norm=args.gmvip_max_grad_norm,
-            device=device,
-            dtype=dtype,
+            operator_bank_seed=args.seed + 1009,
         )
 
     if model_type == "vip":

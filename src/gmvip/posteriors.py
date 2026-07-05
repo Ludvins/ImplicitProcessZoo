@@ -74,6 +74,7 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
     def __init__(
         self,
         num_inducing: int,
+        output_dim: int = 1,
         init_mean: float = 0.0,
         init_log_std: float = 0.0,
         min_log_std: float | None = -8.0,
@@ -84,20 +85,27 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         super().__init__()
         if num_inducing <= 0:
             raise ValueError("num_inducing must be positive.")
+        if output_dim <= 0:
+            raise ValueError("output_dim must be positive.")
         self.num_inducing = int(num_inducing)
+        self.output_dim = int(output_dim)
         self.min_log_std = min_log_std
         self.max_log_std = max_log_std
         self.num_tril_entries = self.num_inducing * (self.num_inducing + 1) // 2
-        self.loc = nn.Parameter(
-            torch.full((self.num_inducing,), float(init_mean), device=device, dtype=dtype)
+        loc_shape = (
+            (self.num_inducing,)
+            if self.output_dim == 1
+            else (self.num_inducing, self.output_dim)
         )
-        raw = torch.zeros(
-            self.num_tril_entries,
-            device=device,
-            dtype=dtype,
+        raw_shape = (
+            (self.num_tril_entries,)
+            if self.output_dim == 1
+            else (self.output_dim, self.num_tril_entries)
         )
+        self.loc = nn.Parameter(torch.full(loc_shape, float(init_mean), device=device, dtype=dtype))
+        raw = torch.zeros(raw_shape, device=device, dtype=dtype)
         idx = torch.tril_indices(self.num_inducing, self.num_inducing, device=raw.device)
-        raw[idx[0] == idx[1]] = float(init_log_std)
+        raw[..., idx[0] == idx[1]] = float(init_log_std)
         self.raw_scale_tril = nn.Parameter(raw)
 
     @property
@@ -106,7 +114,10 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
 
     @property
     def log_std(self) -> torch.Tensor:
-        return self._scale_tril_and_log_diag()[1]
+        log_diag = self._scale_tril_and_log_diag()[1]
+        if self.output_dim == 1:
+            return log_diag
+        return log_diag.T
 
     @property
     def clamped_log_std(self) -> torch.Tensor:
@@ -136,13 +147,17 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
     ) -> torch.Tensor:
         eps = _standard_normal_sample(
             num_samples,
-            self.num_inducing,
+            self.num_inducing * self.output_dim,
             dtype=self.loc.dtype,
             device=self.loc.device,
             generator=generator,
             antithetic=antithetic,
         )
-        return self.loc.unsqueeze(0) + eps.matmul(self.scale_tril.T)
+        if self.output_dim == 1:
+            return self.loc.unsqueeze(0) + eps.matmul(self.scale_tril.T)
+        eps = eps.reshape(int(num_samples), self.output_dim, self.num_inducing)
+        samples = self.loc.T.unsqueeze(0) + torch.einsum("skm,kjm->skj", eps, self.scale_tril)
+        return samples.transpose(1, 2)
 
     def rsample_with_kl(
         self,
@@ -164,14 +179,17 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         generator: torch.Generator | None = None,
         antithetic: bool = False,
     ) -> torch.Tensor:
-        return _standard_normal_sample(
+        samples = _standard_normal_sample(
             num_samples,
-            self.num_inducing,
+            self.num_inducing * self.output_dim,
             dtype=self.loc.dtype,
             device=self.loc.device,
             generator=generator,
             antithetic=antithetic,
         )
+        if self.output_dim == 1:
+            return samples.reshape(int(num_samples), self.num_inducing)
+        return samples.reshape(int(num_samples), self.output_dim, self.num_inducing).transpose(1, 2)
 
     def kl_to_standard_normal(self) -> torch.Tensor:
         scale_tril, log_diag = self._scale_tril_and_log_diag()
@@ -180,7 +198,7 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         return 0.5 * (
             trace_cov
             + self.loc.square().sum()
-            - float(self.num_inducing)
+            - float(self.num_inducing * self.output_dim)
             - logdet_cov
         )
 

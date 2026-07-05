@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from scripts import classification_benchmark
+from src.gmvip import GeneralizedMatheronVIP
 
 
 class TinyClassificationDataset:
@@ -84,6 +85,9 @@ def test_classification_methods_build_and_predict_logits(model_type):
     args = _args(model_type)
 
     model = classification_benchmark.build_model(args, dataset, model_type)
+    if model_type == "gmvip":
+        assert isinstance(model, GeneralizedMatheronVIP)
+        assert model.likelihood_type == "multiclass"
     xb = torch.as_tensor(dataset.inputs[:2], dtype=torch.float64)
     samples = classification_benchmark.predict_logits_samples(
         model,

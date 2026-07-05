@@ -68,10 +68,62 @@ class BaseMatheronOperator(nn.Module):
     def mean_at(self, X: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
+    def _identity_psi(self) -> torch.Tensor:
+        eye = torch.eye(self.num_inducing, dtype=self.Z.dtype, device=self.Z.device)
+        mu_Z = self.inducing_mean()
+        if mu_Z.ndim == 2:
+            return eye.unsqueeze(0).expand(mu_Z.shape[-1], -1, -1)
+        return eye
+
     def whitened_to_inducing(self, a: torch.Tensor) -> torch.Tensor:
         mu_Z = self.inducing_mean()
         D_Z = self.inducing_scale_matrix()
-        return mu_Z + a.matmul(D_Z.T)
+        if a.ndim == 2:
+            if mu_Z.ndim != 1 or D_Z.ndim != 2:
+                raise ValueError("Scalar coefficients require scalar inducing mean and scale.")
+            return mu_Z + a.matmul(D_Z.T)
+        if a.ndim != 3:
+            raise ValueError("a must have shape [S, M] or [S, M, K].")
+        if a.shape[1] != self.num_inducing:
+            raise ValueError("a inducing dimension must equal num_inducing.")
+        output_dim = a.shape[-1]
+        if mu_Z.ndim == 1:
+            mu_Z = mu_Z.unsqueeze(-1).expand(-1, output_dim)
+        if mu_Z.shape != (self.num_inducing, output_dim):
+            raise ValueError("Vector coefficients require inducing mean with shape [M, K].")
+        if D_Z.ndim == 2:
+            transformed = torch.einsum("smk,jm->sjk", a, D_Z)
+        elif D_Z.ndim == 3:
+            if D_Z.shape[0] != output_dim:
+                raise ValueError("Batched inducing scale must have shape [K, M, M].")
+            transformed = torch.einsum("smk,kjm->sjk", a, D_Z)
+        else:
+            raise ValueError("inducing scale must have shape [M, M] or [K, M, M].")
+        return mu_Z.unsqueeze(0) + transformed
+
+    def _apply_residual(
+        self,
+        g_X: torch.Tensor,
+        g_Z: torch.Tensor,
+        u: torch.Tensor,
+        psi: torch.Tensor,
+    ) -> torch.Tensor:
+        residual = u - g_Z
+        if residual.ndim == 2:
+            if psi.ndim != 2:
+                raise ValueError("Scalar residuals require psi with shape [N, M].")
+            return g_X + residual.matmul(psi.T)
+        if residual.ndim != 3:
+            raise ValueError("Residuals must have shape [S, M] or [S, M, K].")
+        if psi.ndim == 2:
+            correction = torch.einsum("smk,nm->snk", residual, psi)
+        elif psi.ndim == 3:
+            if psi.shape[0] != residual.shape[-1]:
+                raise ValueError("Batched psi must have shape [K, N, M].")
+            correction = torch.einsum("smk,knm->snk", residual, psi)
+        else:
+            raise ValueError("psi must have shape [N, M] or [K, N, M].")
+        return g_X + correction
 
     def apply(
         self,
@@ -86,7 +138,7 @@ class BaseMatheronOperator(nn.Module):
         if self.is_exact_inducing_input(X):
             return u
         psi = self.psi(X)
-        return g_X + (u - g_Z).matmul(psi.T)
+        return self._apply_residual(g_X, g_Z, u, psi)
 
     def apply_components(
         self,
@@ -187,7 +239,7 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
     def psi(self, X: torch.Tensor) -> torch.Tensor:
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         if self.is_exact_inducing_input(X):
-            return torch.eye(self.num_inducing, dtype=self.Z.dtype, device=self.Z.device)
+            return self._identity_psi()
         _, _, _, _, L_ZZ = self._current_Z_moments()
         K_XZ = self.compute_cross_covariance(X)
         return right_cholesky_solve(K_XZ, L_ZZ)
@@ -266,7 +318,7 @@ class RBFCardinalMatheronOperator(BaseMatheronOperator):
             detach_prior_grad=self.detach_prior_grad,
         )
         moment_Z, moment_mean, prior_K_ZZ_raw, prior_K_ZZ, prior_L_ZZ = self._compute_prior_Z_moments()
-        moment_var = torch.diagonal(prior_K_ZZ_raw).clamp_min(1e-8)
+        moment_var = torch.diagonal(prior_K_ZZ_raw, dim1=-2, dim2=-1).clamp_min(1e-8)
 
         if self.mean_mode == "prior_sample":
             mu_Z = moment_mean
@@ -278,7 +330,7 @@ class RBFCardinalMatheronOperator(BaseMatheronOperator):
                 mu = mu[..., 0]
             mu_Z = mu.to(dtype=self.Z.dtype, device=self.Z.device)
         else:
-            mu_Z = torch.zeros(self.num_inducing, dtype=self.Z.dtype, device=self.Z.device)
+            mu_Z = torch.zeros_like(moment_mean)
         self.register_buffer("mu_Z", mu_Z.detach().clone())
         self.register_buffer("moment_Z", moment_Z.detach().clone())
         self.register_buffer("moment_var_Z", moment_var.detach().clone())
@@ -352,8 +404,10 @@ class RBFCardinalMatheronOperator(BaseMatheronOperator):
         if self.inducing_scale == "prior_cholesky":
             return prior_L_ZZ
         if self.inducing_scale == "prior_diag":
-            diag = torch.diagonal(prior_K_ZZ).clamp_min(torch.finfo(self.Z.dtype).eps).sqrt()
-            return torch.diag(diag)
+            diag = torch.diagonal(prior_K_ZZ, dim1=-2, dim2=-1).clamp_min(torch.finfo(self.Z.dtype).eps).sqrt()
+            if diag.ndim == 1:
+                return torch.diag(diag)
+            return torch.diag_embed(diag)
         raise ValueError("inducing_scale must be 'prior_cholesky', 'rbf_cholesky', 'prior_diag', or 'identity'.")
 
     def _needs_cholesky_for_apply(self, X: torch.Tensor) -> bool:
@@ -393,12 +447,11 @@ class RBFCardinalMatheronOperator(BaseMatheronOperator):
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         a = a.to(dtype=self.Z.dtype, device=self.Z.device)
         L_ZZ = self._L_ZZ() if self._needs_cholesky_for_apply(X) else None
-        D_Z = self._inducing_scale_matrix()
-        u = self.inducing_mean() + a.matmul(D_Z.T)
+        u = self.whitened_to_inducing(a)
         if self.is_exact_inducing_input(X):
             return u
         psi = self._psi_from_cholesky(X, L_ZZ)
-        return g_X + (u - g_Z).matmul(psi.T)
+        return self._apply_residual(g_X, g_Z, u, psi)
 
     def apply_components(
         self,
@@ -425,6 +478,8 @@ class RBFCardinalMatheronOperator(BaseMatheronOperator):
     def mean_at(self, X: torch.Tensor) -> torch.Tensor:
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         if self.mean_mode == "zero":
+            if self.mu_Z.ndim == 2:
+                return torch.zeros(X.shape[0], self.mu_Z.shape[-1], dtype=self.Z.dtype, device=self.Z.device)
             return torch.zeros(X.shape[0], dtype=self.Z.dtype, device=self.Z.device)
         if self.mean_mode == "prior_api":
             mu = self.base_prior.mean(X)
