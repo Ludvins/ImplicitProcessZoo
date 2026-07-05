@@ -92,8 +92,8 @@ class GeneralizedMatheronVIP(nn.Module):
                 raise ValueError("output_dim must equal num_classes for multiclass likelihood")
             if posterior_type == "realnvp":
                 raise NotImplementedError("RealNVP q(a) is not supported for multiclass GMVIP.")
-        elif int(output_dim) != 1:
-            raise ValueError("Regression GMVIP currently supports output_dim=1.")
+        elif int(output_dim) > 1 and posterior_type == "realnvp":
+            raise NotImplementedError("RealNVP q(a) is not supported for vector-output regression GMVIP.")
         self.base_prior = base_prior
         self.operator_type = str(operator_type)
         self.posterior_type = str(posterior_type)
@@ -264,10 +264,17 @@ class GeneralizedMatheronVIP(nn.Module):
                 raise ValueError("Multiclass targets must have shape [N], [N, 1], or [N, K].")
             return y.long()
         y = y.to(dtype=self.Z.dtype, device=self.Z.device)
-        if y.ndim == 2 and y.shape[-1] == 1:
+        if self.output_dim == 1 and y.ndim == 2 and y.shape[-1] == 1:
             y = y[..., 0]
-        if y.ndim != 1:
-            raise ValueError("Only scalar-output regression targets are supported.")
+        if self.output_dim == 1:
+            if y.ndim != 1:
+                raise ValueError("Scalar-output regression targets must have shape [N] or [N, 1].")
+            return y
+        if y.ndim != 2 or y.shape[-1] != self.output_dim:
+            raise ValueError(
+                "Vector-output regression targets must have shape "
+                f"[N, {self.output_dim}], got {tuple(y.shape)}."
+            )
         return y
 
     def vi_parameters(self):
@@ -387,7 +394,7 @@ class GeneralizedMatheronVIP(nn.Module):
         data_alpha: float,
     ) -> torch.Tensor:
         if abs(float(data_alpha)) < 1e-12:
-            return log_prob.sum(dim=-1).mean()
+            return log_prob.reshape(log_prob.shape[0], -1).sum(dim=-1).mean()
         sample_count = int(log_prob.shape[0])
         log_mean_exp = torch.logsumexp(float(data_alpha) * log_prob, dim=0) - torch.log(
             torch.tensor(sample_count, dtype=log_prob.dtype, device=log_prob.device)
@@ -648,12 +655,16 @@ class GeneralizedMatheronVIP(nn.Module):
             return samples
         if noisy:
             samples = samples + self.noise_std * torch.randn_like(samples)
+        if self.output_dim > 1:
+            return samples
         return samples.unsqueeze(-1)
 
     def forward(self, X: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if self.likelihood_type == "multiclass":
             return self.predict_f_samples(X, S=128), None
         pred = self.predict(X, num_samples=128, include_noise=True)
+        if self.output_dim > 1:
+            return pred["y_mean"], pred["y_var"].sqrt()
         return pred["y_mean"].unsqueeze(-1), pred["y_var"].sqrt().unsqueeze(-1)
 
     @torch.no_grad()
@@ -664,7 +675,8 @@ class GeneralizedMatheronVIP(nn.Module):
         samples = self.sample_prior_values(X, int(num_samples))
         if self.likelihood_type == "multiclass":
             return samples
-        samples = samples.unsqueeze(-1)
+        if self.output_dim == 1:
+            samples = samples.unsqueeze(-1)
         y_mean = getattr(self, "y_mean", None)
         y_std = getattr(self, "y_std", None)
         if y_mean is not None and y_std is not None:

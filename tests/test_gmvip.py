@@ -78,6 +78,39 @@ def _make_model(
     return model
 
 
+def _make_vector_model(
+    operator_type="rbf",
+    num_inducing=5,
+    num_operator_bank_samples=16,
+    seed=0,
+    learn_noise=True,
+):
+    Z = torch.linspace(-1.5, 1.5, num_inducing, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    return GeneralizedMatheronVIP(
+        base_prior=_make_prior(
+            num_samples=num_operator_bank_samples,
+            seed=seed,
+            output_dim=2,
+        ),
+        inducing_points=Z,
+        operator_type=operator_type,
+        posterior_type="gaussian",
+        num_operator_bank_samples=num_operator_bank_samples,
+        learn_noise=learn_noise,
+        init_log_noise=torch.tensor([-2.0, -1.5], dtype=DTYPE, device=DEVICE),
+        jitter=1e-5,
+        shrinkage=0.02,
+        init_lengthscale=0.7,
+        learn_kernel=False,
+        mean_mode="prior_sample",
+        inducing_scale="prior_cholesky",
+        operator_bank_seed=seed + 100,
+        output_dim=2,
+        num_train_samples=4,
+        max_grad_norm=None,
+    )
+
+
 def _make_multiclass_model(
     operator_type="rbf",
     posterior_type="gaussian",
@@ -170,6 +203,19 @@ def test_multiclass_realnvp_is_not_supported():
         _make_multiclass_model(operator_type="rbf", posterior_type="realnvp", seed=12)
 
 
+def test_vector_regression_realnvp_is_not_supported():
+    Z = torch.linspace(-1.5, 1.5, 5, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    with pytest.raises(NotImplementedError, match="RealNVP"):
+        GeneralizedMatheronVIP(
+            base_prior=_make_prior(num_samples=12, seed=15, output_dim=2),
+            inducing_points=Z,
+            operator_type="rbf",
+            posterior_type="realnvp",
+            num_operator_bank_samples=12,
+            output_dim=2,
+        )
+
+
 def test_cholesky_gaussian_posterior_shapes_and_zero_kl():
     posterior = CholeskyGaussianCoefficientPosterior(16, device=DEVICE, dtype=DTYPE)
     samples = posterior.rsample(num_samples=7)
@@ -193,6 +239,53 @@ def test_multiclass_cholesky_gaussian_posterior_shapes_and_zero_kl():
     assert posterior.std.shape == (5, 3)
     assert kl.ndim == 0
     assert torch.allclose(kl, torch.zeros((), dtype=DTYPE), atol=1e-12)
+
+
+@pytest.mark.parametrize("operator_type", ["empirical", "rbf"])
+def test_vector_regression_gmvip_sample_shapes_are_finite(operator_type):
+    torch.manual_seed(41)
+    model = _make_vector_model(operator_type=operator_type, seed=41)
+    X = torch.linspace(-1.0, 1.0, 7, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+
+    posterior = model.sample_posterior_values(X, num_samples=5, seed=411)
+    prior = model.sample_prior_values(X, num_samples=6, seed=412)
+    pred_samples = model.predict_samples(X, num_samples=5)
+
+    assert posterior.shape == (5, 7, 2)
+    assert prior.shape == (6, 7, 2)
+    assert pred_samples.shape == (5, 7, 2)
+    assert torch.isfinite(posterior).all()
+    assert torch.isfinite(prior).all()
+
+
+@pytest.mark.parametrize("operator_type", ["empirical", "rbf"])
+def test_vector_regression_elbo_backward_reaches_parameters(operator_type):
+    torch.manual_seed(42)
+    model = _make_vector_model(operator_type=operator_type, seed=42)
+    X = torch.linspace(-1.0, 1.0, 9, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    y = torch.stack([torch.sin(X[:, 0]), torch.cos(X[:, 0])], dim=-1)
+
+    loss, diagnostics = model.elbo_loss(X, y, num_samples=4, num_data=X.shape[0], beta=0.1)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(diagnostics["kl"])
+    assert model.coefficients.loc.grad is not None
+    assert model.coefficients.raw_scale_tril.grad is not None
+    assert torch.isfinite(model.coefficients.loc.grad).all()
+    assert torch.isfinite(model.coefficients.raw_scale_tril.grad).all()
+
+
+def test_vector_regression_fixed_noise_likelihood_is_finite_and_not_trainable():
+    model = _make_vector_model(operator_type="rbf", seed=43, learn_noise=False)
+    X = torch.linspace(-1.0, 1.0, 6, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    y = torch.stack([X[:, 0], X[:, 0].square()], dim=-1)
+
+    loss, diagnostics = model.elbo_loss(X, y, num_samples=4, num_data=X.shape[0])
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(diagnostics["noise"]).all()
+    assert model.likelihood.log_noise.requires_grad is False
 
 
 def test_coefficient_posteriors_support_antithetic_base_samples():

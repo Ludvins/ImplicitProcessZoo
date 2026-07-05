@@ -43,9 +43,10 @@ class DeterministicMAP(torch.nn.Module):
                 for in_dim, out_dim in zip(dims, dims[1:])
             ]
         )
-        self.log_variance = torch.nn.Parameter(
-            torch.as_tensor(log_variance_init, dtype=dtype, device=device).reshape(())
-        )
+        log_variance_value = torch.as_tensor(log_variance_init, dtype=dtype, device=device)
+        if log_variance_value.ndim > 1:
+            raise ValueError("log_variance_init must be scalar or one-dimensional.")
+        self.log_variance = torch.nn.Parameter(log_variance_value.clone())
         self.register_buffer("y_mean", torch.as_tensor(y_mean, dtype=dtype, device=device))
         self.register_buffer("y_std", torch.as_tensor(y_std, dtype=dtype, device=device))
 
@@ -68,7 +69,12 @@ class DeterministicMAP(torch.nn.Module):
     def forward(self, X):
         F = self.predict_f(X).unsqueeze(0)
         mean = F * self.y_std + self.y_mean
-        sigma = torch.exp(0.5 * self.log_variance).view(1, 1, 1) * self.y_std
+        sigma = torch.exp(0.5 * self.log_variance)
+        if sigma.ndim == 0:
+            sigma = sigma.view(1, 1, 1)
+        else:
+            sigma = sigma.view(1, 1, -1)
+        sigma = sigma * self.y_std
         return mean, sigma.expand_as(mean)
 
     def predict(self, X, S=1):

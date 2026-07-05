@@ -17,11 +17,13 @@ class GaussianRegressionLikelihood(nn.Module):
         super().__init__()
         self.min_log_noise = min_log_noise
         self.max_log_noise = max_log_noise
-        value = torch.tensor(float(init_log_noise), device=device, dtype=dtype)
+        value = torch.as_tensor(init_log_noise, device=device, dtype=dtype)
+        if value.ndim > 1:
+            raise ValueError("init_log_noise must be a scalar or one-dimensional tensor.")
         if learn_noise:
-            self.log_noise = nn.Parameter(value)
+            self.log_noise = nn.Parameter(value.clone())
         else:
-            self.register_buffer("log_noise", value)
+            self.register_buffer("log_noise", value.clone())
 
     @property
     def clamped_log_noise(self) -> torch.Tensor:
