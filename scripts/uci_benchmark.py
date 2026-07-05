@@ -1897,9 +1897,6 @@ def run_from_args(args, *, dataset_names=None, default_iters=None):
             # vip_iterations defaults to the same value (used for FTIP warm).
             if not run_args._iters_user_supplied:
                 run_args.iterations = default_iters.get(ds, 30_000)
-                # MFVI gets a larger default budget than the flow-based models.
-                if run_args.model == "mfvi":
-                    run_args.iterations *= 10
                 run_args.epochs = None
                 if run_args.vip_epochs is None and run_args.vip_iterations is None:
                     run_args.vip_iterations = run_args.iterations
