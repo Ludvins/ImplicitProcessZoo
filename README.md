@@ -123,7 +123,7 @@ $$
 The predictive distribution is
 
 $$
-p(y_* | x_*, D) \approx N(f_\theta(x_*), \sigma_y^2).
+p(y_{\ast} \mid x_{\ast}, D) \approx N(f_{\theta}(x_{\ast}), \sigma_y^2).
 $$
 
 This is useful as a calibration point: it tests how much the Bayesian or
@@ -454,20 +454,20 @@ $$
 At the optimum,
 
 $$
-T_{\omega^*}(u) = \log q_\phi(u) - \log p_\theta(u),
+T_{\omega^{\ast}}(u) = \log q_\phi(u) - \log p_\theta(u),
 $$
 
 so the forward inducing-space KL is estimated as
 
 $$
-KL(q_\phi(u) \| p_\theta(u)) = \mathbb{E}_{q_\phi(u)}[T_{\omega^*}(u)].
+KL(q_\phi(u) \| p_\theta(u)) = \mathbb{E}_{q_\phi(u)}[T_{\omega^{\ast}}(u)].
 $$
 
 The implementation uses the symmetrized inducing regularizer from the SIP
 training code:
 
 $$
-\mathcal{R}_{\mathrm{KL}} \approx \frac{1}{2} \left( \mathbb{E}_{q_\phi(u)}[T_{\omega^*}(u)] - \mathbb{E}_{p_\theta(u)}[T_{\omega^*}(u)] \right).
+\mathcal{R}_{\mathrm{KL}} \approx \frac{1}{2} \left( \mathbb{E}_{q_\phi(u)}[T_{\omega^{\ast}}(u)] - \mathbb{E}_{p_\theta(u)}[T_{\omega^{\ast}}(u)] \right).
 $$
 
 The critic is optimized separately before each primal update and is not part of
