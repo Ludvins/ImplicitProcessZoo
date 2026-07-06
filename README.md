@@ -85,22 +85,22 @@ This section summarizes the eight approaches exposed by
 Let $D = \{(x_i, y_i)\}_{i=1}^N$, let $B$ be a minibatch, and let the
 likelihood be
 
-```math
+$$
 p(y_i | f_i) = N(y_i; f_i, \sigma_y^2).
-```
+$$
 
 Most variational methods optimize a minibatch-scaled objective of the form
 
-```math
+$$
 L = -\frac{N}{|B|} A_B + R,
-```
+$$
 
 where $A_B$ is a data-fit term and $R$ is the method-specific regularizer or
 KL. When the BB-alpha parameter is zero (`--bb_alpha 0`), the data-fit term is
 the usual expected log-likelihood. When it is nonzero, the code uses the
 BB-alpha energy
 
-```math
+$$
 A_B =
 \sum_{i \in B}
 \frac{1}{\alpha}
@@ -109,7 +109,7 @@ A_B =
 \sum_{s=1}^S
 \exp\{\alpha \log p(y_i | f_i^{(s)})\}
 \right],
-```
+$$
 
 with the $\alpha \to 0$ limit equal to
 $\sum_i \mathbb{E}_q[\log p(y_i \mid f_i)]$. Classification uses the same
@@ -123,7 +123,7 @@ There is no posterior distribution over functions or weights.
 
 The optimized objective is
 
-```math
+$$
 L_{\mathrm{MAP}}(\theta, \sigma_y^2)
 =
 -\frac{N}{|B|}
@@ -131,13 +131,13 @@ L_{\mathrm{MAP}}(\theta, \sigma_y^2)
 \log N(y_i; f_\theta(x_i), \sigma_y^2)
 +
 \frac{\lambda}{2} ||\theta||_2^2.
-```
+$$
 
 The predictive distribution is
 
-```math
+$$
 p(y_* | x_*, D) \approx N(f_\theta(x_*), \sigma_y^2).
-```
+$$
 
 This is useful as a calibration point: it tests how much the Bayesian or
 implicit-process methods improve over a point estimate with learned noise.
@@ -147,7 +147,7 @@ implicit-process methods improve over a point estimate with learned noise.
 MFVI performs weight-space variational inference. The Bayesian neural network
 parameters have a diagonal Gaussian variational posterior
 
-```math
+$$
 q_\lambda(\theta)
 =
 N(\theta; \mu, \mathrm{diag}(\sigma^2)),
@@ -155,17 +155,17 @@ N(\theta; \mu, \mathrm{diag}(\sigma^2)),
 \theta^{(s)} = \mu + \sigma \odot \epsilon^{(s)},
 \quad
 \epsilon^{(s)} \sim N(0, I).
-```
+$$
 
 The prior is a standard normal over the same weight vector:
 
-```math
+$$
 p(\theta) = N(0, I).
-```
+$$
 
 The ELBO-style objective is
 
-```math
+$$
 L_{\mathrm{MFVI}}
 =
 -\frac{N}{|B|}
@@ -173,7 +173,7 @@ L_{\mathrm{MFVI}}
 E_{q(\theta)}[\log p(y_i | f_{\theta}(x_i))]
 +
 KL(q_\lambda(\theta) || p(\theta)).
-```
+$$
 
 In code, the BNN uses fresh Monte Carlo weight noise during training. The
 posterior uncertainty is therefore entirely weight-space diagonal Gaussian
@@ -191,14 +191,14 @@ a GP or a BNN prior.
 
 At each step, the code builds a measurement set
 
-```math
+$$
 X_M = X_{\mathrm{context}} \cup X_{\mathrm{train-subset}}.
-```
+$$
 
 The posterior BNN gives function samples $f_M^{(s)} = f^{(s)}(X_M)$. The
 functional KL is optimized through a score-matching surrogate:
 
-```math
+$$
 KL(q(f_M) || p_0(f_M))
 \quad \Longrightarrow \quad
 E_{q(f_M)}
@@ -210,26 +210,26 @@ f_M^T
 \nabla_{f_M} \log p_0(f_M)
 \right)
 \right].
-```
+$$
 
 The code estimates the posterior score with a spectral Stein gradient estimator
 (SSGE). For GP priors, the prior score is analytic:
 
-```math
+$$
 \nabla_f \log p_0(f_M)
 =
 -(K_{MM} + \gamma^2 I)^{-1}(f_M - m_M).
-```
+$$
 
 The training objective is
 
-```math
+$$
 L_{\mathrm{FBNN}}
 =
 -\frac{N}{|B|} A_B
 +
 \lambda_{\mathrm{KL}} \widehat{KL}_{\mathrm{func}}.
-```
+$$
 
 The context points are important: they push the posterior back toward the prior
 away from observed training inputs.
@@ -241,45 +241,45 @@ Inference in Bayesian Neural Networks" [2].
 
 TFSVI uses a mean-field Gaussian posterior over parameters,
 
-```math
+$$
 q(\theta) = N(\mu, \mathrm{diag}(\sigma^2)),
 \quad
 p(\theta) = N(0, \sigma_p^2 I),
-```
+$$
 
 but regularizes the induced function distribution. The key approximation is a
 first-order Taylor expansion around $\theta = \mu$:
 
-```math
+$$
 f(X_C; \theta)
 \approx
 f(X_C; \mu) + J_C(\theta - \mu),
-```
+$$
 
 where $J_C$ is the Jacobian of the network outputs at a context set $X_C$.
 This makes the induced posterior and prior Gaussian in function space:
 
-```math
+$$
 \tilde q(f_C)
 =
 N(
 f(X_C; \mu),
 J_C \mathrm{diag}(\sigma^2) J_C^T
 ),
-```
+$$
 
-```math
+$$
 \tilde p(f_C)
 =
 N(
 f(X_C; \mu) - J_C \mu,
 \sigma_p^2 J_C J_C^T
 ).
-```
+$$
 
 The objective is
 
-```math
+$$
 L_{\mathrm{TFSVI}}
 =
 -\frac{N}{|B|} A_B
@@ -290,7 +290,7 @@ KL(
 ||
 \tilde p(f_{C_c})
 ).
-```
+$$
 
 The implementation sums scalar-output Gaussian KLs over output dimensions. The
 base network is treated as an architecture template; TFSVI's trainable
@@ -303,49 +303,49 @@ Reference: Ma et al. (ICML 2019), "Variational Implicit Processes" [3].
 VIP constructs a finite-rank implicit process from coherent prior-function
 samples. Given prior samples $g_s(\cdot)$, define
 
-```math
+$$
 m(X) = \frac{1}{S}\sum_{s=1}^S g_s(X),
 \quad
 \Phi_s(X) =
 \frac{g_s(X) - m(X)}{\sqrt{S-1}}.
-```
+$$
 
 The coefficient posterior is a full-covariance Gaussian:
 
-```math
+$$
 q(a) = N(q_\mu, L_q L_q^T),
 \quad
 p(a) = N(0, I).
-```
+$$
 
 The posterior process is
 
-```math
+$$
 f(X) = m(X) + \Phi(X)^T a.
-```
+$$
 
 Therefore, for regression, the marginal $q(f(X))$ is Gaussian and can be
 handled analytically:
 
-```math
+$$
 E_q[f(X)] = m(X) + \Phi(X)^T q_\mu,
-```
+$$
 
-```math
+$$
 Cov_q[f(X)] =
 \Phi(X)^T L_q L_q^T \Phi(X).
-```
+$$
 
 The objective is
 
-```math
+$$
 L_{\mathrm{VIP}}
 =
 -\frac{N}{|B|}
 E_{q(f_B)}[\log p(y_B | f_B)]
 +
 KL(q(a) || N(0, I)).
-```
+$$
 
 VIP is finite-dimensional in coefficient space but function-valued after it is
 composed with the sampled prior basis. The prior BNN can be frozen or trained,
@@ -359,27 +359,27 @@ for Function-Space Variational Inference" [4].
 FTIP keeps the same finite-rank prior basis as VIP but replaces the Gaussian
 coefficient posterior with a normalizing-flow posterior. Let
 
-```math
+$$
 z \sim N(0, I),
 \quad
 a = T_\phi(z),
-```
+$$
 
 where $T_\phi$ is an invertible flow. The induced coefficient density is
 
-```math
+$$
 \log q_\phi(a)
 =
 \log p(z)
 -
 \log \left|\det \frac{\partial T_\phi(z)}{\partial z}\right|.
-```
+$$
 
 The posterior process is still
 
-```math
+$$
 f(X) = m(X) + \Phi(X)^T a,
-```
+$$
 
 but $q(a)$ can now be non-Gaussian and multimodal if the flow is expressive
 enough. The code supports affine coupling, spline coupling, and spline coupling
@@ -387,7 +387,7 @@ with Glow-style $1 \times 1$ mixing.
 
 The objective is estimated with Monte Carlo samples:
 
-```math
+$$
 L_{\mathrm{FTIP}}
 =
 -\frac{N}{|B|} A_B
@@ -396,7 +396,7 @@ E_{a \sim q_\phi}
 [
 \log q_\phi(a) - \log N(a;0,I)
 ].
-```
+$$
 
 FTIP can optionally warm-start from a trained VIP model by initializing an
 affine flow layer from VIP's Gaussian coefficient posterior.
@@ -408,7 +408,7 @@ at inducing inputs $Z$. For a coherent prior sample $g(\cdot)$, whitened
 coefficients $a$, inducing mean $\mu_Z$, inducing scale $D_Z$, and
 interpolation operator $\Psi_Z$, the sampled function is
 
-```math
+$$
 f(X)
 =
 g(X)
@@ -417,25 +417,25 @@ g(X)
 [
 \mu_Z + D_Z a - g(Z)
 ].
-```
+$$
 
 The inducing values are
 
-```math
+$$
 u = f(Z) = \mu_Z + D_Z a.
-```
+$$
 
 The latent coefficient prior is always
 
-```math
+$$
 p(a) = N(0, I).
-```
+$$
 
 The Gaussian posterior option uses
 
-```math
+$$
 q(a) = N(m_a, L_a L_a^T),
-```
+$$
 
 and the RealNVP option uses $a = T_\phi(z)$, $z \sim N(0,I)$, with the same
 latent-variable KL form as FTIP.
@@ -444,9 +444,9 @@ GMVIP supports two operators:
 
 - Empirical operator:
 
-  ```math
+  $$
   \Psi_Z(X) = K_{XZ}^{\mathrm{emp}} (K_{ZZ}^{\mathrm{emp}})^{-1},
-  ```
+  $$
 
   where the mean, cross-covariance, and inducing covariance are estimated from a
   coherent bank of prior functions evaluated on $[X; Z]$. For this operator,
@@ -455,9 +455,9 @@ GMVIP supports two operators:
 
 - RBF operator:
 
-  ```math
+  $$
   \Psi_Z(X) = K_{\mathrm{RBF}}(X,Z) K_{\mathrm{RBF}}(Z,Z)^{-1},
-  ```
+  $$
 
   with learnable or fixed RBF lengthscales/output scale. The inducing mean and
   scale are configurable; the canonical RBF setting is $\mu_Z = 0$ and
@@ -465,7 +465,7 @@ GMVIP supports two operators:
 
 The training objective is
 
-```math
+$$
 ELBO
 =
 E_{q(a),g}
@@ -474,7 +474,7 @@ E_{q(a),g}
 ]
 -
 \beta KL(q(a) || N(0,I)),
-```
+$$
 
 with minibatch scaling on the likelihood and an optional BB-alpha data term.
 Only the latent-variable KL is used.
@@ -487,60 +487,60 @@ Sparse Implicit Processes" [5].
 SIP summarizes an implicit process with inducing inputs $Z$ and inducing
 variables
 
-```math
+$$
 u = f(Z),
-```
+$$
 
 where $Z$ can be fixed or learned. The variational family keeps the posterior
 over inducing values implicit:
 
-```math
+$$
 \xi \sim N(0,I),
 \quad
 \epsilon =
 m_\epsilon + \exp(\tfrac{1}{2}\ell_\epsilon) \odot \xi,
 \quad
 u = h_\phi(\epsilon).
-```
+$$
 
 Here $h_\phi$ is a neural sampler and $(m_\epsilon,\ell_\epsilon)$ are trainable
 input-noise moments. The full process posterior is then defined through the
 sparse factorization
 
-```math
+$$
 q_\phi(f_X, u) = p_\theta(f_X \mid u) q_\phi(u).
-```
+$$
 
 The prior over inducing values is also implicit:
 
-```math
+$$
 u_p = f_\theta(Z),
 \quad
 f_\theta \sim p_\theta.
-```
+$$
 
 For each batch, coherent prior samples are evaluated jointly at $[X; Z]$. This
 single joint evaluation estimates
 
-```math
+$$
 m_X,\quad m_Z,\quad K_{ZZ},\quad K_{XZ},
 \quad \mathrm{diag}(K_{XX}),
-```
+$$
 
 and, for prediction, the full $K_{XX}$. These moments define the GP-style sparse
 prior conditional used inside the variational family:
 
-```math
+$$
 \mu_{X|u}
 =
 m_X + K_{XZ}K_{ZZ}^{-1}(u - m_Z),
-```
+$$
 
-```math
+$$
 \Sigma_{X|u}
 =
 K_{XX} - K_{XZ}K_{ZZ}^{-1}K_{ZX}.
-```
+$$
 
 The training objective uses the diagonal conditional
 $N(\mu_{X|u}, \mathrm{diag}(\Sigma_{X|u}))$ for minibatch likelihood terms,
@@ -551,7 +551,7 @@ Cholesky solves rather than explicit matrix inverses.
 
 The functional ELBO optimized by the primal parameters is
 
-```math
+$$
 \mathcal{L}_{\mathrm{SIP}}
 =
 \mathbb{E}_{q_\phi(f_X, u)}
@@ -560,7 +560,7 @@ The functional ELBO optimized by the primal parameters is
 ]
 -
 \beta \mathcal{R}_{\mathrm{KL}},
-```
+$$
 
 with minibatch scaling on the likelihood. The current implementation does not
 use a Gaussian closed-form KL for $q_\phi(u)$. Since both $q_\phi(u)$ and
@@ -568,7 +568,7 @@ $p_\theta(u)$ are implicit, SIP trains a separate critic $T_\omega(u)$ to
 estimate the inducing-space log density ratio. The critic is trained with the
 binary classification objective
 
-```math
+$$
 \min_\omega
 -
 \frac{1}{2}
@@ -583,28 +583,28 @@ binary classification objective
 \log(1 - \sigma(T_\omega(u)))
 ]
 \right].
-```
+$$
 
 At the optimum,
 
-```math
+$$
 T_{\omega^*}(u)
 =
 \log q_\phi(u) - \log p_\theta(u),
-```
+$$
 
 so the forward inducing-space KL is estimated as
 
-```math
+$$
 KL(q_\phi(u) \| p_\theta(u))
 =
 \mathbb{E}_{q_\phi(u)}[T_{\omega^*}(u)].
-```
+$$
 
 The implementation uses the symmetrized inducing regularizer from the SIP
 training code:
 
-```math
+$$
 \mathcal{R}_{\mathrm{KL}}
 \approx
 \frac{1}{2}
@@ -613,7 +613,7 @@ training code:
 -
 \mathbb{E}_{p_\theta(u)}[T_{\omega^*}(u)]
 \right).
-```
+$$
 
 The critic is optimized separately before each primal update and is not part of
 the variational/prior optimizer step. The code logs the critic loss, critic
@@ -694,9 +694,9 @@ should receive exactly the requested number of optimizer steps, pass:
 
 GMVIP's Matheron form is:
 
-```math
+$$
 f(X) = g(X) + \Psi_Z(X) [\mu_Z + D_Z a - g(Z)].
-```
+$$
 
 The UCI runner supports empirical and RBF Matheron operators, Gaussian and
 RealNVP coefficient posteriors, learnable inducing locations, antithetic
