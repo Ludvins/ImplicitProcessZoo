@@ -5,7 +5,7 @@ MFVI, FBNN, TFSVI, or MAP.
 Each run writes a JSON result file and, by default, a checkpoint.
 
 Example:
-    python -m scripts.uci_benchmark --model ftip --dataset boston
+    python -m experiments.uci.benchmark --model ftip --dataset boston
 """
 
 import argparse
@@ -22,7 +22,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -41,7 +41,7 @@ from src.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
 from src.map_baseline import DeterministicMAP
 
 
-from scripts.benchmark_utils import (
+from experiments.benchmark_utils import (
     add_wandb_args,
     canonical_model_type,
     finish_wandb_run,

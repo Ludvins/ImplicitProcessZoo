@@ -1367,7 +1367,7 @@ class Pedestrian_Dataset(Dataset):
             if not os.path.isdir(split_dir):
                 raise FileNotFoundError(
                     f"Expected directory {split_dir}; download with "
-                    "scripts/download_ethucy.sh or similar."
+                    "an ETH/UCY data preparation helper."
                 )
             files = sorted(
                 f for f in os.listdir(split_dir) if f.endswith(".txt")

@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from experiments.simprior.interfaces import SimPriorTask
-from experiments.simprior.priors import LotkaVolterraPrior
+from experiments.volterra.interfaces import SimPriorTask
+from experiments.volterra.priors import LotkaVolterraPrior
 
 
 def normalize_time(t: np.ndarray | torch.Tensor, t_max: float = 30.0) -> np.ndarray:
@@ -50,7 +50,6 @@ def load_lotka_volterra_tasks(
     dtype: torch.dtype = torch.float64,
 ) -> list[SimPriorTask]:
     root = Path(root)
-    prior_npz = np.load(root / "prior_paths.npz")
     target_npz = np.load(root / "target_paths.npz")
     t = target_npz["t"].astype(np.float64)
     target_y = target_npz["y"].astype(np.float64)
@@ -59,13 +58,7 @@ def load_lotka_volterra_tasks(
     target_count = min(int(n_eval_targets), int(target_y.shape[0]))
     base_meta = _metadata_json(root)
     device = torch.device(device or "cpu")
-
-    prior_y = prior_npz["y"]
-    prior_theta = prior_npz["theta"] if "theta" in prior_npz.files else None
-    if prior_bank_size is not None:
-        prior_y = prior_y[: int(prior_bank_size)]
-        if prior_theta is not None:
-            prior_theta = prior_theta[: int(prior_bank_size)]
+    reference_bank_size = int(prior_bank_size or base_meta.get("n_prior", 4096))
 
     val_idx = _every_fifth(np.flatnonzero((t > 15.0) & (t <= 20.0)))
     test_idx = np.flatnonzero(t > 20.0).astype(int)
@@ -89,12 +82,11 @@ def load_lotka_volterra_tasks(
             return (values - y_mean) / y_std
 
         prior = LotkaVolterraPrior(
-            prior_npz["t"],
-            prior_y,
-            prior_theta,
+            t,
             y_mean=y_mean,
             y_std=y_std,
-            num_samples=int(prior_bank_size or prior_y.shape[0]),
+            num_samples=reference_bank_size,
+            reference_bank_size=reference_bank_size,
             seed=seed + 30_000 + target_id,
             device=device,
             dtype=dtype,

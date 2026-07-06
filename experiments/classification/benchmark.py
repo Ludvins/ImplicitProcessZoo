@@ -7,8 +7,8 @@ native vector-valued multiclass likelihood.
 
 Examples
 --------
-python -m scripts.classification_benchmark --dataset FashionMNIST --model vip
-python -m scripts.classification_benchmark --dataset CIFAR10 --model all
+python -m experiments.classification.benchmark --dataset FashionMNIST --model vip
+python -m experiments.classification.benchmark --dataset CIFAR10 --model all
 """
 
 import argparse
@@ -25,7 +25,9 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
@@ -47,7 +49,7 @@ from src.utils.metrics import MetricsClassification
 from src.utils.utils import infinite_loader
 from src.vip import VIP
 
-from scripts.benchmark_utils import (
+from experiments.benchmark_utils import (
     add_wandb_args,
     finish_wandb_run,
     init_wandb_run,

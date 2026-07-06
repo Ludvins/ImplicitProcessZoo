@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from experiments.simprior.plots import DEFAULT_METHOD_LABELS, plot_lv_shared_axis_method_comparison
+from experiments.volterra.plots import DEFAULT_METHOD_LABELS, plot_lv_shared_axis_method_comparison
 
 
 def _parse_csv_list(value: str | None) -> list[str]:

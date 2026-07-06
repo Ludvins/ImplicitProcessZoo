@@ -4,19 +4,19 @@ This entrypoint reuses the UCI regression training code for the larger
 Variational-LLA-style regression datasets: Year, Airline, and Taxi.
 
 Example:
-    python -m scripts.regression_benchmark --model gmvip --dataset year
+    python -m experiments.regression.benchmark --model gmvip --dataset year
 """
 
 from pathlib import Path
 import copy
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.uci_benchmark import parse_args as parse_uci_args
-from scripts.uci_benchmark import run_from_args as run_uci_from_args
+from experiments.uci.benchmark import parse_args as parse_uci_args
+from experiments.uci.benchmark import run_from_args as run_uci_from_args
 
 
 REGRESSION_DATASETS = ["year", "airline", "taxi"]

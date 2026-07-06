@@ -3,7 +3,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from scripts import classification_benchmark
+from experiments.classification import benchmark as classification_benchmark
 from src.gmvip import GeneralizedMatheronVIP
 
 

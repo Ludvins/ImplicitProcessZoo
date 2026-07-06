@@ -15,8 +15,8 @@ import yaml
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from experiments.simprior.datasets import load_lotka_volterra_tasks
-from experiments.simprior.metrics import (
+from experiments.volterra.datasets import load_lotka_volterra_tasks
+from experiments.volterra.metrics import (
     crps_from_samples,
     gaussian_nll_from_samples,
     interval_coverage,
@@ -25,12 +25,12 @@ from experiments.simprior.metrics import (
     nearest_prior_mse,
     rmse,
 )
-from experiments.simprior.plots import (
+from experiments.volterra.plots import (
     plot_lv_phase_portrait,
     plot_lv_posterior_trajectory,
     plot_lv_prior_vs_posterior,
 )
-from experiments.simprior.priors import LotkaVolterraPrior
+from experiments.volterra.priors import LotkaVolterraPrior
 from src.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
 from src.ftip import FTIP
 from src.gmvip import GeneralizedMatheronVIP
@@ -46,28 +46,29 @@ METHOD_ALIASES = {"oracle": "oracle_prior_bank"}
 
 DEFAULT_LOTKA_VOLTERRA_CONFIG: dict = {
     "experiment": "lotka_volterra",
-    "method": "gmvip_rbf",
+    "method": "gmvip_empirical",
     "data": {
         "root": "data/simprior/lotka_volterra",
         "n_eval_targets": 20,
-        "n_train_times": 40,
+        "n_train_times": 80,
         "noise_scale": 0.03,
     },
     "prior": {
-        "bank_size": 512,
+        "bank_size": 256,
         "normalize_outputs": True,
     },
     "oracle_prior_bank": {
-        # None means load and weight the full generated prior bank.
+        # None means sample and weight reference_bank_size ODE prior functions.
         "bank_size": None,
     },
     "gmvip": {
-        "operator": "rbf",
-        "num_inducing": 32,
+        "operator": "empirical",
+        "num_inducing": 64,
         "rbf_lengthscale": 0.25,
         "jitter": 1.0e-5,
         "shrinkage": 0.02,
-        "learn_kernel": True,
+        "learn_kernel": False,
+        "beta": 1.0,
     },
     "ftip": {
         "flow_type": "affine",
@@ -77,17 +78,17 @@ DEFAULT_LOTKA_VOLTERRA_CONFIG: dict = {
     },
     "training": {
         "optimizer": "adam",
-        "learning_rate": 1.0e-3,
-        "max_steps": 10_000,
-        "early_stopping_patience": 1000,
-        "eval_interval": 50,
-        "kl_warmup_steps": 2000,
-        "n_mc_train": 8,
+        "learning_rate": 2.0e-3,
+        "max_steps": 400,
+        "early_stopping_patience": 401,
+        "eval_interval": 100,
+        "kl_warmup_steps": 200,
+        "n_mc_train": 4,
         "n_mc_eval": 256,
         "batch_size": "full",
         "hidden_dims": [32, 32],
         "activation": "tanh",
-        "regression_coeffs": 64,
+        "regression_coeffs": 512,
         "disable_tqdm": False,
     },
     "metrics": {
@@ -299,25 +300,22 @@ def _make_flow(config: dict, input_dim: int, *, seed: int, device, dtype) -> tor
 
 
 class OraclePriorBankPosterior(torch.nn.Module):
-    """Exact discrete posterior over the fixed simulator-prior bank."""
+    """Discrete posterior over a Monte Carlo bank sampled from the ODE prior."""
 
     def __init__(self, task, *, bank_size: int | None, seed: int, device, dtype):
         super().__init__()
         self.is_oracle_prior_bank = True
         self.prior = task.prior
         self.seed = int(seed)
-        bank_size = task.prior.num_paths if bank_size is None else min(int(bank_size), task.prior.num_paths)
-        if bank_size == task.prior.num_paths:
-            bank_ids = torch.arange(task.prior.num_paths, dtype=torch.long, device=device)
-        else:
-            bank_ids = task.prior.sample_indices(bank_size, seed=seed).to(device=device)
-        self.register_buffer("bank_ids", bank_ids.reshape(-1))
+        bank_size = task.prior.num_paths if bank_size is None else int(bank_size)
+        bank_latents = task.prior.sample_latents(bank_size, seed=seed).to(device=device, dtype=dtype)
+        self.register_buffer("bank_latents", bank_latents)
 
         with torch.no_grad():
             X_train = task.X_train.to(device=device, dtype=dtype)
             y_train = task.y_train.to(device=device, dtype=dtype)
             noise_var = task.noise_std.to(device=device, dtype=dtype).square().clamp_min(1e-12).reshape(1, 1, -1)
-            bank_train = self.prior.evaluate(X_train, self.bank_ids)
+            bank_train = self.prior.evaluate(X_train, self.bank_latents)
             log_lik = -0.5 * ((bank_train - y_train.unsqueeze(0)).square() / noise_var + torch.log(2.0 * math.pi * noise_var)).sum(
                 dim=(1, 2)
             )
@@ -336,7 +334,7 @@ class OraclePriorBankPosterior(torch.nn.Module):
         generator = torch.Generator(device=self.weights.device)
         generator.manual_seed(int(seed))
         draw_idx = torch.multinomial(self.weights, int(n_samples), replacement=True, generator=generator)
-        return self.prior.evaluate(X, self.bank_ids[draw_idx])
+        return self.prior.evaluate(X, self.bank_latents[draw_idx])
 
 
 def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
@@ -480,12 +478,14 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             init_outputscale=gmvip_cfg.get("init_outputscale", "prior_marginal"),
             inducing_scale="prior_cholesky",
             mean_mode="prior_sample",
+            posterior_init_mean=float(gmvip_cfg.get("posterior_init_mean", 0.0)),
+            posterior_init_log_std=float(gmvip_cfg.get("posterior_init_log_std", 0.0)),
             antithetic_samples=True,
             num_data=int(task.X_train.shape[0]),
             num_train_samples=int(train_cfg.n_mc_train),
-            beta=1.0,
+            beta=float(gmvip_cfg.get("beta", 1.0)),
             beta_warmup_steps=int(train_cfg.kl_warmup_steps),
-            data_alpha=0.0,
+            data_alpha=float(gmvip_cfg.get("data_alpha", 0.0)),
             max_grad_norm=train_cfg.max_grad_norm,
             output_dim=output_dim,
             operator_bank_seed=seed + 101,
@@ -564,8 +564,9 @@ def fit_model(model, method: str, task, config: dict, *, seed: int, device) -> d
             "best_val_nll_norm": _validation_loss(model, method, task, min(64, int(train_cfg.n_mc_eval)), seed + 17),
         }
     dataset = TensorDataset(task.X_train, task.y_train)
-    batch_size = len(dataset) if train_cfg.batch_size == "full" else int(train_cfg.batch_size)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    full_batch = train_cfg.batch_size == "full"
+    batch_size = len(dataset) if full_batch else int(train_cfg.batch_size)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=not full_batch, num_workers=0)
     if hasattr(model, "prepare_for_training"):
         model.prepare_for_training(loader)
     params = model.vi_parameters() if hasattr(model, "vi_parameters") else model.parameters()
@@ -580,11 +581,14 @@ def fit_model(model, method: str, task, config: dict, *, seed: int, device) -> d
     disable = bool(config.get("training", {}).get("disable_tqdm", False))
     loop = tqdm(range(int(train_cfg.max_steps)), desc=f"{method} train", unit=" step", disable=disable)
     for step in loop:
-        try:
-            xb, yb = next(stream)
-        except StopIteration:
-            stream = iter(loader)
-            xb, yb = next(stream)
+        if full_batch:
+            xb, yb = task.X_train, task.y_train
+        else:
+            try:
+                xb, yb = next(stream)
+            except StopIteration:
+                stream = iter(loader)
+                xb, yb = next(stream)
         xb = xb.to(device)
         yb = yb.to(device)
         loss = model._train_step(optimizer, xb, yb)
@@ -748,7 +752,7 @@ def run_method(method: str, config: dict, cli_args) -> dict:
         data_cfg.get("root", "data/simprior/lotka_volterra"),
         seed=seed,
         n_eval_targets=int(data_cfg.get("n_eval_targets", 20)),
-        n_train_times=int(data_cfg.get("n_train_times", 40)),
+        n_train_times=int(data_cfg.get("n_train_times", 80)),
         noise_scale=float(data_cfg.get("noise_scale", 0.03)),
         prior_bank_size=load_prior_bank_size,
         device=device,
@@ -814,7 +818,7 @@ def main(argv: list[str] | None = None):
     if config.get("experiment") != "lotka_volterra":
         raise ValueError("This milestone runner only supports experiment: lotka_volterra.")
 
-    requested = config.get("method", "gmvip_rbf")
+    requested = config.get("method", "gmvip_empirical")
     requested = METHOD_ALIASES.get(requested, requested)
     methods = list(METHODS) if requested == "all" else [requested]
     results = {}

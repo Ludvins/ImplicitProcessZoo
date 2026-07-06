@@ -205,6 +205,7 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         self.register_buffer("K_ZZ_raw", K_ZZ_raw.detach().clone())
         self.register_buffer("K_ZZ", K_ZZ.detach().clone())
         self.register_buffer("L_ZZ", L_ZZ.detach().clone())
+        self._psi_cache: dict[tuple, torch.Tensor] = {}
 
     def _compute_Z_moments(self):
         bank_Z = self.bank.evaluate(self.Z)
@@ -240,9 +241,19 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         if self.is_exact_inducing_input(X):
             return self._identity_psi()
+        cacheable = not self.learn_Z and self.detach_bank_values
+        cache_key = None
+        if cacheable:
+            cache_key = (int(X.data_ptr()), tuple(X.shape), str(X.dtype), str(X.device))
+            cached = self._psi_cache.get(cache_key)
+            if cached is not None:
+                return cached
         _, _, _, _, L_ZZ = self._current_Z_moments()
         K_XZ = self.compute_cross_covariance(X)
-        return right_cholesky_solve(K_XZ, L_ZZ)
+        psi = right_cholesky_solve(K_XZ, L_ZZ)
+        if cache_key is not None:
+            self._psi_cache[cache_key] = psi.detach()
+        return psi
 
     def inducing_mean(self) -> torch.Tensor:
         if self.learn_Z or not self.detach_bank_values:

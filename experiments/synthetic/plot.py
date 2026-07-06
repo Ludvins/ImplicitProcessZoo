@@ -2,10 +2,10 @@
 
 Examples
 --------
-python -m scripts.synthetic_plot --models mfvi fbnn vip tfsvi ftip gmvip
-python -m scripts.synthetic_plot --models all --iterations 2000 --device cuda
+python -m experiments.synthetic.plot --models mfvi fbnn vip tfsvi ftip gmvip
+python -m experiments.synthetic.plot --models all --iterations 2000 --device cuda
 
-All model/training options from ``scripts.uci_benchmark`` are accepted. This
+All model/training options from ``experiments.uci.benchmark`` are accepted. This
 entrypoint fixes the dataset to ``variational_lla`` and adds plotting-specific
 options.
 """
@@ -43,12 +43,12 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime.
     ImageDraw = None
     ImageFont = None
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.benchmark_utils import pretty_model_name
-from scripts.uci_benchmark import (
+from experiments.benchmark_utils import pretty_model_name
+from experiments.uci.benchmark import (
     REGRESSION_MODELS,
     _ckpt_path,
     _fbnn_pred_components,
@@ -60,7 +60,7 @@ from scripts.uci_benchmark import (
 )
 from src.utils.dataset import Test_Dataset, Training_Dataset, get_dataset
 
-import scripts.uci_benchmark as uci_benchmark
+import experiments.uci.benchmark as uci_benchmark
 
 
 DEFAULT_MODELS = ["map", "mfvi", "vip", "fbnn", "sip", "tfsvi", "ftip", "gmvip"]
@@ -207,7 +207,7 @@ def parse_synthetic_args(argv=None):
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog=(
             "All remaining model/training flags are forwarded to "
-            f"scripts.uci_benchmark. The dataset is always {SYNTHETIC_DATASET_NAME}."
+            f"experiments.uci.benchmark. The dataset is always {SYNTHETIC_DATASET_NAME}."
         ),
     )
     parser.add_argument(

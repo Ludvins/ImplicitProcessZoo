@@ -1,7 +1,7 @@
 import pytest
 import sys
 
-from scripts.benchmark_utils import training_decomposition, wandb_log_result
+from experiments.benchmark_utils import training_decomposition, wandb_log_result
 
 
 class DummyModel:

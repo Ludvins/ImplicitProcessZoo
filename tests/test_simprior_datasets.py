@@ -1,25 +1,34 @@
 import numpy as np
 import torch
 
-from experiments.simprior.datasets import load_lotka_volterra_tasks
-from experiments.simprior.generate_lotka_volterra import generate_bank
+from experiments.volterra.datasets import load_lotka_volterra_tasks
+from experiments.volterra.generate import generate_bank
 
 
 def _write_small_lv_dataset(root):
     t = np.arange(0.0, 30.0 + 0.5, 0.5, dtype=np.float64)
-    prior_y, prior_theta = generate_bank(8, t_grid=t, seed=100)
     target_y, target_theta = generate_bank(3, t_grid=t, seed=200)
-    np.savez_compressed(root / "prior_paths.npz", t=t, y=prior_y, theta=prior_theta)
     np.savez_compressed(root / "target_paths.npz", t=t, y=target_y, theta=target_theta)
-    return prior_theta, target_theta
+    return target_theta
 
 
-def test_generated_prior_and_target_banks_do_not_overlap(tmp_path):
-    prior_theta, target_theta = _write_small_lv_dataset(tmp_path)
-    prior_rows = {tuple(np.round(row, 10)) for row in prior_theta}
-    target_rows = {tuple(np.round(row, 10)) for row in target_theta}
+def test_lotka_volterra_task_uses_live_ode_prior_without_prior_bank(tmp_path):
+    _write_small_lv_dataset(tmp_path)
 
-    assert prior_rows.isdisjoint(target_rows)
+    tasks = load_lotka_volterra_tasks(
+        tmp_path,
+        seed=0,
+        n_eval_targets=1,
+        n_train_times=6,
+        prior_bank_size=6,
+        dtype=torch.float64,
+    )
+    task = tasks[0]
+    latents = task.prior.sample_latents(3, seed=123)
+    values = task.prior.evaluate(task.X_train[:2], latents)
+
+    assert latents.shape == (3, 6)
+    assert values.shape == (3, 2, 2)
 
 
 def test_lotka_volterra_task_splits_and_normalization(tmp_path):

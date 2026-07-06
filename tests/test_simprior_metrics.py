@@ -1,6 +1,6 @@
 import torch
 
-from experiments.simprior.metrics import (
+from experiments.volterra.metrics import (
     crps_from_samples,
     gaussian_nll_from_samples,
     interval_coverage,

@@ -2,7 +2,7 @@ from io import BytesIO
 
 import pytest
 
-from scripts import regression_benchmark
+from experiments.regression import benchmark as regression_benchmark
 from src.utils import dataset as dataset_module
 
 

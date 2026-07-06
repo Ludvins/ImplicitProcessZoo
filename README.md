@@ -63,12 +63,13 @@ src/
   sip/                    sparse implicit process
   map_baseline.py         deterministic MAP baseline
 
-scripts/
-  uci_benchmark.py        UCI-style scalar regression benchmark
-  regression_benchmark.py Year/Airline/Taxi large regression benchmark
-  classification_benchmark.py
-                           image classification benchmark
-  synthetic_plot.py       Variational-LLA synthetic plotting runner
+experiments/
+  benchmark_utils.py      shared reporting, W&B, and comparison helpers
+  uci/                    UCI-style scalar regression benchmark
+  regression/             Year/Airline/Taxi large regression benchmark
+  classification/         image classification benchmark
+  synthetic/              Variational-LLA synthetic plotting runner
+  volterra/               Lotka-Volterra simulator-prior experiment
 
 tests/                    unit and smoke tests
 ```
@@ -80,7 +81,7 @@ model rather than an implicit-process approximation.
 ## Methods
 
 This section summarizes the eight approaches exposed by
-`scripts.uci_benchmark`. The notation below uses scalar regression for clarity.
+`experiments.uci.benchmark`. The notation below uses scalar regression for clarity.
 Let $D = \{(x_i, y_i)\}_{i=1}^N$, let $B$ be a minibatch, and let the
 likelihood be
 
@@ -626,13 +627,13 @@ recovering predictions over arbitrary inputs through the sparse conditional.
 Run a single method:
 
 ```bash
-python -m scripts.uci_benchmark --model gmvip --dataset concrete
+python -m experiments.uci.benchmark --model gmvip --dataset concrete
 ```
 
 Run all tracked regression methods on one dataset:
 
 ```bash
-python -m scripts.uci_benchmark --model all --dataset boston
+python -m experiments.uci.benchmark --model all --dataset boston
 ```
 
 Supported UCI regression datasets:
@@ -648,7 +649,7 @@ the shared dataset loader, including `gap`, `bimodal`, `skewed`,
 Common experiment flags:
 
 ```bash
-python -m scripts.uci_benchmark \
+python -m experiments.uci.benchmark \
   --model vip \
   --dataset boston \
   --seed 0 \
@@ -703,7 +704,7 @@ coefficient sampling, and tunable prior BNNs. A representative empirical GMVIP
 run is:
 
 ```bash
-python -m scripts.uci_benchmark \
+python -m experiments.uci.benchmark \
   --model gmvip \
   --dataset concrete \
   --iterations 30000 \
@@ -725,7 +726,7 @@ python -m scripts.uci_benchmark \
 
 ## Large Regression
 
-`scripts.regression_benchmark` reuses the same model/training code as the UCI
+`experiments.regression.benchmark` reuses the same model/training code as the UCI
 runner, but restricts the dataset set to the larger Variational-LLA-style
 regression tasks:
 
@@ -736,7 +737,7 @@ year, airline, taxi
 Example:
 
 ```bash
-python -m scripts.regression_benchmark \
+python -m experiments.regression.benchmark \
   --model gmvip \
   --dataset year \
   --iterations 30000 \
@@ -756,25 +757,25 @@ create it from the NYC yellow taxi parquet source if `pyarrow` is installed.
 
 ## Synthetic Plot Runner
 
-`scripts.synthetic_plot` trains selected regression methods on the
+`experiments.synthetic.plot` trains selected regression methods on the
 Variational-LLA synthetic dataset and writes publication-style predictive plots:
 
 ```bash
-python -m scripts.synthetic_plot --models mfvi fbnn vip tfsvi ftip gmvip
-python -m scripts.synthetic_plot --models all --iterations 2000 --device cuda
+python -m experiments.synthetic.plot --models mfvi fbnn vip tfsvi ftip gmvip
+python -m experiments.synthetic.plot --models all --iterations 2000 --device cuda
 ```
 
-All model/training flags accepted by `scripts.uci_benchmark` can be forwarded to
+All model/training flags accepted by `experiments.uci.benchmark` can be forwarded to
 this runner. The dataset is fixed to `variational_lla`.
 
 ## Classification
 
 The classification runner supports `FashionMNIST` and `CIFAR10` with `map`,
-`vip`, and `fbnn`:
+`mfvi`, `fbnn`, `tfsvi`, `vip`, `ftip`, `gmvip`, and `sip`:
 
 ```bash
-python -m scripts.classification_benchmark --dataset FashionMNIST --model vip
-python -m scripts.classification_benchmark --dataset CIFAR10 --model all
+python -m experiments.classification.benchmark --dataset FashionMNIST --model vip
+python -m experiments.classification.benchmark --dataset CIFAR10 --model all
 ```
 
 Use `--help` on any benchmark entrypoint for the complete CLI.

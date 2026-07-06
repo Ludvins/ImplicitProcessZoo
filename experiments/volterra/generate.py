@@ -82,9 +82,14 @@ def generate_bank(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate Lotka-Volterra simulator-prior banks.")
+    parser = argparse.ArgumentParser(description="Generate Lotka-Volterra target trajectories.")
     parser.add_argument("--out", default="data/simprior/lotka_volterra")
-    parser.add_argument("--n-prior", type=int, default=4096)
+    parser.add_argument(
+        "--n-prior",
+        type=int,
+        default=4096,
+        help="Reference Monte Carlo size recorded for prior diagnostics; no prior trajectory bank is stored.",
+    )
     parser.add_argument("--n-targets", type=int, default=100)
     parser.add_argument("--dt", type=float, default=0.05)
     parser.add_argument("--t-max", type=float, default=30.0)
@@ -98,21 +103,29 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
     out.mkdir(parents=True, exist_ok=True)
     t_grid = np.arange(0.0, float(args.t_max) + 0.5 * float(args.dt), float(args.dt), dtype=np.float64)
 
-    prior_y, prior_theta = generate_bank(args.n_prior, t_grid=t_grid, seed=args.seed)
     target_y, target_theta = generate_bank(args.n_targets, t_grid=t_grid, seed=args.seed + 1_000_003)
 
-    prior_path = out / "prior_paths.npz"
     target_path = out / "target_paths.npz"
     metadata_path = out / "metadata.json"
-    np.savez_compressed(prior_path, t=t_grid, y=prior_y, theta=prior_theta)
+    stale_prior_path = out / "prior_paths.npz"
+    if stale_prior_path.exists():
+        stale_prior_path.unlink()
     np.savez_compressed(target_path, t=t_grid, y=target_y, theta=target_theta)
     metadata = {
         "experiment": "lotka_volterra",
         "dt": float(args.dt),
         "t_max": float(args.t_max),
         "n_prior": int(args.n_prior),
+        "prior_type": "live_lotka_volterra_ode",
+        "prior_parameter_distribution": {
+            "alpha": {"distribution": "lognormal", "mean_log": math.log(1.50), "sigma": 0.15},
+            "beta": {"distribution": "lognormal", "mean_log": math.log(1.00), "sigma": 0.15},
+            "delta": {"distribution": "lognormal", "mean_log": math.log(0.75), "sigma": 0.15},
+            "gamma": {"distribution": "lognormal", "mean_log": math.log(1.00), "sigma": 0.15},
+            "x0": {"distribution": "uniform", "low": 0.8, "high": 1.2},
+            "y0": {"distribution": "uniform", "low": 0.8, "high": 1.2},
+        },
         "n_targets": int(args.n_targets),
-        "seed_prior": int(args.seed),
         "seed_targets": int(args.seed + 1_000_003),
         "theta_names": list(DEFAULT_THETA_NAMES),
         "reject_if_negative": True,
@@ -120,7 +133,6 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return {
-        "prior_paths": str(prior_path),
         "target_paths": str(target_path),
         "metadata": str(metadata_path),
     }

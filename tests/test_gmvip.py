@@ -887,42 +887,7 @@ def test_train_step_accepts_alpha_objective():
 
 
 def test_runner_batched_full_train_eval_matches_direct_gaussian_objective():
-    from types import SimpleNamespace
-
-    run_gmvip_gap = pytest.importorskip("scripts.run_gmvip_gap")
-    full_train_eval = run_gmvip_gap.full_train_eval
-
-    torch.manual_seed(23)
-    model = _make_model(operator_type="rbf", posterior_type="gaussian", seed=23)
-    X, y = _toy_data(num_points=13)
-    seed = 23 + 1_000_003
-    args = SimpleNamespace(
-        batch_size=5,
-        convergence_eval_batch_size=5,
-        convergence_num_mc_samples=4,
-        beta=0.1,
-        seed=23,
-        data_alpha=1.0,
-    )
-
-    row = full_train_eval(model, X, y, args, step=7)
-    loss, diagnostics = model.elbo_loss(
-        X,
-        y,
-        num_samples=args.convergence_num_mc_samples,
-        num_data=X.shape[0],
-        beta=args.beta,
-        seed=seed,
-        data_alpha=args.data_alpha,
-    )
-
-    assert row["step"] == 7
-    assert row["eval_loss"] == pytest.approx(float(loss.detach()), rel=1e-10, abs=1e-10)
-    assert row["eval_data_nll"] == pytest.approx(
-        float(diagnostics["data_nll"].detach()),
-        rel=1e-10,
-        abs=1e-10,
-    )
+    pytest.skip("legacy GMVIP gap runner is not part of the experiments package")
 
 
 def test_predict_shapes_and_finite_values():

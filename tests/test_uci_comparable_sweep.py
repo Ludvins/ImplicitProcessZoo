@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from scripts.uci_benchmark import (
+from experiments.uci.benchmark import (
     _variant_tag,
     build_model,
     parse_args,

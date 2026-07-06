@@ -1,19 +1,36 @@
 # Experiments
 
-This directory contains experiment-specific entry points and helpers that sit on
-top of the reusable models under `src/`.
+This package contains runnable experiment entrypoints and experiment-specific
+helpers. Reusable model implementations live under `src/`; experiment packages
+compose those models with datasets, command-line interfaces, reporting, plots,
+and artifact conventions.
 
 ## Layout
 
-- `simprior/`: simulator-prior regression experiments. The current implemented
-  milestone is Lotka-Volterra trajectory regression with vector outputs
-  `[prey, predator]`.
-- `__init__.py`: marks this directory as an importable Python package so scripts
-  can be run with `python -m experiments.<module>`.
+- `benchmark_utils.py`: shared reporting helpers, W&B integration, comparison
+  table builders, and training-diagnostic logging.
+- `uci/`: UCI-style scalar regression benchmark for the shared method suite.
+- `regression/`: large scalar regression benchmark for `year`, `airline`, and
+  `taxi`.
+- `classification/`: FashionMNIST and CIFAR10 image classification benchmark.
+- `synthetic/`: Variational-LLA synthetic regression plotting experiment.
+- `volterra/`: Lotka-Volterra simulator-prior regression experiment.
 
-Generated data and result artifacts are written outside this package:
+## Commands
 
-- `data/simprior/...`: generated simulator banks and prepared datasets.
-- `results/simprior/...`: metrics, predictions, runtimes, and figures.
+Run entrypoints with `python -m` from the repository root:
 
-Those directories are intentionally runtime artifacts, not source files.
+```bash
+python -m experiments.uci.benchmark --help
+python -m experiments.regression.benchmark --help
+python -m experiments.classification.benchmark --help
+python -m experiments.synthetic.plot --help
+python -m experiments.volterra.generate --help
+python -m experiments.volterra.run --help
+python -m experiments.volterra.compare --help
+python -m experiments.volterra.paper_figure --help
+```
+
+Generated data, model checkpoints, metrics, plots, logs, and W&B files are
+runtime artifacts. They are written under locations such as `data/`, `results/`,
+`outputs/`, `logs/`, and `wandb/`, not inside this package.
