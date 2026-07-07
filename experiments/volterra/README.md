@@ -35,7 +35,9 @@ The default `lotka_volterra` preset runs GM-VIP empirical with 256 prior
 function samples for the empirical operator, 64 inducing points, 80 noisy
 training observations per target, and 400 optimization steps. Running the same
 preset with `--method vip` uses 512 VIP regression coefficients and the same
-400-step budget.
+400-step budget. Running with `--method sip` uses the generic Sparse Implicit
+Process implementation with a Lotka-Volterra adapter that draws fresh ODE prior
+latents by default for SIP prior and critic calls.
 
 Run the smoke preset:
 
@@ -135,6 +137,7 @@ Supported methods:
 - `mfvi`
 - `vip`
 - `ftip`
+- `sip`
 - `gmvip_empirical`
 - `gmvip_rbf`
 - `oracle_prior_bank`

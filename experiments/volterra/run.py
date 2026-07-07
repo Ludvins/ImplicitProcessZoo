@@ -37,10 +37,11 @@ from src.gmvip import GeneralizedMatheronVIP
 from src.map_baseline import DeterministicMAP
 from src.mfvi import MFVI
 from src.priors.generative_functions import BayesianNN, BayesLinear
+from src.sip import SIP
 from src.vip import VIP
 
 
-METHODS = ("map", "mfvi", "vip", "ftip", "gmvip_empirical", "gmvip_rbf", "oracle_prior_bank")
+METHODS = ("map", "mfvi", "vip", "ftip", "sip", "gmvip_empirical", "gmvip_rbf", "oracle_prior_bank")
 METHOD_ALIASES = {"oracle": "oracle_prior_bank"}
 
 
@@ -75,6 +76,23 @@ DEFAULT_LOTKA_VOLTERRA_CONFIG: dict = {
         "flow_depth": 2,
         "flow_num_bins": 8,
         "flow_domain": 5.0,
+    },
+    "sip": {
+        "num_inducing": 32,
+        "num_prior_samples": 128,
+        "num_train_samples": 16,
+        "num_eval_samples": 256,
+        "fresh_prior_samples": True,
+        "learn_inducing": False,
+        "detach_covariances": True,
+        "jitter": 1.0e-5,
+        "beta": 1.0,
+        "critic_hidden_dim": 64,
+        "critic_lr": 1.0e-3,
+        "critic_steps": 1,
+        "posterior_noise_dim": 64,
+        "posterior_hidden_dim": 64,
+        "posterior_depth": 2,
     },
     "training": {
         "optimizer": "adam",
@@ -120,6 +138,23 @@ SMOKE_LOTKA_VOLTERRA_CONFIG: dict = {
         "jitter": 1.0e-5,
         "shrinkage": 0.02,
         "learn_kernel": False,
+    },
+    "sip": {
+        "num_inducing": 4,
+        "num_prior_samples": 8,
+        "num_train_samples": 4,
+        "num_eval_samples": 4,
+        "fresh_prior_samples": True,
+        "learn_inducing": False,
+        "detach_covariances": True,
+        "jitter": 1.0e-5,
+        "beta": 1.0,
+        "critic_hidden_dim": 8,
+        "critic_lr": 1.0e-3,
+        "critic_steps": 1,
+        "posterior_noise_dim": 8,
+        "posterior_hidden_dim": 8,
+        "posterior_depth": 2,
     },
     "training": {
         "optimizer": "adam",
@@ -337,6 +372,58 @@ class OraclePriorBankPosterior(torch.nn.Module):
         return self.prior.evaluate(X, self.bank_latents[draw_idx])
 
 
+class FreshLotkaVolterraSIPPrior(torch.nn.Module):
+    """SIP adapter that can draw fresh Lotka-Volterra ODE latents per prior call."""
+
+    def __init__(
+        self,
+        base_prior: LotkaVolterraPrior,
+        *,
+        num_samples: int,
+        seed: int,
+        fresh_prior_samples: bool = True,
+    ):
+        super().__init__()
+        self.base_prior = base_prior
+        self.num_samples = int(num_samples)
+        self.seed = int(seed)
+        self.fresh_prior_samples = bool(fresh_prior_samples)
+        self.register_buffer("_sample_counter", torch.zeros((), dtype=torch.long, device=base_prior.device))
+
+    @property
+    def input_dim(self) -> int:
+        return int(self.base_prior.input_dim)
+
+    @property
+    def output_dim(self) -> int:
+        return int(self.base_prior.output_dim)
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.base_prior.dtype
+
+    @property
+    def device(self) -> torch.device:
+        return self.base_prior.device
+
+    def forward(self, X: torch.Tensor, num_samples: int | None = None) -> torch.Tensor:
+        sample_count = self.num_samples if num_samples is None else int(num_samples)
+        seed = self.seed
+        if self.fresh_prior_samples:
+            seed = self.seed + int(self._sample_counter.item())
+            self._sample_counter.add_(1)
+        latents = self.base_prior.sample_latents(sample_count, seed=seed, cache=not self.fresh_prior_samples)
+        return self.base_prior.evaluate(X, latents)
+
+    def sample(self, X: torch.Tensor, n: int, seed: int | None = None) -> torch.Tensor:
+        if seed is None:
+            return self.forward(X, int(n))
+        return self.base_prior.sample(X, int(n), seed=int(seed))
+
+    def freeze_parameters(self) -> None:
+        self.base_prior.freeze_parameters()
+
+
 def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
     train_cfg = _training_config(config)
     output_dim = int(task.y_train.shape[-1])
@@ -446,6 +533,54 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
         _fix_model_noise(model, noise_std_norm)
         return model
 
+    if method == "sip":
+        sip_cfg = dict(config.get("sip", {}))
+        num_prior_samples = int(sip_cfg.get("num_prior_samples", 128))
+        prior = task.prior.clone_with_normalization(
+            y_mean=np.asarray(task.metadata["y_mean"], dtype=np.float64).reshape(1, output_dim),
+            y_std=np.asarray(task.metadata["y_std"], dtype=np.float64).reshape(1, output_dim),
+            num_samples=num_prior_samples,
+            seed=seed + 29,
+        )
+        prior_adapter = FreshLotkaVolterraSIPPrior(
+            prior,
+            num_samples=num_prior_samples,
+            seed=seed + 30,
+            fresh_prior_samples=bool(sip_cfg.get("fresh_prior_samples", True)),
+        )
+        model = SIP(
+            generative_function=prior_adapter,
+            inducing_inputs=_inducing_grid(int(sip_cfg.get("num_inducing", 32)), device=device, dtype=dtype),
+            output_dim=output_dim,
+            likelihood="regression",
+            num_data=int(task.X_train.shape[0]),
+            num_prior_samples=num_prior_samples,
+            num_train_samples=sip_cfg.get("num_train_samples", None),
+            num_eval_samples=int(sip_cfg.get("num_eval_samples", train_cfg.n_mc_eval)),
+            bb_alpha=0.0,
+            beta=float(sip_cfg.get("beta", 1.0)),
+            beta_warmup_steps=int(train_cfg.kl_warmup_steps),
+            learn_inducing=bool(sip_cfg.get("learn_inducing", False)),
+            detach_covariances=bool(sip_cfg.get("detach_covariances", True)),
+            critic_hidden_dim=int(sip_cfg.get("critic_hidden_dim", 64)),
+            critic_lr=float(sip_cfg.get("critic_lr", 1e-3)),
+            critic_steps=int(sip_cfg.get("critic_steps", 1)),
+            posterior_noise_dim=int(sip_cfg.get("posterior_noise_dim", 64)),
+            posterior_hidden_dim=int(sip_cfg.get("posterior_hidden_dim", 64)),
+            posterior_depth=int(sip_cfg.get("posterior_depth", 2)),
+            fresh_prior_samples=bool(sip_cfg.get("fresh_prior_samples", True)),
+            y_mean=np.zeros((1, output_dim), dtype=np.float64),
+            y_std=np.ones((1, output_dim), dtype=np.float64),
+            jitter=float(sip_cfg.get("jitter", 1e-5)),
+            log_variance_init=float(sip_cfg.get("log_variance_init", -5.0)),
+            min_log_variance=sip_cfg.get("min_log_variance", None),
+            device=device,
+            dtype=dtype,
+            seed=seed + 31,
+        )
+        _fix_model_noise(model, noise_std_norm)
+        return model
+
     if method in {"gmvip_empirical", "gmvip_rbf"}:
         gmvip_cfg = dict(config.get("gmvip", {}))
         operator = "empirical" if method == "gmvip_empirical" else "rbf"
@@ -538,6 +673,8 @@ def predictive_function_samples(model, method: str, X: torch.Tensor, n_samples: 
             if int(n_samples) % 2:
                 n_samples += 1
             return model.predict_y(X, int(n_samples))
+        if method == "sip":
+            return model.predict_f_samples(X, int(n_samples))
         if method in {"gmvip_empirical", "gmvip_rbf"}:
             return model.sample_posterior_values(X, int(n_samples), seed=seed)
         if method == "oracle_prior_bank":
@@ -809,6 +946,7 @@ def main(argv: list[str] | None = None):
         config["method"] = args.method
     if args.num_inducing is not None:
         config.setdefault("gmvip", {})["num_inducing"] = int(args.num_inducing)
+        config.setdefault("sip", {})["num_inducing"] = int(args.num_inducing)
     if args.prior_bank_size is not None:
         config.setdefault("prior", {})["bank_size"] = int(args.prior_bank_size)
     if args.skip_plots:

@@ -123,14 +123,15 @@ class LotkaVolterraPrior(nn.Module):
         generator.manual_seed(self.seed if seed is None else int(seed))
         return generator
 
-    def sample_latents(self, num_samples: int, seed: int | None = None) -> torch.Tensor:
+    def sample_latents(self, num_samples: int, seed: int | None = None, *, cache: bool = True) -> torch.Tensor:
         num_samples = int(num_samples)
         if num_samples <= 0:
             raise ValueError("num_samples must be positive.")
         cache_key = (num_samples, self.seed if seed is None else int(seed))
-        cached = self._latent_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if cache:
+            cached = self._latent_cache.get(cache_key)
+            if cached is not None:
+                return cached
         generator = self._generator(seed)
         log_params = (
             self.theta_log_means.reshape(1, 4)
@@ -142,7 +143,8 @@ class LotkaVolterraPrior(nn.Module):
             self.initial_high - self.initial_low
         ).reshape(1, 2) * torch.rand(num_samples, 2, generator=generator, dtype=self.dtype, device=self.device)
         latents = torch.cat([ode_params, initials], dim=-1)
-        self._latent_cache[cache_key] = latents
+        if cache:
+            self._latent_cache[cache_key] = latents
         return latents
 
     def sample_indices(self, n: int, seed: int | None = None) -> torch.Tensor:
