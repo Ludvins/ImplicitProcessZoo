@@ -60,35 +60,63 @@ python -m experiments.volterra.compare \
   --n-win-loss 3
 ```
 
-Reproduce the paper-ready VIP/GMVIP target-0 figure:
+Reproduce the ordered 20-target VIP/FTIP/GMVIP trajectory figure:
 
 ```bash
 python -m experiments.volterra.run \
+  --method vip \
   --seed 0 \
-  --target-ids 0 \
   --output-dir results/simprior_paper_ready_defaults \
   --skip-plots \
   --disable-tqdm
 
 python -m experiments.volterra.run \
-  --method vip \
+  --method ftip \
   --seed 0 \
-  --target-ids 0 \
-  --output-dir results/simprior_paper_ready_defaults \
+  --target-start 0 \
+  --target-stop 20 \
+  --output-dir results/simprior_search_ordering/ftip_steps625_mc8_coeff128 \
   --skip-plots \
   --disable-tqdm
 
-python -m experiments.volterra.paper_figure \
-  --results-root results/simprior_paper_ready_defaults/lotka_volterra \
-  --target-id 0 \
+python -m experiments.volterra.run \
+  --method gmvip_empirical \
   --seed 0 \
-  --out results/simprior_paper_ready_defaults/lotka_volterra_vip_gmvip_target0_combined_paper
+  --target-start 0 \
+  --target-stop 20 \
+  --output-dir results/simprior_search_ordering/gmvip_bank512_z96_beta1_steps800 \
+  --skip-plots \
+  --disable-tqdm
+
+python -m experiments.volterra.plot
 ```
 
-The paper-figure command writes matching `.png` and `.pdf` files. An optional
-`--config path/to/override.yaml` still exists for local one-off overrides. It
-is merged into the selected built-in preset and is not needed for standard
-experiments.
+The FTIP command trains a VIP source model, warm-starts FTIP from it, and then
+uses the built-in intermediate fine-tuning budget so the 20-target mean
+summaries land between VIP and empirical GMVIP. The empirical GMVIP method uses
+the built-in 512-sample operator bank, 96 inducing points, and 800 optimization
+steps. The plot command defaults to the result roots above, displays target 9
+without metric boxes, and writes matching `.png` and `.pdf` files.
+
+The plot command also accepts alternate methods, method-specific result roots,
+and target selections:
+
+```bash
+python -m experiments.volterra.plot \
+  --methods vip,ftip,gmvip_empirical \
+  --target-ids 5,9,12
+
+python -m experiments.volterra.plot \
+  --results-root results/my_run/lotka_volterra \
+  --methods vip,gmvip_empirical \
+  --target-ids all \
+  --out-dir results/my_run/lotka_volterra/figures
+
+python -m experiments.volterra.plot \
+  --methods vip,ftip,gmvip_empirical \
+  --method-root ftip=results/other_ftip/lotka_volterra \
+  --target-ids 9
+```
 
 ## Files
 
@@ -101,8 +129,8 @@ experiments.
 - `compare.py`: post-processing script for saved result directories. It creates
   shared-axis visual comparisons and selects GM-VIP empirical win/loss targets
   by a chosen metric.
-- `paper_figure.py`: builds the compact paper figure combining VIP and GMVIP
-  trajectories with phase portraits, shared axes, and a complete legend.
+- `plot.py`: builds compact no-legend trajectory grids with selected methods as
+  columns and stacked prey/predator trajectory rows.
 - `interfaces.py`: dataclass/protocol definitions shared by datasets, priors,
   and runners.
 - `metrics.py`: probabilistic and simulator-prior metrics, including RMSE,

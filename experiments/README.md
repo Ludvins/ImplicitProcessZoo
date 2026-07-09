@@ -15,6 +15,8 @@ and artifact conventions.
 - `classification/`: FashionMNIST and CIFAR10 image classification benchmark.
 - `synthetic/`: Variational-LLA synthetic regression plotting experiment.
 - `volterra/`: Lotka-Volterra simulator-prior regression experiment.
+- `simulator_forecasting/`: damped-oscillator simulator-prior forecasting
+  experiment.
 
 ## Commands
 
@@ -28,7 +30,9 @@ python -m experiments.synthetic.plot --help
 python -m experiments.volterra.generate --help
 python -m experiments.volterra.run --help
 python -m experiments.volterra.compare --help
-python -m experiments.volterra.paper_figure --help
+python -m experiments.volterra.plot --help
+python -m experiments.simulator_forecasting.run --help
+python -m experiments.simulator_forecasting.plot --help
 ```
 
 Generated data, model checkpoints, metrics, plots, logs, and W&B files are

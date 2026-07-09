@@ -64,18 +64,36 @@ DEFAULT_LOTKA_VOLTERRA_CONFIG: dict = {
     },
     "gmvip": {
         "operator": "empirical",
-        "num_inducing": 64,
+        "num_inducing": 96,
+        "prior_bank_size": 512,
         "rbf_lengthscale": 0.25,
         "jitter": 1.0e-5,
         "shrinkage": 0.02,
         "learn_kernel": False,
         "beta": 1.0,
+        "training_overrides": {
+            "max_steps": 800,
+            "early_stopping_patience": 801,
+            "eval_interval": 100,
+        },
     },
     "ftip": {
         "flow_type": "affine",
-        "flow_depth": 2,
+        "flow_depth": 1,
         "flow_num_bins": 8,
         "flow_domain": 5.0,
+        "warm_start_from_vip": True,
+        "warm_start_learnable_affine": False,
+        "training_overrides": {
+            "regression_coeffs": 128,
+            "n_mc_train": 8,
+        },
+        "fine_tune_training": {
+            "learning_rate": 2.0e-4,
+            "max_steps": 625,
+            "early_stopping_patience": 626,
+            "eval_interval": 100,
+        },
     },
     "sip": {
         "num_inducing": 32,
@@ -262,6 +280,28 @@ def _training_config(config: dict) -> SimpleNamespace:
     )
 
 
+def _with_training_overrides(config: dict, overrides: dict | None) -> dict:
+    updated = copy.deepcopy(config)
+    updated.setdefault("training", {}).update(dict(overrides or {}))
+    return updated
+
+
+def _ftip_base_config(config: dict) -> dict:
+    ftip_cfg = dict(config.get("ftip", {}))
+    return _with_training_overrides(config, ftip_cfg.get("training_overrides", {}))
+
+
+def _gmvip_base_config(config: dict) -> dict:
+    gmvip_cfg = dict(config.get("gmvip", {}))
+    updated = _with_training_overrides(config, gmvip_cfg.get("training_overrides", {}))
+    if "prior_bank_size" in gmvip_cfg:
+        current_bank = updated.setdefault("prior", {}).get("bank_size")
+        default_bank = DEFAULT_LOTKA_VOLTERRA_CONFIG["prior"]["bank_size"]
+        if current_bank in {None, default_bank}:
+            updated["prior"]["bank_size"] = int(gmvip_cfg["prior_bank_size"])
+    return updated
+
+
 def _fixed_log_variance(noise_std_norm: torch.Tensor) -> torch.Tensor:
     return 2.0 * torch.log(noise_std_norm.clamp_min(1e-8))
 
@@ -425,10 +465,14 @@ class FreshLotkaVolterraSIPPrior(torch.nn.Module):
 
 
 def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
+    method = METHOD_ALIASES.get(method, method)
+    if method == "ftip":
+        config = _ftip_base_config(config)
+    if method == "gmvip_empirical":
+        config = _gmvip_base_config(config)
     train_cfg = _training_config(config)
     output_dim = int(task.y_train.shape[-1])
     noise_std_norm = task.noise_std.to(dtype=dtype, device=device)
-    method = METHOD_ALIASES.get(method, method)
     if method == "map":
         model = DeterministicMAP(
             input_dim=1,
@@ -710,7 +754,10 @@ def fit_model(model, method: str, task, config: dict, *, seed: int, device) -> d
     params = [param for param in params if param.requires_grad]
     optimizer = torch.optim.Adam(params, lr=float(train_cfg.learning_rate))
     best_state = copy.deepcopy(model.state_dict())
-    best_val = float("inf")
+    generator_state = model.generator.get_state() if hasattr(model, "generator") else None
+    best_val = _validation_loss(model, method, task, min(64, int(train_cfg.n_mc_eval)), seed - 1)
+    if generator_state is not None:
+        model.generator.set_state(generator_state)
     last_improvement = 0
     losses = []
     start = time.time()
@@ -747,6 +794,31 @@ def fit_model(model, method: str, task, config: dict, *, seed: int, device) -> d
         "loss_start": losses[0] if losses else None,
         "loss_end": losses[-1] if losses else None,
         "best_val_nll_norm": best_val,
+    }
+
+
+def fit_warm_started_ftip(model: FTIP, task, config: dict, *, seed: int, device, dtype) -> dict:
+    """Train a VIP source model, initialize FTIP from it, then fine-tune FTIP."""
+    ftip_cfg = dict(config.get("ftip", {}))
+    base_config = _ftip_base_config(config)
+    vip_config = _with_training_overrides(base_config, ftip_cfg.get("warm_start_training", {}))
+    vip_model = build_model("vip", task, vip_config, seed=seed, device=device, dtype=dtype)
+    vip_info = fit_model(vip_model, "vip", task, vip_config, seed=seed, device=device)
+    model.warm_start_from_vip(
+        vip_model,
+        learnable_affine=bool(ftip_cfg.get("warm_start_learnable_affine", False)),
+    )
+    ftip_config = _with_training_overrides(base_config, ftip_cfg.get("fine_tune_training", {}))
+    ftip_info = fit_model(model, "ftip", task, ftip_config, seed=seed, device=device)
+    return {
+        "train_time_sec": float(vip_info["train_time_sec"]) + float(ftip_info["train_time_sec"]),
+        "steps": int(vip_info["steps"]) + int(ftip_info["steps"]),
+        "loss_start": ftip_info["loss_start"],
+        "loss_end": ftip_info["loss_end"],
+        "best_val_nll_norm": ftip_info["best_val_nll_norm"],
+        "warm_start_from_vip": True,
+        "vip_warm_start": vip_info,
+        "ftip_fine_tune": ftip_info,
     }
 
 
@@ -877,6 +949,10 @@ def _summarize(rows: list[dict]) -> dict:
 
 def run_method(method: str, config: dict, cli_args) -> dict:
     method = METHOD_ALIASES.get(method, method)
+    if method == "ftip":
+        config = _ftip_base_config(config)
+    if method == "gmvip_empirical":
+        config = _gmvip_base_config(config)
     seed = int(cli_args.seed)
     dtype = torch.float64 if str(cli_args.dtype) == "float64" else torch.float32
     device = torch.device(cli_args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -904,9 +980,20 @@ def run_method(method: str, config: dict, cli_args) -> dict:
     runtimes = []
     for target_idx in ids:
         task = tasks[target_idx]
-        model = build_model(method, task, config, seed=seed + 1000 * target_idx, device=device, dtype=dtype)
-        train_info = fit_model(model, method, task, config, seed=seed + 1000 * target_idx, device=device)
-        row = evaluate_target(model, method, task, config, seed=seed + 1000 * target_idx, out_dir=out_dir)
+        target_seed = seed + 1000 * target_idx
+        model = build_model(method, task, config, seed=target_seed, device=device, dtype=dtype)
+        if method == "ftip" and bool(config.get("ftip", {}).get("warm_start_from_vip", True)):
+            train_info = fit_warm_started_ftip(
+                model,
+                task,
+                config,
+                seed=target_seed,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            train_info = fit_model(model, method, task, config, seed=target_seed, device=device)
+        row = evaluate_target(model, method, task, config, seed=target_seed, out_dir=out_dir)
         row["train_time_sec"] = float(train_info["train_time_sec"])
         row["train_steps"] = int(train_info["steps"])
         row["best_val_nll_norm"] = float(train_info["best_val_nll_norm"])
