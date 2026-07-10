@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
 import json
 import math
 import time
@@ -15,6 +14,14 @@ import yaml
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
+from experiments.common import (
+    build_flow as build_common_flow,
+)
+from experiments.common import (
+    deep_merge,
+    load_yaml,
+    write_csv_rows,
+)
 from experiments.volterra.datasets import load_lotka_volterra_tasks
 from experiments.volterra.metrics import (
     crps_from_samples,
@@ -31,7 +38,6 @@ from experiments.volterra.plots import (
     plot_lv_prior_vs_posterior,
 )
 from experiments.volterra.priors import LotkaVolterraPrior
-from implicit_process_zoo.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
 from implicit_process_zoo.map_baseline import DeterministicMAP
@@ -203,12 +209,7 @@ CONFIG_PRESETS = {
 
 
 def _deep_update(base: dict, override: dict) -> dict:
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_update(base[key], value)
-        else:
-            base[key] = value
-    return base
+    return deep_merge(base, override)
 
 
 def _load_runner_config(args: argparse.Namespace) -> dict:
@@ -219,10 +220,7 @@ def _load_runner_config(args: argparse.Namespace) -> dict:
             f"Unknown preset {args.preset!r}; expected one of {tuple(CONFIG_PRESETS)}."
         ) from exc
     if args.config is not None:
-        override = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
-        if not isinstance(override, dict):
-            raise ValueError(f"Config override {args.config!r} must contain a YAML mapping.")
-        _deep_update(config, override)
+        config = _deep_update(config, load_yaml(args.config))
     config["preset"] = str(args.preset)
     return config
 
@@ -354,27 +352,19 @@ def _inducing_grid(num_inducing: int, *, device, dtype) -> torch.Tensor:
 
 def _make_flow(config: dict, input_dim: int, *, seed: int, device, dtype) -> torch.nn.Module:
     ftip_cfg = dict(config.get("ftip", {}))
-    common = {
-        "depth": int(ftip_cfg.get("flow_depth", 2)),
-        "input_dim": int(input_dim),
-        "device": device,
-        "dtype": dtype,
-        "seed": int(seed),
-    }
     flow_type = str(ftip_cfg.get("flow_type", "affine")).lower()
-    if flow_type == "spline":
-        return SplineCouplingFlow(
-            **common,
-            num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
-            B=float(ftip_cfg.get("flow_domain", 5.0)),
-        )
     if flow_type in {"spline_1x1", "spline-1x1", "glow"}:
-        return SplineCoupling1x1Flow(
-            **common,
-            num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
-            B=float(ftip_cfg.get("flow_domain", 5.0)),
-        )
-    return CouplingFlow(**common)
+        flow_type = "spline_1x1"
+    return build_common_flow(
+        flow_type,
+        depth=int(ftip_cfg.get("flow_depth", 2)),
+        input_dim=input_dim,
+        device=device,
+        dtype=dtype,
+        seed=seed,
+        num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
+        domain=float(ftip_cfg.get("flow_domain", 5.0)),
+    )
 
 
 class OraclePriorBankPosterior(torch.nn.Module):
@@ -971,15 +961,7 @@ def _target_ids(config: dict, cli_args, n_tasks: int) -> list[int]:
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return
-    fields = sorted({key for row in rows for key in row})
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv_rows(path, rows)
 
 
 def _summarize(rows: list[dict]) -> dict:

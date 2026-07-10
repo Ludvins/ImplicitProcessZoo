@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
 import json
 import math
 import time
@@ -15,13 +14,21 @@ import yaml
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
+from experiments.common import (
+    build_flow as build_common_flow,
+)
+from experiments.common import (
+    deep_merge,
+    fix_gaussian_noise,
+    load_yaml,
+    write_csv_rows,
+)
 from experiments.eld_forecasting.datasets import (
     load_electricity_tasks,
     load_synthetic_tasks,
     processed_exists,
 )
 from experiments.eld_forecasting.metrics import DEFAULT_REGIONS, coerce_regions, metrics_by_region
-from implicit_process_zoo.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
 from implicit_process_zoo.vip import VIP
@@ -145,20 +152,13 @@ CONFIG_PRESETS = {
 
 
 def _deep_update(base: dict, override: dict) -> dict:
-    result = copy.deepcopy(base)
-    for key, value in (override or {}).items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _deep_update(result[key], value)
-        else:
-            result[key] = copy.deepcopy(value)
-    return result
+    return deep_merge(base, override or {})
 
 
 def _load_config(args: argparse.Namespace) -> dict:
     config = copy.deepcopy(CONFIG_PRESETS[args.preset])
     if args.config:
-        with Path(args.config).open("r", encoding="utf-8") as handle:
-            config = _deep_update(config, yaml.safe_load(handle) or {})
+        config = _deep_update(config, load_yaml(args.config))
     return config
 
 
@@ -167,35 +167,24 @@ def _training_config(config: dict) -> SimpleNamespace:
 
 
 def _fix_model_noise(model, noise_std: torch.Tensor) -> None:
-    if hasattr(model, "log_variance"):
-        with torch.no_grad():
-            model.log_variance.copy_(torch.log(noise_std.square().clamp_min(1e-12)))
-        model.log_variance.requires_grad_(False)
+    fix_gaussian_noise(model, noise_std)
 
 
 def _make_flow(config: dict, input_dim: int, *, seed: int, device, dtype) -> torch.nn.Module:
     ftip_cfg = dict(config.get("ftip", {}))
-    common = {
-        "depth": int(ftip_cfg.get("flow_depth", 1)),
-        "input_dim": int(input_dim),
-        "device": device,
-        "dtype": dtype,
-        "seed": int(seed),
-    }
     flow_type = str(ftip_cfg.get("flow_type", "affine")).lower()
-    if flow_type == "spline":
-        return SplineCouplingFlow(
-            **common,
-            num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
-            B=float(ftip_cfg.get("flow_domain", 5.0)),
-        )
     if flow_type in {"spline_1x1", "spline-1x1", "glow"}:
-        return SplineCoupling1x1Flow(
-            **common,
-            num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
-            B=float(ftip_cfg.get("flow_domain", 5.0)),
-        )
-    return CouplingFlow(**common)
+        flow_type = "spline_1x1"
+    return build_common_flow(
+        flow_type,
+        depth=int(ftip_cfg.get("flow_depth", 1)),
+        input_dim=input_dim,
+        device=device,
+        dtype=dtype,
+        seed=seed,
+        num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
+        domain=float(ftip_cfg.get("flow_domain", 5.0)),
+    )
 
 
 def _inducing_points(task, num_inducing: int, *, device, dtype) -> torch.Tensor:
@@ -505,15 +494,7 @@ def evaluate_target(
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return
-    fields = sorted({key for row in rows for key in row})
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv_rows(path, rows)
 
 
 def _summarize(rows: list[dict]) -> dict:

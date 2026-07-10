@@ -4,6 +4,8 @@ import math
 
 import torch
 
+from experiments.common.metrics import empirical_crps
+
 DEFAULT_REGIONS = {
     "observed_prefix": (0.0, 8.0, True),
     "full_forecast": (8.0, 48.0, False),
@@ -26,11 +28,7 @@ def rmse(pred_mean, y_true):
 
 
 def crps_from_samples(samples, y_true):
-    samples = _as_tensor(samples)
-    y_true = _as_tensor(y_true, like=samples)
-    term1 = torch.mean(torch.abs(samples - y_true.unsqueeze(0)))
-    term2 = 0.5 * torch.mean(torch.abs(samples.unsqueeze(1) - samples.unsqueeze(0)))
-    return term1 - term2
+    return empirical_crps(samples, y_true)
 
 
 def mixture_gaussian_nlpd(samples, y_true, noise_var, eps: float = 1e-12):

@@ -1,10 +1,11 @@
 """Small reporting helpers shared by benchmark entrypoints."""
 
 import argparse
-import csv
 import json
 import os
 import sys
+
+from experiments.common.artifacts import write_csv_rows, write_json
 
 DEFAULT_METRICS = (
     "RMSE",
@@ -116,7 +117,7 @@ def add_wandb_args(parser):
         help="Enable Weights & Biases experiment tracking.",
     )
     parser.add_argument("--wandb_project", default="gmvip")
-    parser.add_argument("--wandb_entity", default="ludvins")
+    parser.add_argument("--wandb_entity", default=None)
     parser.add_argument("--wandb_group", default=None)
     parser.add_argument("--wandb_name", default=None)
     parser.add_argument("--wandb_tags", nargs="*", default=[])
@@ -499,18 +500,14 @@ def save_comparison(results, output_dir, name, split="test"):
     json_path = os.path.join(output_dir, f"{name}_{split}_comparison.json")
     csv_path = os.path.join(output_dir, f"{name}_{split}_comparison.csv")
 
-    with open(json_path, "w") as f:
-        json.dump(rows, f, indent=2)
+    write_json(json_path, rows)
 
     columns = (
         ["dataset", "model"]
         + [metric for metric in DEFAULT_METRICS if any(metric in row for row in rows)]
         + ["train_time_s"]
     )
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv_rows(csv_path, rows, fieldnames=columns)
     return json_path, csv_path
 
 

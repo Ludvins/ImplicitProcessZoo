@@ -2,35 +2,23 @@ from __future__ import annotations
 
 import argparse
 import json
-import zipfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import requests
 
-UCI_ELECTRICITY_ZIP_URL = (
-    "https://archive.ics.uci.edu/static/public/321/electricityloaddiagrams20112014.zip"
-)
+from implicit_process_zoo.data.downloads import download_source, extract_expected_members
+from implicit_process_zoo.data.sources import get_data_source
+
+ELD_SOURCE = get_data_source("eld")
+UCI_ELECTRICITY_ZIP_URL = ELD_SOURCE.url
 
 
-def download_raw(root: Path, *, url: str = UCI_ELECTRICITY_ZIP_URL) -> Path:
+def download_raw(root: Path) -> Path:
     raw_dir = root / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = raw_dir / "electricityloaddiagrams20112014.zip"
-    if not zip_path.exists():
-        with requests.get(url, stream=True, timeout=60) as response:
-            response.raise_for_status()
-            with zip_path.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        handle.write(chunk)
-    with zipfile.ZipFile(zip_path) as archive:
-        members = [name for name in archive.namelist() if name.endswith("LD2011_2014.txt")]
-        if not members:
-            raise FileNotFoundError("Downloaded archive does not contain LD2011_2014.txt.")
-        archive.extract(members[0], raw_dir)
-        return raw_dir / members[0]
+    zip_path = download_source(ELD_SOURCE, raw_dir / ELD_SOURCE.filename)
+    return extract_expected_members(zip_path, raw_dir, ELD_SOURCE.members)[ELD_SOURCE.members[0]]
 
 
 def prepare_raw_file(raw_path: str | Path, root: str | Path) -> Path:
@@ -63,6 +51,11 @@ def prepare_raw_file(raw_path: str | Path, root: str | Path) -> Path:
         "dtype": "float32",
         "frequency_minutes": 15,
         "uci_url": "https://archive.ics.uci.edu/dataset/321/electricityloaddiagrams20112014",
+        "source_url": ELD_SOURCE.url,
+        "archive_sha256": ELD_SOURCE.sha256,
+        "doi": ELD_SOURCE.doi,
+        "license": ELD_SOURCE.license,
+        "attribution": ELD_SOURCE.attribution,
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return processed_dir

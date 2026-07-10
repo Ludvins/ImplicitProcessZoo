@@ -3,11 +3,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
+
+
+def _pyplot():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as pyplot
+
+    return pyplot
+
 
 DEFAULT_COLORS = {
     "analog": "#777777",
@@ -128,6 +134,7 @@ def plot_target(
     seed: int = 0,
     formats: list[str] | None = None,
 ) -> list[Path]:
+    plt = _pyplot()
     formats = formats or ["png"]
     loaded = _load_target_predictions(results_root, target_id, methods, seed=seed)
     reference = loaded[0][1]
@@ -170,6 +177,7 @@ def plot_target_method_grid(
     seed: int = 0,
     formats: list[str] | None = None,
 ) -> list[Path]:
+    plt = _pyplot()
     formats = formats or ["png"]
     loaded = _load_target_predictions(results_root, target_id, methods, seed=seed)
     labels = {method: DEFAULT_LABELS.get(method, method) for method, _ in loaded}

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from experiments.common import write_csv_rows
+
 from .plots import plot_metric_by_region
 
 
@@ -53,22 +55,17 @@ def write_summary(path: Path, rows: list[dict]) -> None:
     metrics = ["rmse", "nlpd", "crps", "cov90", "cov95", "width90", "width95"]
     fields.extend(f"{metric}_mean" for metric in metrics)
     fields.extend(f"{metric}_stderr" for metric in metrics)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        for (method, n_train, region), group in sorted(groups.items()):
-            out = {"method": method, "n_train": n_train, "region": region}
-            for metric in metrics:
-                values = np.asarray(
-                    [row[metric] for row in group if metric in row], dtype=np.float64
-                )
-                out[f"{metric}_mean"] = float(np.nanmean(values)) if values.size else np.nan
-                out[f"{metric}_stderr"] = (
-                    float(np.nanstd(values) / max(1.0, np.sqrt(values.size)))
-                    if values.size
-                    else np.nan
-                )
-            writer.writerow(out)
+    output_rows = []
+    for (method, n_train, region), group in sorted(groups.items()):
+        out = {"method": method, "n_train": n_train, "region": region}
+        for metric in metrics:
+            values = np.asarray([row[metric] for row in group if metric in row], dtype=np.float64)
+            out[f"{metric}_mean"] = float(np.nanmean(values)) if values.size else np.nan
+            out[f"{metric}_stderr"] = (
+                float(np.nanstd(values) / max(1.0, np.sqrt(values.size))) if values.size else np.nan
+            )
+        output_rows.append(out)
+    write_csv_rows(path, output_rows, fieldnames=fields)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

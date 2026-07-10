@@ -4,6 +4,8 @@ import math
 
 import torch
 
+from experiments.common.metrics import empirical_crps
+
 
 def _as_tensor(value, *, like: torch.Tensor | None = None) -> torch.Tensor:
     if torch.is_tensor(value):
@@ -41,11 +43,7 @@ def gaussian_nll_from_samples(samples, y_true, noise_var=0.0, eps=1e-6):
 
 
 def crps_from_samples(samples, y_true):
-    samples = _as_tensor(samples)
-    y_true = _as_tensor(y_true, like=samples)
-    term1 = torch.mean(torch.abs(samples - y_true.unsqueeze(0)))
-    term2 = 0.5 * torch.mean(torch.abs(samples.unsqueeze(1) - samples.unsqueeze(0)))
-    return term1 - term2
+    return empirical_crps(samples, y_true)
 
 
 def interval_coverage(samples, y_true, levels=(0.5, 0.8, 0.9, 0.95)):

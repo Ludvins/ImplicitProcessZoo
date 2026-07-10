@@ -10,6 +10,8 @@ htmlcov/
 *.log
 .venv/
 data
+!/implicit_process_zoo/data/
+!/implicit_process_zoo/data/**
 *.pdf
 /checkpoints
 /figures

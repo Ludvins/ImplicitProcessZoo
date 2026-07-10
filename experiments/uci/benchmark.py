@@ -28,8 +28,9 @@ from experiments.benchmark_utils import (
     wandb_log_result,
     wandb_log_train_step,
 )
+from experiments.common import build_flow as build_common_flow
+from implicit_process_zoo.data import canonical_dataset_name, get_dataset
 from implicit_process_zoo.fbnn import FBNN
-from implicit_process_zoo.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
 from implicit_process_zoo.map_baseline import DeterministicMAP
@@ -44,7 +45,6 @@ from implicit_process_zoo.utils import (
     restore_training_checkpoint,
     save_training_checkpoint,
 )
-from implicit_process_zoo.utils.dataset import get_dataset
 from implicit_process_zoo.utils.metrics import MetricsRegression
 from implicit_process_zoo.utils.utils import infinite_loader
 from implicit_process_zoo.vip import VIP
@@ -57,7 +57,7 @@ UCI_REGRESSION_DATASETS = [
     "power",
     "protein",
     "kin8nm",
-    "yatch",
+    "yacht",
     "winered",
 ]
 
@@ -74,7 +74,7 @@ DEFAULT_UCI_ITERS = {
     "naval": 60_000,
     "power": 60_000,
     "winered": 60_000,
-    "yatch": 60_000,
+    "yacht": 60_000,
 }
 
 ACTIVATIONS = {
@@ -295,11 +295,16 @@ def parse_args(
         choices=REGRESSION_MODELS + ["all"],
         help="Model to train.",
     )
+    deprecated_dataset_aliases = []
+    if "yacht" in dataset_names:
+        deprecated_dataset_aliases.append("yatch")
+    if "heteroscedastic" in dataset_names:
+        deprecated_dataset_aliases.append("heterocedastic")
     p.add_argument(
         "--dataset",
         type=str,
         required=True,
-        choices=dataset_names + ["all"],
+        choices=dataset_names + deprecated_dataset_aliases + ["all"],
         help=f"Dataset name or 'all' for all {dataset_group_label}.",
     )
     p.add_argument("--seed", type=int, default=42, help="Random seed.")
@@ -1014,6 +1019,8 @@ def parse_args(
     )
     add_wandb_args(p)
     args = p.parse_args(argv)
+    if args.dataset != "all":
+        args.dataset = canonical_dataset_name(args.dataset)
 
     # Resolve mutually-exclusive flags
     if args.no_prior_regularizer:
@@ -1438,16 +1445,16 @@ def build_model(args, train_dataset, model_type=None):
 
 def _build_flow(args, input_dim, device, dtype):
     """Construct an FTIP flow based on ``args.flow_type``."""
-    common = dict(
-        depth=args.flow_depth, input_dim=input_dim, device=device, dtype=dtype, seed=args.seed
+    return build_common_flow(
+        args.flow_type,
+        depth=args.flow_depth,
+        input_dim=input_dim,
+        device=device,
+        dtype=dtype,
+        seed=args.seed,
+        num_bins=args.flow_num_bins,
+        domain=args.flow_domain,
     )
-    if args.flow_type == "affine":
-        return CouplingFlow(**common)
-    if args.flow_type == "spline":
-        return SplineCouplingFlow(**common, num_bins=args.flow_num_bins, B=args.flow_domain)
-    if args.flow_type == "spline_1x1":
-        return SplineCoupling1x1Flow(**common, num_bins=args.flow_num_bins, B=args.flow_domain)
-    raise ValueError(f"Unknown flow_type: {args.flow_type!r}")
 
 
 def _fbnn_pred_components(model, xb, S=None):

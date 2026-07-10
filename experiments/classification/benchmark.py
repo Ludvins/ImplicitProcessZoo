@@ -13,7 +13,6 @@ python -m experiments.classification.benchmark --dataset CIFAR10 --model all
 
 import argparse
 import copy
-import csv
 import json
 import os
 import random
@@ -33,8 +32,10 @@ from experiments.benchmark_utils import (
     wandb_log_result,
     wandb_log_train_step,
 )
+from experiments.common import build_flow as build_common_flow
+from experiments.common import write_csv_rows, write_json
+from implicit_process_zoo.data import get_dataset
 from implicit_process_zoo.fbnn import FBNN
-from implicit_process_zoo.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
 from implicit_process_zoo.mfvi import MFVI
@@ -47,7 +48,6 @@ from implicit_process_zoo.priors.generative_functions import (
 from implicit_process_zoo.sip import SIP
 from implicit_process_zoo.tfsvi import TFSVI
 from implicit_process_zoo.utils import build_training_checkpoint, save_training_checkpoint
-from implicit_process_zoo.utils.dataset import get_dataset
 from implicit_process_zoo.utils.metrics import MetricsClassification
 from implicit_process_zoo.utils.utils import infinite_loader
 from implicit_process_zoo.vip import VIP
@@ -674,28 +674,16 @@ def freeze_if_requested(module, learn_prior):
 
 
 def build_flow(args, input_dim, device, dtype):
-    common = dict(
+    return build_common_flow(
+        args.flow_type,
         depth=args.flow_depth,
         input_dim=int(input_dim),
         device=device,
         dtype=dtype,
         seed=args.seed,
+        num_bins=args.flow_num_bins,
+        domain=args.flow_domain,
     )
-    if args.flow_type == "affine":
-        return CouplingFlow(**common)
-    if args.flow_type == "spline":
-        return SplineCouplingFlow(
-            **common,
-            num_bins=args.flow_num_bins,
-            B=args.flow_domain,
-        )
-    if args.flow_type == "spline_1x1":
-        return SplineCoupling1x1Flow(
-            **common,
-            num_bins=args.flow_num_bins,
-            B=args.flow_domain,
-        )
-    raise ValueError(f"Unknown flow_type: {args.flow_type!r}")
 
 
 def build_model(args, train_dataset, model_type, ap_variant=None):
@@ -1604,8 +1592,7 @@ def save_comparison(results, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     json_path = os.path.join(output_dir, "classification_comparison.json")
     csv_path = os.path.join(output_dir, "classification_comparison.csv")
-    with open(json_path, "w") as f:
-        json.dump(rows, f, indent=2)
+    write_json(json_path, rows)
 
     columns = sorted({key for row in rows for key in row.keys()})
     preferred = [
@@ -1622,10 +1609,7 @@ def save_comparison(results, output_dir):
         "train_time_s",
     ]
     columns = [c for c in preferred if c in columns] + [c for c in columns if c not in preferred]
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv_rows(csv_path, rows, fieldnames=columns)
     print(f"\nComparison JSON: {json_path}")
     print(f"Comparison CSV:  {csv_path}")
 

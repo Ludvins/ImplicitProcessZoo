@@ -1,13 +1,17 @@
 import os
-from io import BytesIO
-from urllib.request import urlopen
-from zipfile import ZipFile
+import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
+
+from ..data.downloads import download_source, fetch_and_extract
+from ..data.sources import get_data_source
+
+NORMALIZATION_EPSILON = 1e-6
 
 
 class Training_Dataset(Dataset):
@@ -20,10 +24,24 @@ class Training_Dataset(Dataset):
         normalize_targets=True,
     ):
 
+        inputs = np.asarray(inputs)
+        targets = np.asarray(targets)
+        if inputs.ndim != 2 or targets.ndim != 2:
+            raise ValueError(
+                f"inputs and targets must both be rank-2, got {inputs.shape} and {targets.shape}."
+            )
+        if inputs.shape[0] != targets.shape[0] or inputs.shape[0] == 0:
+            raise ValueError(
+                f"inputs and targets must have the same nonzero row count, got {inputs.shape} and {targets.shape}."
+            )
+        if not np.isfinite(inputs).all() or not np.isfinite(targets).all():
+            raise ValueError("inputs and targets must contain only finite values.")
         self.inputs = inputs
         if normalize_targets:
             self.targets_mean = np.mean(targets, axis=0, keepdims=True)
-            self.targets_std = np.std(targets, axis=0, keepdims=True)
+            self.targets_std = np.maximum(
+                np.std(targets, axis=0, keepdims=True), NORMALIZATION_EPSILON
+            )
         else:
             self.targets_mean = 0
             self.targets_std = 1
@@ -58,6 +76,15 @@ class Training_Dataset(Dataset):
 
 class Test_Dataset(Dataset):
     def __init__(self, inputs, targets=None, inputs_mean=0.0, inputs_std=1.0):
+        inputs = np.asarray(inputs)
+        if inputs.ndim != 2 or inputs.shape[0] == 0:
+            raise ValueError(f"inputs must be a nonempty rank-2 array, got {inputs.shape}.")
+        if targets is not None:
+            targets = np.asarray(targets)
+            if targets.ndim != 2 or targets.shape[0] != inputs.shape[0]:
+                raise ValueError(
+                    f"targets must be rank-2 and align with inputs, got {targets.shape}."
+                )
         self.inputs = (inputs - inputs_mean) / inputs_std
         self.targets = targets
         self.n_samples = inputs.shape[0]
@@ -74,11 +101,20 @@ class Test_Dataset(Dataset):
         return len(self.inputs)
 
 
-uci_base = "http://archive.ics.uci.edu/ml/machine-learning-databases/"
 data_base = "./data"
 airline_csv_url = (
     "https://media.githubusercontent.com/media/Ludvins/Variational-LLA/main/data/airline.csv"
 )
+
+
+def _downloaded_source_path(source_name: str) -> Path:
+    source = get_data_source(source_name)
+    return download_source(source, Path(data_base) / "downloads" / source.filename)
+
+
+def _extracted_source_member(source_name: str, member: str) -> Path:
+    outputs = fetch_and_extract(get_data_source(source_name), Path(data_base))
+    return outputs[member]
 
 
 def _torchvision_datasets_transforms():
@@ -97,6 +133,11 @@ class CustomDataset(Dataset):
         raise NotImplementedError
 
     def split_data(self, data):
+        data = np.asarray(data)
+        if data.ndim != 2 or data.shape[0] == 0 or data.shape[1] < 2:
+            raise ValueError(f"Expected a nonempty [N, features+target] matrix, got {data.shape}.")
+        if not np.isfinite(data).all():
+            raise ValueError("Dataset matrix contains NaN or infinite values.")
         self.inputs = data[:, :-1]
         self.targets = data[:, -1]
 
@@ -348,6 +389,9 @@ class Heterocedastic_Dataset(CustomDataset):
         self.targets = y[..., np.newaxis]
 
 
+Heteroscedastic_Dataset = Heterocedastic_Dataset
+
+
 class Gap_Dataset(CustomDataset):
     """1D regression with a missing central interval.
 
@@ -536,8 +580,7 @@ class Boston_Dataset(CustomDataset):
         self.type = "regression"
         self.output_dim = 1
 
-        data_url = "{}{}".format(uci_base, "housing/housing.data")
-        raw_df = pd.read_fwf(data_url, header=None).to_numpy()
+        raw_df = pd.read_fwf(_downloaded_source_path("boston"), header=None).to_numpy()
         self.split_data(raw_df)
 
 
@@ -545,8 +588,7 @@ class Energy_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        url = "{}{}".format(uci_base, "00242/ENB2012_data.xlsx")
-        data = pd.read_excel(url).values
+        data = pd.read_excel(_downloaded_source_path("energy")).values
         data = data[:, :9]
         self.split_data(data)
 
@@ -555,8 +597,7 @@ class Concrete_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        url = "{}{}".format(uci_base, "concrete/compressive/Concrete_Data.xls")
-        data = pd.read_excel(url).values
+        data = pd.read_excel(_downloaded_source_path("concrete")).values
         self.split_data(data)
 
 
@@ -564,14 +605,8 @@ class Naval_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        try:
-            data = pd.read_fwf("./data/UCI CBM Dataset/data.txt", header=None).values
-        except FileNotFoundError:
-            url = "{}{}".format(uci_base, "00316/UCI%20CBM%20Dataset.zip")
-            with urlopen(url) as zipresp, ZipFile(BytesIO(zipresp.read())) as zfile:
-                zfile.extractall("./data/")
-
-            data = pd.read_fwf("./data/UCI CBM Dataset/data.txt", header=None).values
+        path = _extracted_source_member("naval", "UCI CBM Dataset/data.txt")
+        data = pd.read_fwf(path, header=None).values
         data = data[:, :-1]
         self.split_data(data)
 
@@ -580,14 +615,8 @@ class Power_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        try:
-            data = pd.read_excel("./data/CCPP//Folds5x2_pp.xlsx").values
-        except FileNotFoundError:
-            url = "{}{}".format(uci_base, "00294/CCPP.zip")
-            with urlopen(url) as zipresp, ZipFile(BytesIO(zipresp.read())) as zfile:
-                zfile.extractall("./data/")
-
-            data = pd.read_excel("./data/CCPP//Folds5x2_pp.xlsx").values
+        path = _extracted_source_member("power", "CCPP/Folds5x2_pp.xlsx")
+        data = pd.read_excel(path).values
         self.split_data(data)
 
 
@@ -595,8 +624,7 @@ class Protein_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        url = "{}{}".format(uci_base, "00265/CASP.csv")
-        data = pd.read_csv(url).values
+        data = pd.read_csv(_downloaded_source_path("protein")).values
         data = np.concatenate([data[:, 1:], data[:, 0, None]], 1)
         self.split_data(data)
 
@@ -612,8 +640,7 @@ class Protein_Bimodal_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        url = "{}{}".format(uci_base, "00265/CASP.csv")
-        data = pd.read_csv(url).values
+        data = pd.read_csv(_downloaded_source_path("protein")).values
         data = np.concatenate([data[:, 1:], data[:, 0, None]], 1)
         # Drop feature 2 (0-indexed) from the 9 input columns
         data = np.delete(data, 2, axis=1)
@@ -624,8 +651,7 @@ class Kin8nm_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        url = "https://www.openml.org/data/get_csv/3626/dataset_2175_kin8nm.arff"
-        data = pd.read_csv(url, dtype=float).values
+        data = pd.read_csv(_downloaded_source_path("kin8nm"), dtype=float).values
         self.split_data(data)
 
 
@@ -633,19 +659,20 @@ class Yatch_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        url = "{}{}".format(uci_base, "00243/yacht_hydrodynamics.data")
         # File is whitespace-delimited, not CSV; default pd.read_csv puts
         # every row into one string column and breaks downstream splitting.
-        data = pd.read_csv(url, header=None, sep=r"\s+").values
+        data = pd.read_csv(_downloaded_source_path("yacht"), header=None, sep=r"\s+").values
         self.split_data(data)
+
+
+Yacht_Dataset = Yatch_Dataset
 
 
 class WineRed_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        url = "{}{}".format(uci_base, "wine-quality/winequality-red.csv")
-        data = pd.read_csv(url, delimiter=";").values
+        data = pd.read_csv(_downloaded_source_path("winered"), delimiter=";").values
         self.split_data(data)
 
 
@@ -653,9 +680,14 @@ class CO2_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        url = "https://scrippsco2.ucsd.edu/assets/data/atmospheric/stations/in_situ_co2/monthly/monthly_in_situ_co2_mlo.csv"
+        path = Path(data_base) / "monthly_in_situ_co2_mlo.csv"
+        if not path.exists():
+            raise FileNotFoundError(
+                "The historical Scripps CO2 URL used by this project is no longer available. "
+                f"Place a reviewed source file at {path}."
+            )
         data = (
-            pd.read_csv(url, comment='"', header=None, on_bad_lines="skip")
+            pd.read_csv(path, comment='"', header=None, on_bad_lines="skip")
             .apply(pd.to_numeric, errors="coerce")
             .dropna(axis=0, how="all")
             .values[:, [3, 4]]
@@ -962,14 +994,13 @@ class Year_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
-        try:
-            data = pd.read_csv("./data/YearPredictionMSD.txt", header=None, delimiter=",").values
-        except FileNotFoundError:
-            url = "{}{}".format(uci_base, "00203/YearPredictionMSD.txt.zip")
-            with urlopen(url) as zipresp, ZipFile(BytesIO(zipresp.read())) as zfile:
-                zfile.extractall("./data/")
-
-            data = pd.read_csv("./data/YearPredictionMSD.txt", header=None, delimiter=",").values
+        path = Path(data_base) / "YearPredictionMSD.txt"
+        if not path.exists():
+            raise FileNotFoundError(
+                "YearPredictionMSD is too large for an implicit benchmark download. "
+                f"Download it from the official UCI record, verify it, and place it at {path}."
+            )
+        data = pd.read_csv(path, header=None, delimiter=",").values
 
         self.len_data = data.shape[0]
 
@@ -1008,25 +1039,10 @@ class Airline_Dataset(CustomDataset):
 
         data_path = os.path.join(data_base, "airline.csv")
         if not os.path.exists(data_path):
-            print("Downloading Airline Dataset...")
-            os.makedirs(data_base, exist_ok=True)
-            tmp_path = f"{data_path}.tmp"
-            try:
-                with urlopen(airline_csv_url) as response, open(tmp_path, "wb") as f:
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                os.replace(tmp_path, data_path)
-            except Exception as exc:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                raise RuntimeError(
-                    "Could not download Airline dataset from "
-                    f"{airline_csv_url}. Place the CSV at {data_path} or check "
-                    "network access."
-                ) from exc
+            raise FileNotFoundError(
+                "Airline is too large for an implicit unverified download. "
+                f"Review {airline_csv_url} and place the CSV at {data_path}."
+            )
 
         data = pd.read_csv(data_path)
         # Convert time of day from hhmm to minutes since midnight
@@ -1087,12 +1103,10 @@ class HIGGS_Dataset(CustomDataset):
             print("HIGGS gzip file found.")
             data = pd.read_csv("data/HIGGS.csv.gz", header=None, compression="gzip").values
         else:
-            print("Downloading HIGGS Dataset...")
-            url = "{}{}".format(uci_base, "00280/HIGGS.csv.gz")
-            import wget
-
-            wget.download(url, out="data/" + url.split("/")[-1])
-            data = pd.read_csv("data/HIGGS.csv.gz", header=None, compression="gzip").values
+            raise FileNotFoundError(
+                "HIGGS is too large for an implicit benchmark download. Place the verified "
+                "official HIGGS.csv or HIGGS.csv.gz file under data/."
+            )
 
         print("HIGGS data loaded. Data shape: ", end="")
         print(data.shape)
@@ -1138,18 +1152,16 @@ class SUSY_Dataset(CustomDataset):
         self.output_dim = 1
 
         if os.path.exists("data/SUSY.csv"):
-            print("SUSSY csv file found.")
+            print("SUSY csv file found.")
             data = pd.read_csv("data/SUSY.csv", header=None).values
         elif os.path.exists("data/SUSY.csv.gz"):
             print("SUSY gzip file found.")
             data = pd.read_csv("data/SUSY.csv.gz", header=None, compression="gzip").values
         else:
-            print("Downloading SUSY Dataset...")
-            url = "{}{}".format(uci_base, "00279/SUSY.csv.gz")
-            import wget
-
-            wget.download(url, out="data/" + url.split("/")[-1])
-            data = pd.read_csv("data/SUSY.csv.gz", header=None, compression="gzip").values
+            raise FileNotFoundError(
+                "SUSY is too large for an implicit benchmark download. Place the verified "
+                "official SUSY.csv or SUSY.csv.gz file under data/."
+            )
 
         print("SUSY data loaded. Data shape: ", end="")
         print(data.shape)
@@ -1451,6 +1463,15 @@ class Pedestrian_Dataset(Dataset):
 
 
 def get_dataset(dataset_name):
+    aliases = {"yatch": "yacht", "heterocedastic": "heteroscedastic"}
+    if dataset_name in aliases:
+        canonical = aliases[dataset_name]
+        warnings.warn(
+            f"Dataset name {dataset_name!r} is deprecated; use {canonical!r}.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        dataset_name = canonical
     d = {
         "bimodal": Bimodal_Dataset,
         "synthetic": Synthetic_Dataset,
@@ -1461,14 +1482,14 @@ def get_dataset(dataset_name):
         "snelson": SPGPSnelson_Dataset,
         "variational_lla": VariationalLLA_Dataset,
         "valla": VariationalLLA_Dataset,
-        "heterocedastic": Heterocedastic_Dataset,
+        "heteroscedastic": Heteroscedastic_Dataset,
         "skewed": Skewed_Dataset,
         "boston": Boston_Dataset,
         "energy": Energy_Dataset,
         "concrete": Concrete_Dataset,
         "naval": Naval_Dataset,
         "kin8nm": Kin8nm_Dataset,
-        "yatch": Yatch_Dataset,
+        "yacht": Yacht_Dataset,
         "power": Power_Dataset,
         "protein": Protein_Dataset,
         "ProteinBimodal": Protein_Bimodal_Dataset,

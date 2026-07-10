@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
 import json
 import math
 import time
@@ -15,6 +14,16 @@ import yaml
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
+from experiments.common import (
+    build_flow as build_common_flow,
+)
+from experiments.common import (
+    deep_merge,
+    fix_gaussian_noise,
+    json_safe,
+    load_yaml,
+    write_csv_rows,
+)
 from experiments.simulator_forecasting.datasets import load_damped_oscillator_tasks
 from experiments.simulator_forecasting.generate import generate_dataset
 from experiments.simulator_forecasting.metrics import coerce_regions, metrics_by_region
@@ -25,7 +34,6 @@ from experiments.simulator_forecasting.plots import (
 )
 from experiments.simulator_forecasting.priors import DampedOscillatorPrior
 from implicit_process_zoo.fbnn import FBNN
-from implicit_process_zoo.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
 from implicit_process_zoo.map_baseline import DeterministicMAP
@@ -337,12 +345,7 @@ CONFIG_PRESETS = {
 
 
 def _deep_update(base: dict, override: dict) -> dict:
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_update(base[key], value)
-        else:
-            base[key] = value
-    return base
+    return deep_merge(base, override)
 
 
 def _load_runner_config(args: argparse.Namespace) -> dict:
@@ -353,10 +356,7 @@ def _load_runner_config(args: argparse.Namespace) -> dict:
             f"Unknown preset {args.preset!r}; expected one of {tuple(CONFIG_PRESETS)}."
         ) from exc
     if args.config is not None:
-        override = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
-        if not isinstance(override, dict):
-            raise ValueError(f"Config override {args.config!r} must contain a YAML mapping.")
-        _deep_update(config, override)
+        config = _deep_update(config, load_yaml(args.config))
     config["preset"] = str(args.preset)
     return config
 
@@ -389,20 +389,7 @@ def _metric_regions(config: dict) -> dict[str, tuple[float, float, bool]]:
 
 
 def _tensor_to_json(value):
-    if torch.is_tensor(value):
-        value = value.detach().cpu()
-        if value.ndim == 0:
-            return float(value)
-        return value.tolist()
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, dict):
-        return {str(key): _tensor_to_json(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_tensor_to_json(item) for item in value]
-    if isinstance(value, (np.floating, np.integer)):
-        return value.item()
-    return value
+    return json_safe(value)
 
 
 def _activation(name: str):
@@ -422,13 +409,7 @@ def _fixed_log_variance(noise_std_norm: torch.Tensor) -> torch.Tensor:
 
 
 def _fix_model_noise(model: torch.nn.Module, noise_std_norm: torch.Tensor) -> None:
-    log_var = _fixed_log_variance(noise_std_norm).detach().clone()
-    if hasattr(model, "log_variance"):
-        param = torch.nn.Parameter(
-            log_var.to(dtype=model.log_variance.dtype, device=model.log_variance.device)
-        )
-        model.log_variance = param
-        model.log_variance.requires_grad_(False)
+    fix_gaussian_noise(model, noise_std_norm)
 
 
 def _make_bnn(
@@ -468,27 +449,19 @@ def _inducing_grid(num_inducing: int, *, device, dtype) -> torch.Tensor:
 
 def _make_flow(config: dict, input_dim: int, *, seed: int, device, dtype) -> torch.nn.Module:
     ftip_cfg = dict(config.get("ftip", {}))
-    common = {
-        "depth": int(ftip_cfg.get("flow_depth", 2)),
-        "input_dim": int(input_dim),
-        "device": device,
-        "dtype": dtype,
-        "seed": int(seed),
-    }
     flow_type = str(ftip_cfg.get("flow_type", "affine")).lower()
-    if flow_type == "spline":
-        return SplineCouplingFlow(
-            **common,
-            num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
-            B=float(ftip_cfg.get("flow_domain", 5.0)),
-        )
     if flow_type in {"spline_1x1", "spline-1x1", "glow"}:
-        return SplineCoupling1x1Flow(
-            **common,
-            num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
-            B=float(ftip_cfg.get("flow_domain", 5.0)),
-        )
-    return CouplingFlow(**common)
+        flow_type = "spline_1x1"
+    return build_common_flow(
+        flow_type,
+        depth=int(ftip_cfg.get("flow_depth", 2)),
+        input_dim=input_dim,
+        device=device,
+        dtype=dtype,
+        seed=seed,
+        num_bins=int(ftip_cfg.get("flow_num_bins", 8)),
+        domain=float(ftip_cfg.get("flow_domain", 5.0)),
+    )
 
 
 class DeepEnsemble(torch.nn.Module):
@@ -1054,15 +1027,7 @@ def _target_ids(cli_args, n_tasks: int) -> list[int]:
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return
-    fields = sorted({key for row in rows for key in row})
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv_rows(path, rows)
 
 
 def _summarize(rows: list[dict]) -> dict:

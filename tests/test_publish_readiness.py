@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
+from experiments.common.metrics import empirical_crps, empirical_crps_pairwise
+from implicit_process_zoo.data import canonical_dataset_name
+from implicit_process_zoo.data.base import Training_Dataset
 from implicit_process_zoo.flows.glow_mixing import SplineCoupling1x1Flow
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.map_baseline import DeterministicMAP
@@ -43,6 +47,25 @@ def _make_map(seed: int = SEED) -> DeterministicMAP:
     )
 
 
+def test_dataset_normalization_is_finite_for_constant_targets():
+    dataset = Training_Dataset(
+        np.arange(12, dtype=np.float64).reshape(6, 2),
+        np.ones((6, 1), dtype=np.float64),
+        verbose=False,
+    )
+    assert dataset.targets_std.item() > 0
+    assert np.isfinite(dataset.targets).all()
+
+
+def test_dataset_shape_validation_and_deprecated_aliases():
+    with pytest.raises(ValueError, match="rank-2"):
+        Training_Dataset(np.ones(3), np.ones((3, 1)), verbose=False)
+    with pytest.warns(DeprecationWarning, match="yacht"):
+        assert canonical_dataset_name("yatch") == "yacht"
+    with pytest.warns(DeprecationWarning, match="heteroscedastic"):
+        assert canonical_dataset_name("heterocedastic") == "heteroscedastic"
+
+
 def test_multiclass_probability_matches_two_class_analytic_result():
     means = torch.tensor([[0.4, -0.2], [-0.5, 0.7]], dtype=DTYPE)
     variances = torch.tensor([[0.25, 1.0], [0.5, 0.3]], dtype=DTYPE)
@@ -67,6 +90,19 @@ def test_multiclass_probability_matches_monte_carlo():
     )
     monte_carlo = (draws[:, 0] > draws[:, 1]).to(DTYPE).mean().item()
     assert actual == pytest.approx(monte_carlo, abs=4e-3)
+
+
+@pytest.mark.parametrize("shape", [(1, 7, 1), (3, 5, 2), (8, 4, 3)])
+def test_sorted_crps_matches_pairwise_identity(shape):
+    generator = torch.Generator().manual_seed(SEED)
+    samples = torch.randn(*shape, dtype=DTYPE, generator=generator)
+    targets = torch.randn(*shape[1:], dtype=DTYPE, generator=generator)
+    torch.testing.assert_close(
+        empirical_crps(samples, targets),
+        empirical_crps_pairwise(samples, targets),
+        atol=1e-12,
+        rtol=1e-12,
+    )
 
 
 @pytest.mark.parametrize("count", [1, 3, 4, 5])

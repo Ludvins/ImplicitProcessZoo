@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
 import json
 import math
 import time
@@ -11,6 +10,7 @@ from pathlib import Path
 import torch
 import yaml
 
+from experiments.common import write_csv_rows
 from experiments.eld_forecasting import run as base_run
 from experiments.eld_forecasting.datasets import (
     _select_targets,
@@ -166,15 +166,7 @@ def _score_validation(
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return
-    fields = sorted({key for row in rows for key in row})
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv_rows(path, rows)
 
 
 def _select_prior_rules(
