@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import json
 import math
 import time
@@ -22,6 +23,7 @@ from experiments.common import (
     fix_gaussian_noise,
     load_yaml,
     write_csv_rows,
+    write_json,
 )
 from experiments.eld_forecasting.datasets import (
     load_electricity_tasks,
@@ -532,6 +534,11 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
     write_csv_rows(path, rows)
 
 
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
 def _summarize(rows: list[dict]) -> dict:
     groups: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
@@ -677,12 +684,48 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
     ids = [int(task.metadata["target_id"]) for task in tasks]
     out_dir = Path(args.output_dir or "results/eld_forecasting_v2") / method / f"seed_{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    config_path = out_dir / "config.yaml"
+    config_text = yaml.safe_dump(config, sort_keys=False)
+    resume_artifacts = bool(getattr(args, "resume_artifacts", False))
+    if resume_artifacts and config_path.exists():
+        if config_path.read_text(encoding="utf-8") != config_text:
+            raise ValueError("Existing ELD artifact config differs; resume in a new output root.")
+    else:
+        config_path.write_text(config_text, encoding="utf-8")
 
-    rows = []
-    runtimes = []
+    csv_path = out_dir / "metrics_per_target_region.csv"
+    runtime_path = out_dir / "runtime.json"
+    if resume_artifacts and csv_path.exists() and runtime_path.exists():
+        existing_rows = _read_csv(csv_path)
+        existing_runtimes = json.loads(runtime_path.read_text(encoding="utf-8"))
+        row_targets = {int(row["target_id"]) for row in existing_rows}
+        runtime_targets = {int(row["target_id"]) for row in existing_runtimes}
+        completed = row_targets & runtime_targets
+        rows = [row for row in existing_rows if int(row["target_id"]) in completed]
+        runtimes = [row for row in existing_runtimes if int(row["target_id"]) in completed]
+    else:
+        completed = set()
+        rows = []
+        runtimes = []
+
+    def flush() -> dict:
+        completed_ids = sorted({int(row["target_id"]) for row in runtimes})
+        metrics = {
+            "methodology_version": 2,
+            "method": method,
+            "seed": seed,
+            "targets": completed_ids,
+            "summary": _summarize(rows),
+        }
+        _write_csv(csv_path, rows)
+        write_json(runtime_path, runtimes)
+        write_json(out_dir / "metrics.json", metrics)
+        return metrics
+
     for task in tasks:
         target_idx = int(task.metadata["target_id"])
+        if target_idx in completed:
+            continue
         target_seed = seed + 1000 * target_idx
         model = build_model(method, task, config, seed=target_seed, device=device, dtype=dtype)
         train_info = fit_model(model, task, config, device=device)
@@ -696,11 +739,12 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
             row["loss_end"] = train_info["loss_end"]
         rows.extend(target_rows)
         runtimes.append({"target_id": target_idx, **train_info})
+        flush()
 
-    metrics = {"method": method, "seed": seed, "targets": ids, "summary": _summarize(rows)}
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    (out_dir / "runtime.json").write_text(json.dumps(runtimes, indent=2), encoding="utf-8")
-    _write_csv(out_dir / "metrics_per_target_region.csv", rows)
+    metrics = flush()
+    requested = set(ids)
+    if not requested.issubset(set(metrics["targets"])):
+        raise RuntimeError("ELD artifact flush did not include every requested target.")
     return metrics
 
 
@@ -745,6 +789,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-stop", type=int, default=None)
     parser.add_argument("--target-ids", default=None)
     parser.add_argument("--synthetic-smoke", action="store_true")
+    parser.add_argument(
+        "--resume-artifacts",
+        action="store_true",
+        help="Continue an interrupted ELD result root after validating its config.",
+    )
     parser.add_argument("--disable-tqdm", action="store_true")
     parser.add_argument("--output-dir", default="results/eld_forecasting_v2")
     parser.add_argument("--device", default=None)

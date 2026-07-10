@@ -117,6 +117,34 @@ python -m experiments.eld_forecasting.plot_predictions \
 `compare` and `plot_predictions` reject roots that lack methodology-version 2
 metadata. They cannot silently combine legacy and corrected results.
 
+The completed seed-0 regeneration environment, artifact counts, runtimes, and
+SHA-256 checksums are recorded in `regeneration_v2_seed0.json`. Large generated
+results remain gitignored and should be stored as release/research artifacts,
+not committed to the source history.
+
+Long runs may be split with `--target-start`/`--target-stop`. Write each shard
+to its own root, then merge one method only after every shard succeeds:
+
+```bash
+python -m experiments.eld_forecasting.merge_shards \
+  --shard-root results/eld_v2_shards/000_025 \
+  --shard-root results/eld_v2_shards/025_050 \
+  --shard-root results/eld_v2_shards/050_075 \
+  --shard-root results/eld_v2_shards/075_100 \
+  --output-root results/eld_forecasting_v2_validation \
+  --method vip --seed 0
+```
+
+The merger rejects differing configs, non-v2 rows, duplicate targets, missing
+predictions, and mismatched row/runtime target sets. It rebuilds summaries from
+all target rows and records the source shard roots in `metrics.json`.
+
+The base runner also flushes CSV, runtime, and summary JSON atomically after
+every target. Pass `--resume-artifacts` with the same method/config/output root
+to skip targets that have both metric rows and runtime entries. A changed config
+is rejected. A prediction written immediately before an interruption but not
+present in both indexes is regenerated instead of being trusted.
+
 ## Outputs
 
 Each method writes `config.yaml`, `metrics.json`, `runtime.json`,

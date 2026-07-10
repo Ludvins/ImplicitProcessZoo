@@ -1,8 +1,10 @@
 import csv
+import json
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from experiments.eld_forecasting import valbank
@@ -103,6 +105,34 @@ def test_eld_synthetic_runner_writes_metrics(tmp_path):
         assert {row["methodology_version"] for row in rows} == {"2"}
         assert all("region_start_idx" in row and "region_stop_idx" in row for row in rows)
         assert all("region_include_left" not in row for row in rows)
+        metrics = json.loads((path.parent / "metrics.json").read_text(encoding="utf-8"))
+        assert metrics["methodology_version"] == 2
+
+
+def test_eld_artifact_resume_skips_complete_targets_and_rejects_config_changes(tmp_path):
+    out_root = tmp_path / "resumable"
+    argv = [
+        "--preset",
+        "eld_smoke",
+        "--method",
+        "analog",
+        "--synthetic-smoke",
+        "--seed",
+        "0",
+        "--output-dir",
+        str(out_root),
+        "--disable-tqdm",
+    ]
+    main(argv)
+    prediction = out_root / "analog" / "seed_0" / "predictions" / "target_0.npz"
+    original_mtime = prediction.stat().st_mtime_ns
+
+    result = main([*argv, "--resume-artifacts"])
+
+    assert prediction.stat().st_mtime_ns == original_mtime
+    assert result["analog"]["targets"] == [0]
+    with pytest.raises(ValueError, match="config differs"):
+        main([*argv, "--resume-artifacts", "--prior-bank-size", "17"])
 
 
 def test_eld_regions_are_half_open_nonoverlapping_and_dynamic():
