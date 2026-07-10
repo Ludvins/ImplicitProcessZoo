@@ -627,6 +627,23 @@ class GeneralizedMatheronVIP(nn.Module):
         num_samples: int = 128,
         include_noise: bool = True,
     ) -> dict[str, torch.Tensor]:
+        """Summarize posterior function and observation moments.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int, default=128
+            Number of Monte Carlo function samples.
+        include_noise : bool, default=True
+            Whether regression observation variance includes likelihood noise.
+
+        Returns
+        -------
+        dict of str to torch.Tensor
+            Samples and predictive moments. Multiclass results additionally
+            contain logits and class probabilities.
+        """
         was_training = self.training
         self.eval()
         try:
@@ -667,7 +684,23 @@ class GeneralizedMatheronVIP(nn.Module):
         *,
         seed: int | None = None,
     ) -> torch.Tensor:
-        """Draw likelihood samples with shape ``[S, N, D]``."""
+        """Draw predictive observation samples.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of predictive samples.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Observation samples or multiclass logits with shape
+            ``[S, N, D]``.
+        """
         samples = self.sample_posterior_values(X, int(num_samples), seed=seed)
         if self.likelihood_type == "multiclass":
             return samples
@@ -713,7 +746,22 @@ class GeneralizedMatheronVIP(nn.Module):
     def predict_f_samples(
         self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
     ) -> torch.Tensor:
-        """Draw latent posterior function samples with shape ``[S, N, D]``."""
+        """Draw latent posterior function samples.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of posterior samples.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Function samples with shape ``[S, N, D]``.
+        """
         samples = self.sample_posterior_values(X, int(num_samples), seed=seed)
         if self.output_dim == 1 and samples.ndim == 2:
             samples = samples.unsqueeze(-1)

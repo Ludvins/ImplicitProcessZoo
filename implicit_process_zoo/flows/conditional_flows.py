@@ -13,24 +13,26 @@ def rq_spline_forward(y, widths, heights, derivatives, B, inverse=False):
 
     Parameters
     ----------
-    y : Tensor of shape (N,)
+    y : torch.Tensor
         Input values. If ``inverse`` is False these are data points mapped to
         the base; if True, base points mapped back to data.
-    widths, heights : Tensor of shape (N, K)
-        Normalized widths/heights (each row sums to 1). Multiplied by ``2B``
-        internally.
-    derivatives : Tensor of shape (N, K + 1)
+    widths : torch.Tensor
+        Normalized bin widths with shape ``[N, K]``. Each row must sum to one.
+    heights : torch.Tensor
+        Normalized bin heights with shape ``[N, K]``. Each row must sum to one.
+    derivatives : torch.Tensor
         Positive derivative values at knots. Boundary entries should already
         be 1 (identity tails).
     B : float
         Half-width of the spline domain.
-    inverse : bool
+    inverse : bool, default=False
         If True, solve the quadratic to invert the spline.
 
     Returns
     -------
-    out : Tensor of shape (N,)
-    log_det : Tensor of shape (N,)
+    out : torch.Tensor
+        Transformed values with shape ``[N]``.
+    log_det : torch.Tensor
         ``log|d out / d y|``. For the inverse, this is ``log|d y / d u|`` —
         i.e. the Jacobian of the inverse map. We return the signed log-det in
         the direction of the map being applied.

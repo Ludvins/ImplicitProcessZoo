@@ -5,7 +5,23 @@ from torch import nn
 
 
 class GaussianRegressionLikelihood(nn.Module):
-    """Gaussian observation likelihood with optional learned noise scale."""
+    """Gaussian observation likelihood with optional learned noise scale.
+
+    Parameters
+    ----------
+    init_log_noise : float, default=-2.0
+        Initial log standard deviation.
+    learn_noise : bool, default=True
+        Whether the noise scale is trainable.
+    min_log_noise : float, optional
+        Lower bound applied to the log standard deviation.
+    max_log_noise : float, optional
+        Upper bound applied to the log standard deviation.
+    device : torch.device or str, optional
+        Parameter device.
+    dtype : torch.dtype, optional
+        Parameter data type.
+    """
 
     def __init__(
         self,
@@ -39,6 +55,20 @@ class GaussianRegressionLikelihood(nn.Module):
         return self.clamped_log_noise.exp()
 
     def log_prob(self, y: torch.Tensor, f: torch.Tensor) -> torch.Tensor:
+        """Evaluate elementwise Gaussian log probabilities.
+
+        Parameters
+        ----------
+        y : torch.Tensor
+            Observed targets broadcastable to ``f``.
+        f : torch.Tensor
+            Latent function values.
+
+        Returns
+        -------
+        torch.Tensor
+            Elementwise log probabilities with the broadcast shape.
+        """
         if y.ndim == 2 and y.shape[-1] == 1:
             y = y[..., 0]
         noise_var = torch.exp(2.0 * self.clamped_log_noise).clamp_min(1e-12)

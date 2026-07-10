@@ -58,6 +58,15 @@ the `[S,N,D]` contract. Model constructors remain method-specific.
         - warm_start_from_vip
         - fit
 
+### Unified FTIP
+
+::: implicit_process_zoo.ftip.ftip.UnifiedFTIP
+    options:
+      members:
+        - predict_f_samples
+        - predict_y_samples
+        - fit
+
 ## GMVIP
 
 ::: implicit_process_zoo.gmvip.gmvip.GeneralizedMatheronVIP

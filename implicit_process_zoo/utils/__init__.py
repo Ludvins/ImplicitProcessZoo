@@ -1,6 +1,7 @@
 from .checkpoints import (
     CHECKPOINT_SCHEMA_VERSION,
     build_training_checkpoint,
+    capture_rng_state,
     load_training_checkpoint,
     load_warm_start_state,
     restore_rng_state,
@@ -15,6 +16,7 @@ __all__ = [
     "CHECKPOINT_SCHEMA_VERSION",
     "batched_predict_samples",
     "build_training_checkpoint",
+    "capture_rng_state",
     "load_training_checkpoint",
     "load_warm_start_state",
     "restore_rng_state",

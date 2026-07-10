@@ -19,7 +19,25 @@ def median_pairwise_distance(X: torch.Tensor) -> torch.Tensor:
 
 
 class RBFKernel(nn.Module):
-    """Squared-exponential kernel with scalar or ARD lengthscale."""
+    """Squared-exponential kernel with scalar or ARD lengthscale.
+
+    Parameters
+    ----------
+    input_dim : int
+        Number of input dimensions.
+    lengthscale : float or torch.Tensor, default=1.0
+        Initial positive lengthscale.
+    outputscale : float or torch.Tensor, default=1.0
+        Initial positive kernel variance.
+    ard : bool, default=True
+        Whether to use one lengthscale per input dimension.
+    learn_kernel : bool, default=True
+        Whether kernel parameters receive gradients.
+    device : torch.device or str, optional
+        Parameter device.
+    dtype : torch.dtype, optional
+        Parameter data type.
+    """
 
     def __init__(
         self,
@@ -64,12 +82,38 @@ class RBFKernel(nn.Module):
         return self.log_outputscale.exp().clamp_min(1e-12)
 
     def forward(self, X1: torch.Tensor, X2: torch.Tensor) -> torch.Tensor:
+        """Evaluate the covariance matrix between two input sets.
+
+        Parameters
+        ----------
+        X1 : torch.Tensor
+            First inputs with shape ``[N, input_dim]``.
+        X2 : torch.Tensor
+            Second inputs with shape ``[M, input_dim]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Covariance matrix with shape ``[N, M]``.
+        """
         X1_scaled = X1 / self.lengthscale
         X2_scaled = X2 / self.lengthscale
         sqdist = torch.cdist(X1_scaled, X2_scaled).square()
         return self.outputscale * torch.exp(-0.5 * sqdist)
 
     def diag(self, X: torch.Tensor) -> torch.Tensor:
+        """Evaluate the covariance diagonal.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Marginal variances with shape ``[N]``.
+        """
         return self.outputscale.expand(X.shape[0])
 
 

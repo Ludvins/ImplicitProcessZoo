@@ -48,7 +48,7 @@ class GenerativeFunction(torch.nn.Module):
         self.dtype = dtype
 
     def freeze_parameters(self):
-        """Makes the model parameters non-trainable."""
+        """Make all model parameters non-trainable."""
         for param in self.parameters():
             param.requires_grad = False
 
@@ -67,7 +67,29 @@ class GenerativeFunction(torch.nn.Module):
 
 @preserve_constructor_rng
 class BayesLinear(GenerativeFunction):
-    """Gaussian-weight Bayesian linear layer producing coherent samples."""
+    """Generate coherent samples from a Gaussian-weight linear layer.
+
+    Parameters
+    ----------
+    num_samples : int
+        Number of weight samples evaluated in parallel.
+    input_dim : int
+        Number of input features.
+    output_dim : int
+        Number of output features.
+    device : torch.device or str or None, default=None
+        Device used for parameters and random samples.
+    fix_random_noise : bool, default=True
+        Whether repeated calls reuse the same sampled weight noise.
+    zero_mean_prior : bool, default=False
+        Whether weight and bias means are fixed at zero.
+    weight_log_sigma_init : float, default=0.0
+        Initial log standard deviation for weights and biases.
+    seed : int, default=0
+        Random seed for the layer-owned sampler.
+    dtype : torch.dtype, default=torch.float64
+        Floating-point dtype used by parameters and samples.
+    """
 
     def __init__(
         self,
@@ -156,6 +178,20 @@ class BayesLinear(GenerativeFunction):
             self.noise = self.get_noise(first_call=True)
 
     def get_noise(self, first_call=False):
+        """Return Gaussian weight and bias noise.
+
+        Parameters
+        ----------
+        first_call : bool, default=False
+            Force creation of the initial cached noise when noise is fixed.
+
+        Returns
+        -------
+        weight_noise : torch.Tensor
+            Weight noise with shape ``[S, input_dim, output_dim]``.
+        bias_noise : torch.Tensor
+            Bias noise with shape ``[S, 1, output_dim]``.
+        """
         if self.fix_random_noise and not first_call:
             return self.noise
         else:
@@ -170,14 +206,22 @@ class BayesLinear(GenerativeFunction):
             return (z_w, z_b)
 
     def forward(self, inputs):
-        """Forwards the given input through the Bayesian Linear layer.
+        """Propagate inputs through sampled weights and biases.
 
-        Arguments
-        ---------
+        Parameters
+        ----------
+        inputs : torch.Tensor
+            Input tensor with shape ``[S, N, input_dim]``.
 
-        inputs : torch tensor of shape (S, N, D)
-                 Input tensor where the last two dimensions are batch and
-                 data dimensionality.
+        Returns
+        -------
+        torch.Tensor
+            Layer outputs with shape ``[S, N, output_dim]``.
+
+        Raises
+        ------
+        RuntimeError
+            If the final input dimension differs from ``input_dim``.
         """
         if inputs.shape[-1] != self.input_dim:
             raise RuntimeError("Input shape does not match stored data dimension")
@@ -188,14 +232,12 @@ class BayesLinear(GenerativeFunction):
         return inputs @ w + b
 
     def KL(self):
-        """
-        Computes the KL divergence of w and b to their prior distribution,
-        a standard Gaussian N(0, I).
+        """Compute the weight-and-bias KL to a standard Gaussian prior.
 
         Returns
         -------
-        KL : int
-             The addition of the 2 KL terms computed
+        torch.Tensor
+            Scalar analytic KL divergence.
         """
         # Compute covariance diagonal matrixes
         w_Sigma = torch.square(torch.exp(self.weight_log_sigma))
@@ -217,6 +259,13 @@ class BayesLinear(GenerativeFunction):
         return KL / 2
 
     def regularizer(self):
+        """Return the analytic weight-space KL regularizer.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar KL divergence.
+        """
         return self.KL()
 
 
@@ -284,7 +333,37 @@ class SimplerBayesLinear(BayesLinear):
 
 @preserve_constructor_rng
 class BayesianNN(GenerativeFunction):
-    """Multilayer Bayesian neural-network prior function generator."""
+    """Generate coherent functions with a multilayer Bayesian network.
+
+    Parameters
+    ----------
+    structure : list of int
+        Hidden-layer widths in forward order.
+    activation : collections.abc.Callable
+        Activation applied after every hidden layer.
+    num_samples : int
+        Number of weight samples evaluated in parallel.
+    input_dim : int
+        Number of input features.
+    output_dim : int
+        Number of output features.
+    layer_model : type
+        Bayesian layer class used to construct each affine layer.
+    dropout : float, default=0.0
+        Hidden-activation dropout probability.
+    seed : int, default=2147483647
+        Random seed passed to the Bayesian layers.
+    fix_random_noise : bool, default=True
+        Whether repeated calls reuse the same sampled weights.
+    zero_mean_prior : bool, default=False
+        Whether layer means are fixed at zero.
+    weight_log_sigma_init : float, default=0.0
+        Initial log standard deviation for layer weights and biases.
+    device : torch.device or str or None, default=None
+        Device used for parameters and samples.
+    dtype : torch.dtype, default=torch.float64
+        Floating-point dtype used by parameters and samples.
+    """
 
     def __init__(
         self,
@@ -378,19 +457,17 @@ class BayesianNN(GenerativeFunction):
         self.layers = torch.nn.ModuleList(layers)
 
     def forward(self, inputs):
-        """Forward pass over each inner layer, activation is applied on every
-        but the last level.
+        """Evaluate all sampled networks at inputs.
 
         Parameters
         ----------
-        inputs : torch tensor of shape (N, D)
-                 Contains the minibatch of N points with dimensionality D.
+        inputs : torch.Tensor
+            Input tensor with shape ``[N, input_dim]``.
 
         Returns
         -------
-        samples : torch tensor of shape (num_samples, N, D)
-                  All the results of propagaring the input
-                  num_samples times over the BNN.
+        torch.Tensor
+            Function samples with shape ``[num_samples, N, output_dim]``.
         """
 
         # Replicate the input on the first dimension as many times as
@@ -410,11 +487,23 @@ class BayesianNN(GenerativeFunction):
         return self.layers[-1](x)
 
     def KL(self):
-        """Computes the Kl divergence of the model as the addition of the
-        KL divergences of its sub-models."""
+        """Compute the sum of layerwise weight-space KL divergences.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar analytic KL divergence.
+        """
         return torch.stack([layer.KL() for layer in self.layers]).sum()
 
     def regularizer(self):
+        """Return the analytic weight-space KL regularizer.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar KL divergence.
+        """
         return self.KL()
 
 
@@ -1182,11 +1271,17 @@ class GP(GenerativeFunction):
 
         Parameters
         ----------
-        inputs : torch tensor of shape (..., N, D)
+        inputs : torch.Tensor
+            Inputs with shape ``[..., N, input_dim]``.
         num_samples : int, optional
             Number of prior samples. Defaults to ``self.num_samples`` so
             this generative function is a drop-in replacement for
             ``BayesianNN(x)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Approximate GP samples with shape ``[S, N, output_dim]``.
         """
         if num_samples is None:
             num_samples = self.num_samples

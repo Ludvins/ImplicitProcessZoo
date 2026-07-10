@@ -79,6 +79,12 @@ class CoherentPriorFunctionSampler:
     supports this repository's BayesianNN-style priors by snapshotting each
     stochastic layer's weight-noise tensors and replaying them for every input
     set evaluation.
+
+    Parameters
+    ----------
+    prior : torch.nn.Module
+        Prior supporting latent replay, sampled callables, or repository-style
+        stochastic layers.
     """
 
     def __init__(self, prior: nn.Module):
@@ -107,6 +113,26 @@ class CoherentPriorFunctionSampler:
             self.stochastic_modules = modules
 
     def sample_latents(self, num_samples: int, seed: int | None = None):
+        """Sample reusable latent states for coherent functions.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of coherent functions to represent.
+        seed : int or None, default=None
+            Optional deterministic sampling seed.
+
+        Returns
+        -------
+        object
+            Prior-specific latent representation accepted by
+            :meth:`evaluate_latents`.
+
+        Raises
+        ------
+        ValueError
+            If ``num_samples`` is not positive.
+        """
         num_samples = int(num_samples)
         if num_samples <= 0:
             raise ValueError("num_samples must be positive.")
@@ -151,6 +177,20 @@ class CoherentPriorFunctionSampler:
         return ModuleNoiseLatents(num_samples=num_samples, module_noises=module_noises)
 
     def evaluate_latents(self, latents, X: torch.Tensor) -> torch.Tensor:
+        """Evaluate reusable latent states at an input tensor.
+
+        Parameters
+        ----------
+        latents : object
+            Value returned by :meth:`sample_latents`.
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Coherent function values with shape ``[S, N]`` or ``[S, N, D]``.
+        """
         if self.mode == "latents":
             values = self.prior.evaluate_latents(latents, X)
             return _normalize_prior_output(values)
@@ -201,12 +241,43 @@ class CoherentPriorFunctionSampler:
         num_samples: int,
         seed: int | None = None,
     ) -> torch.Tensor:
+        """Sample coherent functions and evaluate them at inputs.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of coherent functions to sample.
+        seed : int or None, default=None
+            Optional deterministic sampling seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Function values with shape ``[S, N]`` or ``[S, N, D]``.
+        """
         latents = self.sample_latents(num_samples, seed=seed)
         return self.evaluate_latents(latents, X)
 
 
 class PriorFunctionBank:
-    """Fixed bank of coherent prior functions used for empirical statistics."""
+    """Store a fixed bank of coherent prior functions.
+
+    Parameters
+    ----------
+    prior : torch.nn.Module
+        Prior function generator.
+    num_bank_samples : int
+        Number of coherent prior functions in the bank.
+    seed : int or None, default=None
+        Optional deterministic bank seed.
+    detach : bool, default=True
+        Whether to detach evaluated values from autograd.
+    detach_prior_grad : bool, default=False
+        Whether to temporarily disable prior-parameter gradients while
+        evaluating the bank.
+    """
 
     def __init__(
         self,
@@ -224,6 +295,18 @@ class PriorFunctionBank:
         self.latents = self.sampler.sample_latents(self.num_bank_samples, seed=seed)
 
     def evaluate(self, X: torch.Tensor) -> torch.Tensor:
+        """Evaluate every stored prior function at inputs.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Bank values with shape ``[S, N]`` or ``[S, N, D]``.
+        """
         if self.detach_prior_grad:
             with _temporarily_disable_parameter_grads(self.prior):
                 values = self.sampler.evaluate_latents(self.latents, X)

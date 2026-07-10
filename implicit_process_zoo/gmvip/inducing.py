@@ -7,6 +7,29 @@ def initialize_inducing_points(
     method: str = "kmeans",
     seed: int | None = None,
 ) -> torch.Tensor:
+    """Select inducing inputs from training data.
+
+    Parameters
+    ----------
+    X_train : torch.Tensor
+        Training inputs with shape ``[N, D]``.
+    num_inducing : int
+        Number of inducing inputs.
+    method : {"kmeans", "random_subset", "grid_1d", "train_quantiles"}
+        Selection strategy.
+    seed : int, optional
+        Local seed for stochastic strategies.
+
+    Returns
+    -------
+    torch.Tensor
+        Inducing inputs with shape ``[num_inducing, D]``.
+
+    Raises
+    ------
+    ValueError
+        If shapes, counts, or the requested method are invalid.
+    """
     if X_train.ndim != 2:
         raise ValueError("X_train must have shape [N, D].")
     if num_inducing <= 0:

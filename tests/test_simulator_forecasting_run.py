@@ -35,6 +35,24 @@ def test_sip_prior_adapter_fresh_draws_change_between_calls():
     assert torch.allclose(fixed_first, fixed_second)
 
 
+def test_damped_oscillator_trajectory_cache_uses_tensor_identity(monkeypatch):
+    t = torch.linspace(0.0, 1.0, 11, dtype=torch.float64)
+    base = DampedOscillatorPrior(
+        t, y_mean=0.0, y_std=1.0, num_samples=3, seed=11, integration_dt=0.1
+    )
+    first_latents = base.sample_latents(3, seed=5, cache=False)
+    second_latents = base.sample_latents(3, seed=6, cache=False)
+
+    # Model allocator reuse deterministically: the old implementation treated
+    # an equal cache key as proof that two distinct tensors were the same draw.
+    monkeypatch.setattr(base, "_cache_key", lambda _theta: ("reused-storage",))
+    first = base._trajectory_grid(first_latents)
+    second = base._trajectory_grid(second_latents)
+
+    assert base._grid_cache_source is second_latents
+    assert not torch.allclose(first, second)
+
+
 def test_build_train_predict_smoke_methods(tmp_path):
     generate_dataset(tmp_path, n_targets=1, n_prior=8, n_test=31, t_max=30.0, seed=0)
     config = copy.deepcopy(SMOKE_SIMULATOR_FORECASTING_CONFIG)

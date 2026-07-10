@@ -15,7 +15,33 @@ from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 @preserve_constructor_rng
 class MFVI(torch.nn.Module):
-    """Mean-field Gaussian weight-space variational inference baseline."""
+    """Mean-field Gaussian weight-space variational inference baseline.
+
+    Parameters
+    ----------
+    generative_function : torch.nn.Module
+        Bayesian network whose weight distribution defines the posterior.
+    output_dim : int
+        Number of model outputs.
+    likelihood : {"regression", "binary", "multiclass"}
+        Observation model.
+    num_data : int
+        Number of observations in the complete training set.
+    num_samples : int, default=10
+        Monte Carlo samples per training step.
+    bb_alpha : float, default=0
+        BB-alpha value; zero selects the ELBO.
+    y_mean : float or torch.Tensor, default=0.0
+        Target mean used for regression denormalization.
+    y_std : float or torch.Tensor, default=1.0
+        Target standard deviation used for regression denormalization.
+    num_classes : int, optional
+        Number of classes for a multiclass likelihood.
+    device : torch.device or str, optional
+        Computation device.
+    dtype : torch.dtype, default=torch.float64
+        Computation data type.
+    """
 
     def __init__(
         self,
@@ -113,28 +139,44 @@ class MFVI(torch.nn.Module):
                 module.noise = module.get_noise(first_call=True)
 
     def predict_f_samples(self, X, num_samples, *, seed=None):
-        """
-        Sample latent function values from the BNN posterior.
+        """Sample latent function values from the BNN posterior.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of posterior samples.
+        seed : int, optional
+            Local random seed.
 
         Returns
         -------
-        F : [S, N, D]
+        torch.Tensor
+            Function samples with shape ``[S, N, D]``.
         """
         self._set_num_samples(num_samples)
         with temporary_generator_seed(self, seed), fork_torch_rng(seed):
             return self.generative_function(X)
 
     def predict_y_samples(self, X, num_samples, *, seed=None):
-        """
-        Sample from the predictive distribution p(y | x).
+        """Sample from the predictive observation distribution.
 
-        Regression: F + eps, eps ~ N(0, sigma2)
-        Binary: inv_probit(F) (probability samples)
-        Multiclass: F (raw logits — matches TFSVI; downstream metrics softmax)
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of predictive samples.
+        seed : int, optional
+            Local random seed.
 
         Returns
         -------
-        Y : [S, N, D]
+        torch.Tensor
+            Samples with shape ``[S, N, D]``. Regression returns noisy
+            targets, binary classification returns probabilities, and
+            multiclass classification returns logits.
         """
         with temporary_generator_seed(self, seed), fork_torch_rng(seed):
             F = self.predict_f_samples(X, num_samples)
@@ -227,30 +269,31 @@ class MFVI(torch.nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
-        """
-        Train the model.
+        """Train the model.
 
         Parameters
         ----------
-        train_loader : DataLoader
-        optimizer : torch.optim.Optimizer or None
-            If None, creates Adam with the given lr.
-        lr : float
-            Learning rate (used only if optimizer is None).
-        epochs : int or None
-            Number of epochs. Exactly one of epochs/iterations must be set.
-        iterations : int or None
-            Number of gradient steps.
-        use_tqdm : bool
-        return_loss : bool
-        cosine_annealing : bool
-            If True, use CosineAnnealingLR with T_max=epochs, stepped once
-            per epoch. When using iterations, T_max is the number of
-            effective epochs (iterations // len(train_loader)).
+        train_loader : torch.utils.data.DataLoader
+            Minibatches of input and target tensors.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer to use; defaults to Adam.
+        lr : float, default=0.001
+            Learning rate used when creating the default optimizer.
+        epochs : int, optional
+            Number of complete training epochs.
+        iterations : int, optional
+            Number of optimizer steps. Mutually exclusive with ``epochs``.
+        use_tqdm : bool, default=False
+            Whether to display a progress bar.
+        return_loss : bool, default=False
+            Whether to return the per-step loss history.
+        cosine_annealing : bool, default=False
+            Whether to use cosine learning-rate annealing.
 
         Returns
         -------
-        losses : list of float (if return_loss=True)
+        list of float or None
+            Loss history when ``return_loss`` is true, otherwise ``None``.
         """
         validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:

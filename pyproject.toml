@@ -44,6 +44,7 @@ tracking = ["wandb>=0.19"]
 docs = [
   "mkdocs-material>=9.6",
   "mkdocstrings[python]>=0.29",
+  "numpydoc>=1.10",
 ]
 test = [
   "build>=1.2",

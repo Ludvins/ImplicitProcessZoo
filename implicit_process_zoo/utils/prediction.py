@@ -23,6 +23,36 @@ def batched_predict_samples(
     Models follow the ``[samples, observations, outputs]`` contract. The
     same optional seed is passed to every batch so pathwise models can reuse
     the same sampled function across uneven minibatches.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Model implementing ``predict_f_samples`` and/or ``predict_y_samples``.
+    batches : collections.abc.Iterable
+        Iterable yielding input tensors or ``(inputs, targets)`` batches.
+    num_samples : int
+        Number of samples to request from every batch.
+    kind : {"f", "y"}, default="y"
+        Select latent-function samples (``"f"``) or observation samples
+        (``"y"``).
+    device : torch.device or str or None, default=None
+        Device to which each input batch is moved. If ``None``, preserve the
+        batch device.
+    seed : int or None, default=None
+        Temporary prediction seed passed unchanged to every batch.
+
+    Returns
+    -------
+    torch.Tensor
+        CPU tensor with shape ``[num_samples, observations, outputs]``.
+
+    Raises
+    ------
+    ValueError
+        If the sample count is nonpositive, no batches are supplied, or a
+        model returns a tensor that violates the sample-first contract.
+    TypeError
+        If the selected prediction method is not implemented by ``model``.
     """
     if int(num_samples) <= 0:
         raise ValueError("num_samples must be positive.")

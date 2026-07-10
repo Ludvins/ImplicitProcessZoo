@@ -380,28 +380,44 @@ class FBNN(torch.nn.Module):
     # ------------------------------------------------------------------
 
     def predict_f_samples(self, X, num_samples, *, seed=None):
-        """
-        Sample latent function values from the posterior BNN.
+        """Sample latent function values from the posterior BNN.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of posterior samples.
+        seed : int, optional
+            Local random seed.
 
         Returns
         -------
-        F : [S, N, D]
+        torch.Tensor
+            Function samples with shape ``[S, N, D]``.
         """
         self._set_num_samples(num_samples)
         with temporary_generator_seed(self, seed), fork_torch_rng(seed):
             return self.generative_function(X)
 
     def predict_y_samples(self, X, num_samples, *, seed=None):
-        """
-        Sample from the predictive distribution p(y | x).
+        """Sample from the predictive observation distribution.
 
-        Regression: F + eps, eps ~ N(0, sigma2)
-        Binary: inv_probit(F) (probability samples)
-        Multiclass: F (raw logits — matches TFSVI; downstream metrics softmax)
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of predictive samples.
+        seed : int, optional
+            Local random seed.
 
         Returns
         -------
-        Y : [S, N, D]
+        torch.Tensor
+            Samples with shape ``[S, N, D]``. Regression returns noisy
+            targets, binary classification returns probabilities, and
+            multiclass classification returns logits.
         """
         with temporary_generator_seed(self, seed), fork_torch_rng(seed):
             F = self.predict_f_samples(X, num_samples)
@@ -753,19 +769,31 @@ class FBNN(torch.nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
-        """
-        Train the model.
+        """Train the model.
 
         Parameters
         ----------
-        train_loader : DataLoader
-        optimizer : torch.optim.Optimizer or None
-        lr : float
-        epochs : int or None
-        iterations : int or None
-        use_tqdm : bool
-        return_loss : bool
-        cosine_annealing : bool
+        train_loader : torch.utils.data.DataLoader
+            Minibatches of input and target tensors.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer to use; defaults to Adam.
+        lr : float, default=0.001
+            Learning rate used when creating the default optimizer.
+        epochs : int, optional
+            Number of complete training epochs.
+        iterations : int, optional
+            Number of optimizer steps. Mutually exclusive with ``epochs``.
+        use_tqdm : bool, default=False
+            Whether to display a progress bar.
+        return_loss : bool, default=False
+            Whether to return the per-step loss history.
+        cosine_annealing : bool, default=False
+            Whether to use cosine learning-rate annealing.
+
+        Returns
+        -------
+        list of float or None
+            Loss history when ``return_loss`` is true, otherwise ``None``.
         """
         validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:

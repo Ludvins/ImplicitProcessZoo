@@ -26,6 +26,23 @@ class SplineCouplingLayer(nn.Module):
     Identity on the first half ``z1``; the second half ``z2`` is transformed
     element-wise by a rational-quadratic spline whose parameters are predicted
     from ``z1`` by a small MLP.
+
+    Parameters
+    ----------
+    input_dim : int
+        Number of coefficient dimensions.
+    num_bins : int, default=8
+        Number of rational-quadratic spline bins.
+    B : float, default=3.0
+        Half-width of the spline interval; tails are the identity.
+    device : torch.device or str or None, default=None
+        Device used for neural-network parameters.
+    dtype : torch.dtype or None, default=None
+        Floating-point dtype used for neural-network parameters.
+    init_scale : float, default=1e-3
+        Standard deviation of final-layer weights.
+    hidden_dim : int or None, default=None
+        Hidden width. Defaults to twice ``input_dim``.
     """
 
     def __init__(
@@ -80,6 +97,20 @@ class SplineCouplingLayer(nn.Module):
         return widths, heights, derivatives
 
     def forward(self, a):
+        """Transform one coefficient block with conditional splines.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            Coefficients with shape ``[S, input_dim]``.
+
+        Returns
+        -------
+        transformed : torch.Tensor
+            Spline-transformed coefficients with the same shape as ``a``.
+        log_abs_det : torch.Tensor
+            Per-sample forward log absolute Jacobian determinant.
+        """
         z1 = a[..., : self.d_half]
         z2 = a[..., self.d_half :]
         w, h, d = self._spline_params(z1)  # (N, d_out, *)
@@ -107,8 +138,29 @@ class SplineCouplingLayer(nn.Module):
 class SplineCouplingFlow(nn.Module):
     """Stack of RQ-spline coupling layers with bit-reversal between them.
 
-    Signature matches :class:`implicit_process_zoo.flows.flows.CouplingFlow` (plus optional
-    ``num_bins`` / ``B``). Returns ``(out, -LDJ)``.
+    The signature matches :class:`implicit_process_zoo.flows.flows.CouplingFlow`
+    with spline-specific options.
+
+    Parameters
+    ----------
+    depth : int
+        Number of spline coupling layers.
+    input_dim : int
+        Number of coefficient dimensions.
+    device : torch.device or str
+        Device used for parameters and the owned generator.
+    dtype : torch.dtype
+        Floating-point dtype used for parameters.
+    seed : int
+        Seed for deterministic initialization and sampling state.
+    init_scale : float, default=1e-3
+        Standard deviation of final-layer weights.
+    num_bins : int, default=8
+        Number of rational-quadratic spline bins.
+    B : float, default=3.0
+        Half-width of the spline interval.
+    hidden_dim : int or None, default=None
+        Hidden width for the coupling networks.
     """
 
     def __init__(
@@ -153,7 +205,17 @@ class SplineCouplingFlow(nn.Module):
         self._modules["affine"] = None
 
     def set_affine(self, shift, L_flat, learnable=False):
-        """Attach an affine pre-transform (used by FTIP's warm-start from VIP)."""
+        """Attach the affine pre-transform used by VIP warm starts.
+
+        Parameters
+        ----------
+        shift : torch.Tensor
+            Shift vector with shape ``[input_dim]``.
+        L_flat : torch.Tensor
+            Flattened lower triangle of the affine factor.
+        learnable : bool, default=False
+            Whether to optimize the affine parameters.
+        """
         self.affine = AffineLayer(
             self.input_dim,
             self.device,
@@ -168,6 +230,20 @@ class SplineCouplingFlow(nn.Module):
             self.affine.L_flat.copy_(L_flat.detach())
 
     def forward(self, a):
+        """Transform coefficients through all spline coupling layers.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            Base coefficients with shape ``[S, input_dim]``.
+
+        Returns
+        -------
+        transformed : torch.Tensor
+            Flow-transformed coefficients with shape ``[S, input_dim]``.
+        negative_log_det : torch.Tensor
+            Negative forward log-Jacobian determinant expected by FTIP.
+        """
         LDJ = torch.zeros(a.shape[0], dtype=a.dtype, device=a.device)
         if self.affine is not None:
             a, ldj = self.affine(a)

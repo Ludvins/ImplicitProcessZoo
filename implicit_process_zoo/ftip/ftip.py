@@ -196,7 +196,22 @@ class FTIP(torch.nn.Module):
         return posterior_samples, f
 
     def predict_f_samples(self, x, num_samples, *, seed=None):
-        """Return latent samples with shape ``[samples, observations, outputs]``."""
+        """Draw latent function samples.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of posterior samples.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Function samples with shape ``[S, N, D]``.
+        """
         with temporary_generator_seed(self, seed):
             return self.predict_f(x, int(num_samples))[0]
 
@@ -386,7 +401,23 @@ class FTIP(torch.nn.Module):
         return self.predict_f(predict_at, S)[0]
 
     def predict_y_samples(self, x, num_samples, *, seed=None):
-        """Return likelihood samples with shape ``[samples, observations, outputs]``."""
+        """Draw predictive observation samples.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of predictive samples.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Observation samples or classification logits with shape
+            ``[S, N, D]``.
+        """
         with temporary_generator_seed(self, seed):
             samples = self.predict_f(x, int(num_samples))[0]
             if self.likelihood_type == "regression":
@@ -417,30 +448,31 @@ class FTIP(torch.nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
-        """
-        Train the model.
+        """Train the model.
 
         Parameters
         ----------
-        train_loader : DataLoader
-        optimizer : torch.optim.Optimizer or None
-            If None, creates Adam with the given lr.
-        lr : float
-            Learning rate (used only if optimizer is None).
-        epochs : int or None
-            Number of epochs. Exactly one of epochs/iterations must be set.
-        iterations : int or None
-            Number of gradient steps.
-        use_tqdm : bool
-        return_loss : bool
-        cosine_annealing : bool
-            If True, use CosineAnnealingLR with T_max=epochs, stepped once
-            per epoch. When using iterations, T_max is the number of
-            effective epochs (iterations // len(train_loader)).
+        train_loader : torch.utils.data.DataLoader
+            Minibatches of input and target tensors.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer to use; defaults to Adam.
+        lr : float, default=0.001
+            Learning rate used when creating the default optimizer.
+        epochs : int, optional
+            Number of complete training epochs.
+        iterations : int, optional
+            Number of optimizer steps. Mutually exclusive with ``epochs``.
+        use_tqdm : bool, default=False
+            Whether to display a progress bar.
+        return_loss : bool, default=False
+            Whether to return the per-step loss history.
+        cosine_annealing : bool, default=False
+            Whether to use cosine learning-rate annealing.
 
         Returns
         -------
-        losses : list of float (if return_loss=True)
+        list of float or None
+            Loss history when ``return_loss`` is true, otherwise ``None``.
         """
         validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
@@ -833,7 +865,22 @@ class UnifiedFTIP(torch.nn.Module):
         return posterior_samples, f
 
     def predict_f_samples(self, x, num_samples, *, seed=None):
-        """Return flow-phase latent samples using the common sample-first API."""
+        """Draw latent samples from the active training phase.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of posterior samples.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Function samples with shape ``[S, N, D]``.
+        """
         with temporary_generator_seed(self, seed):
             if self.phase == "warmup":
                 mean, variance = self.predict_f_gaussian(x)
@@ -850,7 +897,23 @@ class UnifiedFTIP(torch.nn.Module):
             return self.predict_f(x, int(num_samples))[0]
 
     def predict_y_samples(self, x, num_samples, *, seed=None):
-        """Return likelihood samples using the common sample-first API."""
+        """Draw predictive observation samples.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of predictive samples.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Observation samples or classification logits with shape
+            ``[S, N, D]``.
+        """
         with temporary_generator_seed(self, seed):
             values = self.predict_f_samples(x, int(num_samples))
             if self.likelihood_type == "regression":
@@ -1050,17 +1113,27 @@ class UnifiedFTIP(torch.nn.Module):
 
         Parameters
         ----------
-        train_loader : DataLoader
-        warmup_epochs : int
+        train_loader : torch.utils.data.DataLoader
+            Minibatches of input and target tensors.
+        warmup_epochs : int, optional
             Epochs for Phase 1 (Gaussian warmup).
-        warmup_lr : float
+        warmup_lr : float, default=1e-3
             Learning rate for Phase 1.
-        flow_epochs : int
+        flow_epochs : int, optional
             Epochs for Phase 2 (flow fine-tuning).
-        flow_lr : float
+        flow_lr : float, default=1e-4
             Learning rate for Phase 2.
-        cosine_annealing : bool
+        cosine_annealing : bool, default=True
             Use cosine annealing in both phases.
+        use_tqdm : bool, default=False
+            Whether to display progress bars.
+        return_loss : bool, default=False
+            Whether to return the per-step loss history.
+
+        Returns
+        -------
+        list of float
+            Per-step losses when requested, otherwise an empty list.
         """
         losses = []
 

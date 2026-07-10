@@ -246,8 +246,7 @@ class TFSVI(nn.Module):
     # ------------------------------------------------------------------
 
     def predict_f_samples(self, X, num_samples, *, seed=None):
-        """
-        Sample latent function values from the variational posterior.
+        """Sample latent functions from the variational posterior.
 
         Samples theta_s ~ q(theta) via reparameterization and computes
         f(X; theta_s) for each sample.  The S parameter samples are
@@ -257,15 +256,17 @@ class TFSVI(nn.Module):
 
         Parameters
         ----------
-        X : [N, D_in]
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
         num_samples : int
             Number of Monte Carlo parameter samples.
-        seed : int or None
-            Optional temporary prediction seed.
+        seed : int, optional
+            Local prediction seed.
 
         Returns
         -------
-        F : [S, N, D]
+        torch.Tensor
+            Function samples with shape ``[S, N, D]``.
         """
         with temporary_generator_seed(self, seed), fork_torch_rng(seed):
             eps = torch.randn(
@@ -282,15 +283,22 @@ class TFSVI(nn.Module):
             )
 
     def predict_y_samples(self, X, num_samples, *, seed=None):
-        """
-        Predictive samples in y-space.
+        """Draw samples in observation space.
 
-        Regression: f + Gaussian noise.
-        Classification: logits (raw).
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of predictive samples.
+        seed : int, optional
+            Local prediction seed.
 
         Returns
         -------
-        Y : [S, N, D]
+        torch.Tensor
+            Samples with shape ``[S, N, D]``. Regression samples include
+            observation noise; classification samples are raw logits.
         """
         with temporary_generator_seed(self, seed), fork_torch_rng(seed):
             F = self.predict_f_samples(X, num_samples)
@@ -548,19 +556,31 @@ class TFSVI(nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
-        """
-        Train the model.
+        """Train the model.
 
         Parameters
         ----------
-        train_loader : DataLoader
-        optimizer : torch.optim.Optimizer or None
-        lr : float
-        epochs : int or None
-        iterations : int or None
-        use_tqdm : bool
-        return_loss : bool
-        cosine_annealing : bool
+        train_loader : torch.utils.data.DataLoader
+            Minibatches of input and target tensors.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer to use; defaults to Adam.
+        lr : float, default=0.001
+            Learning rate used when creating the default optimizer.
+        epochs : int, optional
+            Number of complete training epochs.
+        iterations : int, optional
+            Number of optimizer steps. Mutually exclusive with ``epochs``.
+        use_tqdm : bool, default=False
+            Whether to display a progress bar.
+        return_loss : bool, default=False
+            Whether to return the per-step loss history.
+        cosine_annealing : bool, default=False
+            Whether to use cosine learning-rate annealing.
+
+        Returns
+        -------
+        list of float or None
+            Loss history when ``return_loss`` is true, otherwise ``None``.
         """
         validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:

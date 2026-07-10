@@ -59,12 +59,39 @@ class BaseMatheronOperator(nn.Module):
         )
 
     def psi(self, X: torch.Tensor) -> torch.Tensor:
+        """Evaluate the inducing interpolation operator.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Query inputs with shape ``[N, D]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Interpolation weights with shape ``[N, M]``.
+        """
         raise NotImplementedError
 
     def inducing_mean(self) -> torch.Tensor:
+        """Return the prior mean at inducing inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            Inducing mean with shape ``[M]`` or ``[M, K]``.
+        """
         raise NotImplementedError
 
     def inducing_scale_matrix(self) -> torch.Tensor:
+        """Return the inducing covariance square root.
+
+        Returns
+        -------
+        torch.Tensor
+            Lower-triangular scale with shape ``[M, M]`` or
+            ``[K, M, M]``.
+        """
         raise NotImplementedError
 
     def mean_at(self, X: torch.Tensor) -> torch.Tensor:
@@ -134,6 +161,24 @@ class BaseMatheronOperator(nn.Module):
         g_Z: torch.Tensor,
         a: torch.Tensor,
     ) -> torch.Tensor:
+        """Apply a Matheron update to coherent prior samples.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Query inputs with shape ``[N, D]``.
+        g_X : torch.Tensor
+            Prior samples at ``X``.
+        g_Z : torch.Tensor
+            Matching prior samples at inducing inputs.
+        a : torch.Tensor
+            Whitened inducing coefficients.
+
+        Returns
+        -------
+        torch.Tensor
+            Updated function samples at ``X``.
+        """
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         a = a.to(dtype=self.Z.dtype, device=self.Z.device)
         u = self.whitened_to_inducing(a)
@@ -244,6 +289,18 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         return empirical_cross_cov(bank_X, bank_Z, mu_X, mu_Z)
 
     def psi(self, X: torch.Tensor) -> torch.Tensor:
+        """Estimate empirical interpolation weights.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Query inputs with shape ``[N, D]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Interpolation weights with shape ``[N, M]``.
+        """
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         if self.is_exact_inducing_input(X):
             return self._identity_psi()
@@ -262,18 +319,44 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         return psi
 
     def inducing_mean(self) -> torch.Tensor:
+        """Return the empirical inducing mean.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean with shape ``[M]`` or ``[M, K]``.
+        """
         if self.learn_Z or not self.detach_bank_values:
             _, mu_Z, _, _, _ = self._compute_Z_moments()
             return mu_Z
         return self.mu_Z
 
     def inducing_scale_matrix(self) -> torch.Tensor:
+        """Return the empirical inducing covariance square root.
+
+        Returns
+        -------
+        torch.Tensor
+            Cholesky factor with shape ``[M, M]`` or ``[K, M, M]``.
+        """
         if self.learn_Z or not self.detach_bank_values:
             _, _, _, _, L_ZZ = self._compute_Z_moments()
             return L_ZZ
         return self.L_ZZ
 
     def mean_at(self, X: torch.Tensor) -> torch.Tensor:
+        """Estimate the empirical prior mean at query inputs.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Query inputs with shape ``[N, D]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Prior means at the query inputs.
+        """
         return empirical_mean(self.bank.evaluate(X.to(dtype=self.Z.dtype, device=self.Z.device)))
 
 
@@ -452,12 +535,31 @@ class RBFCardinalMatheronOperator(BaseMatheronOperator):
         return not self.is_exact_inducing_input(X)
 
     def psi(self, X: torch.Tensor) -> torch.Tensor:
+        """Evaluate RBF cardinal interpolation weights.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Query inputs with shape ``[N, D]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Interpolation weights with shape ``[N, M]``.
+        """
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         if self.is_exact_inducing_input(X):
             return torch.eye(self.num_inducing, dtype=self.Z.dtype, device=self.Z.device)
         return self._psi_from_cholesky(X, self._L_ZZ())
 
     def inducing_mean(self) -> torch.Tensor:
+        """Return the configured prior mean at inducing inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean with shape ``[M]`` or ``[M, K]``.
+        """
         if (
             self.mean_mode == "prior_sample"
             and self.moment_bank is not None
@@ -473,6 +575,13 @@ class RBFCardinalMatheronOperator(BaseMatheronOperator):
         return self.mu_Z
 
     def inducing_scale_matrix(self) -> torch.Tensor:
+        """Return the configured inducing scale matrix.
+
+        Returns
+        -------
+        torch.Tensor
+            Scale matrix with shape ``[M, M]`` or ``[K, M, M]``.
+        """
         return self._inducing_scale_matrix()
 
     def apply(
@@ -514,6 +623,18 @@ class RBFCardinalMatheronOperator(BaseMatheronOperator):
         return b_X[:, None, :] + (u - b_Z[:, None, :]).matmul(psi.T)
 
     def mean_at(self, X: torch.Tensor) -> torch.Tensor:
+        """Evaluate the configured prior mean at query inputs.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Query inputs with shape ``[N, D]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Prior means at the query inputs.
+        """
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         if self.mean_mode == "zero":
             if self.mu_Z.ndim == 2:

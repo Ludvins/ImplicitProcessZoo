@@ -4,15 +4,19 @@ from ..utils.random import preserve_constructor_rng
 
 
 class AffineLayer(torch.nn.Module):
-    """Learnable (or fixed) affine transform: a = L @ eps + shift.
+    """Apply a learnable or fixed lower-triangular affine transform.
 
     Parameters
     ----------
     input_dim : int
         Dimensionality of the input.
-    device, dtype : torch device / dtype
-    learnable : bool
-        If False, shift and L_flat are registered as buffers (not trained).
+    device : torch.device or str or None
+        Device used for parameters and buffers.
+    dtype : torch.dtype
+        Floating-point dtype used for parameters and buffers.
+    learnable : bool, default=True
+        If false, register the shift and factor as buffers rather than
+        parameters.
     """
 
     def __init__(self, input_dim, device, dtype, learnable=True):
@@ -48,6 +52,20 @@ class AffineLayer(torch.nn.Module):
         )
 
     def forward(self, eps):
+        """Transform base samples and evaluate the log-Jacobian determinant.
+
+        Parameters
+        ----------
+        eps : torch.Tensor
+            Base samples with shape ``[..., input_dim]``.
+
+        Returns
+        -------
+        transformed : torch.Tensor
+            Affine-transformed samples with the same shape as ``eps``.
+        log_abs_det : torch.Tensor
+            Log absolute determinant for each leading sample.
+        """
         # Reconstruct L from flat triangular elements
         L = torch.zeros(
             self.input_dim,
@@ -67,7 +85,19 @@ class AffineLayer(torch.nn.Module):
 
 
 class CouplingLayer(torch.nn.Module):
-    """Single affine coupling transform with a near-identity initialization."""
+    """Apply one near-identity affine coupling transform.
+
+    Parameters
+    ----------
+    input_dim : int
+        Number of coefficient dimensions.
+    device : torch.device or str or None
+        Device used for neural-network parameters.
+    dtype : torch.dtype
+        Floating-point dtype used for neural-network parameters.
+    init_scale : float, default=1e-3
+        Standard deviation of the final-layer weight initialization.
+    """
 
     def __init__(self, input_dim, device, dtype, init_scale=1e-3):
         super().__init__()
@@ -86,6 +116,20 @@ class CouplingLayer(torch.nn.Module):
         self.nn[-1].bias.data.fill_(0)
 
     def forward(self, a):
+        """Transform the second coefficient block conditionally on the first.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            Coefficients with shape ``[..., input_dim]``.
+
+        Returns
+        -------
+        transformed : torch.Tensor
+            Coupling-transformed coefficients with the same shape as ``a``.
+        log_abs_det : torch.Tensor
+            Per-sample forward log absolute Jacobian determinant.
+        """
         z1 = a[..., : self.d_half]
         z2 = a[..., self.d_half :]
 
@@ -100,7 +144,23 @@ class CouplingLayer(torch.nn.Module):
 
 @preserve_constructor_rng
 class CouplingFlow(torch.nn.Module):
-    """Stack of affine coupling layers with optional affine pre-transform."""
+    """Stack affine coupling layers with an optional affine pre-transform.
+
+    Parameters
+    ----------
+    depth : int
+        Number of coupling layers.
+    input_dim : int
+        Number of coefficient dimensions.
+    device : torch.device or str
+        Device used for parameters and the owned generator.
+    dtype : torch.dtype
+        Floating-point dtype used for parameters.
+    seed : int
+        Seed for deterministic initialization and sampling state.
+    init_scale : float, default=1e-3
+        Standard deviation of each coupling network's final-layer weights.
+    """
 
     def __init__(self, depth, input_dim, device, dtype, seed, init_scale=1e-3):
         super().__init__()
@@ -124,14 +184,16 @@ class CouplingFlow(torch.nn.Module):
         self._modules["affine"] = None
 
     def set_affine(self, shift, L_flat, learnable=False):
-        """Attach an affine pre-transform: a = L @ eps + shift.
+        """Attach an affine coefficient pre-transform.
 
         Parameters
         ----------
-        shift : Tensor of shape (input_dim,)
-        L_flat : Tensor of shape (n_tril,) — lower-triangular elements of L.
-        learnable : bool
-            If False, the affine params are fixed buffers.
+        shift : torch.Tensor
+            Shift vector with shape ``[input_dim]``.
+        L_flat : torch.Tensor
+            Flattened lower triangle of the affine factor.
+        learnable : bool, default=False
+            Whether to optimize the affine parameters.
         """
         self.affine = AffineLayer(
             self.input_dim,
@@ -147,6 +209,20 @@ class CouplingFlow(torch.nn.Module):
             self.affine.L_flat.copy_(L_flat.detach())
 
     def forward(self, a):
+        """Transform coefficients through the complete coupling flow.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            Base coefficients with shape ``[S, input_dim]``.
+
+        Returns
+        -------
+        transformed : torch.Tensor
+            Flow-transformed coefficients with shape ``[S, input_dim]``.
+        negative_log_det : torch.Tensor
+            Negative forward log-Jacobian determinant expected by FTIP.
+        """
         LDJ = torch.zeros(a.shape[0], dtype=a.dtype, device=a.device)
         if self.affine is not None:
             a, ldj = self.affine(a)

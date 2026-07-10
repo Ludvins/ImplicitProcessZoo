@@ -12,7 +12,21 @@ from .utils import infinite_loader
 
 
 def validate_fit_mode(*, epochs: int | None, iterations: int | None) -> None:
-    """Require one, and only one, positive fit duration."""
+    """Require exactly one positive fit duration.
+
+    Parameters
+    ----------
+    epochs : int or None
+        Number of complete loader passes, or ``None`` for iteration mode.
+    iterations : int or None
+        Number of optimizer updates, or ``None`` for epoch mode.
+
+    Raises
+    ------
+    ValueError
+        If neither duration, both durations, or a nonpositive duration is
+        supplied.
+    """
     if (epochs is None) == (iterations is None):
         raise ValueError("Exactly one of epochs or iterations must be set.")
     value = epochs if epochs is not None else iterations
@@ -27,7 +41,24 @@ def make_cosine_scheduler(
     epochs: int | None,
     iterations: int | None,
 ) -> torch.optim.lr_scheduler.CosineAnnealingLR:
-    """Create the existing epoch-stepped cosine schedule safely."""
+    """Create an epoch-stepped cosine learning-rate schedule.
+
+    Parameters
+    ----------
+    optimizer : torch.optim.Optimizer
+        Optimizer whose learning rate is scheduled.
+    train_loader : collections.abc.Iterable
+        Finite training loader used to convert iterations into epochs.
+    epochs : int or None
+        Epoch duration when training in epoch mode.
+    iterations : int or None
+        Update duration when training in iteration mode.
+
+    Returns
+    -------
+    torch.optim.lr_scheduler.CosineAnnealingLR
+        Scheduler with a period of at least one effective epoch.
+    """
     validate_fit_mode(epochs=epochs, iterations=iterations)
     period = epochs if epochs is not None else max(1, int(iterations) // len(train_loader))
     return torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -58,7 +89,33 @@ def fit_loop(
     return_loss: bool,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> list[float]:
-    """Run a common fit loop around a model's ``_train_step`` hook."""
+    """Run the shared fit loop around a model training hook.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Model providing a ``_train_step(optimizer, inputs, target)`` method.
+    train_loader : collections.abc.Iterable
+        Finite iterable of ``(inputs, targets)`` batches.
+    optimizer : torch.optim.Optimizer
+        Optimizer updated by the model training hook.
+    epochs : int or None
+        Number of complete loader passes.
+    iterations : int or None
+        Number of optimizer updates.
+    use_tqdm : bool
+        Whether to display a progress bar.
+    return_loss : bool
+        Whether to retain the scalar loss from every update.
+    scheduler : torch.optim.lr_scheduler.LRScheduler or None, default=None
+        Optional scheduler stepped once per effective epoch.
+
+    Returns
+    -------
+    list of float
+        Per-update losses when ``return_loss`` is true; otherwise an empty
+        list.
+    """
     validate_fit_mode(epochs=epochs, iterations=iterations)
     ensure_module_generators(model)
     prepare = getattr(model, "_prepare_fit", None)

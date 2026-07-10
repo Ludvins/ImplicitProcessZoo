@@ -15,8 +15,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -30,6 +30,8 @@ jobs:
           for example in docs/examples/*.py; do
             python "$example"
           done
+      - name: Validate NumPy-style API docstrings
+        run: python scripts/validate_docstrings.py
       - run: mkdocs build --strict
       - name: Configure GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

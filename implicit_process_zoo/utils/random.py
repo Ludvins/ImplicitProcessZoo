@@ -41,6 +41,31 @@ def standard_normal_samples(
 
     With antithetic sampling, paired draws are emitted first and a final
     independent draw is appended when the requested count is odd.
+
+    Parameters
+    ----------
+    num_samples : int
+        Exact number of samples to return.
+    *sample_shape : int
+        Dimensions following the leading sample axis.
+    dtype : torch.dtype
+        Floating-point dtype of the returned tensor.
+    device : torch.device or str
+        Device on which samples are generated.
+    generator : torch.Generator or None, default=None
+        Optional generator controlling the draws.
+    antithetic : bool, default=False
+        Whether to emit positive/negative sample pairs.
+
+    Returns
+    -------
+    torch.Tensor
+        Standard-normal tensor with shape ``[num_samples, *sample_shape]``.
+
+    Raises
+    ------
+    ValueError
+        If ``num_samples`` is not positive.
     """
     num_samples = int(num_samples)
     if num_samples <= 0:

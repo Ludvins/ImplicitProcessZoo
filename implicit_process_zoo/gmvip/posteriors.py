@@ -143,6 +143,22 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         generator: torch.Generator | None = None,
         antithetic: bool = False,
     ) -> torch.Tensor:
+        """Draw reparameterized Gaussian coefficient samples.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples.
+        generator : torch.Generator, optional
+            Random generator.
+        antithetic : bool, default=False
+            Whether to pair samples with their negatives.
+
+        Returns
+        -------
+        torch.Tensor
+            Coefficients with shape ``[S, M]`` or ``[S, M, K]``.
+        """
         eps = _standard_normal_sample(
             num_samples,
             self.num_inducing * self.output_dim,
@@ -163,6 +179,26 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         generator: torch.Generator | None = None,
         antithetic: bool = False,
     ):
+        """Draw coefficients and return per-sample KL diagnostics.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples.
+        generator : torch.Generator, optional
+            Random generator.
+        antithetic : bool, default=False
+            Whether to pair samples with their negatives.
+
+        Returns
+        -------
+        torch.Tensor
+            Reparameterized coefficient samples.
+        torch.Tensor
+            KL divergence repeated for each sample.
+        dict of str to torch.Tensor
+            Posterior-scale diagnostics.
+        """
         samples = self.rsample(num_samples, generator=generator, antithetic=antithetic)
         kl = self.kl_to_standard_normal()
         diagnostics = {
@@ -177,6 +213,22 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         generator: torch.Generator | None = None,
         antithetic: bool = False,
     ) -> torch.Tensor:
+        """Draw standard-normal prior coefficients.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples.
+        generator : torch.Generator, optional
+            Random generator.
+        antithetic : bool, default=False
+            Whether to pair samples with their negatives.
+
+        Returns
+        -------
+        torch.Tensor
+            Prior coefficients with shape ``[S, M]`` or ``[S, M, K]``.
+        """
         samples = _standard_normal_sample(
             num_samples,
             self.num_inducing * self.output_dim,
@@ -190,6 +242,13 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         return samples.reshape(int(num_samples), self.output_dim, self.num_inducing).transpose(1, 2)
 
     def kl_to_standard_normal(self) -> torch.Tensor:
+        """Compute the analytic KL to a standard normal.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar KL divergence.
+        """
         scale_tril, log_diag = self._scale_tril_and_log_diag()
         trace_cov = scale_tril.square().sum()
         logdet_cov = 2.0 * log_diag.sum()
@@ -357,6 +416,22 @@ class RealNVPCoefficientPosterior(nn.Module):
         generator: torch.Generator | None = None,
         antithetic: bool = False,
     ) -> torch.Tensor:
+        """Draw reparameterized flow coefficient samples.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples.
+        generator : torch.Generator, optional
+            Random generator.
+        antithetic : bool, default=False
+            Whether to pair base samples with their negatives.
+
+        Returns
+        -------
+        torch.Tensor
+            Flow coefficients with shape ``[S, M]``.
+        """
         z = self._base_sample(num_samples, generator=generator, antithetic=antithetic)
         a, _ = self.forward_transform(z)
         return a
@@ -367,6 +442,26 @@ class RealNVPCoefficientPosterior(nn.Module):
         generator: torch.Generator | None = None,
         antithetic: bool = False,
     ):
+        """Draw flow coefficients and estimate per-sample KL terms.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples.
+        generator : torch.Generator, optional
+            Random generator.
+        antithetic : bool, default=False
+            Whether to pair base samples with their negatives.
+
+        Returns
+        -------
+        torch.Tensor
+            Flow coefficient samples.
+        torch.Tensor
+            Per-sample Monte Carlo KL terms.
+        dict of str to torch.Tensor
+            Flow and posterior diagnostics.
+        """
         z = self._base_sample(num_samples, generator=generator, antithetic=antithetic)
         a, forward_log_det = self.forward_transform(z)
         log_q = _standard_normal_log_prob(z).sum(dim=-1) - forward_log_det
@@ -386,9 +481,37 @@ class RealNVPCoefficientPosterior(nn.Module):
         generator: torch.Generator | None = None,
         antithetic: bool = False,
     ) -> torch.Tensor:
+        """Draw standard-normal prior coefficients.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples.
+        generator : torch.Generator, optional
+            Random generator.
+        antithetic : bool, default=False
+            Whether to pair samples with their negatives.
+
+        Returns
+        -------
+        torch.Tensor
+            Prior coefficients with shape ``[S, M]``.
+        """
         return self._base_sample(num_samples, generator=generator, antithetic=antithetic)
 
     def log_prob(self, a: torch.Tensor) -> torch.Tensor:
+        """Evaluate the flow posterior log density.
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            Coefficients with shape ``[..., M]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Log densities with shape ``a.shape[:-1]``.
+        """
         z, inverse_log_det = self.inverse_transform(a)
         return _standard_normal_log_prob(z).sum(dim=-1) + inverse_log_det
 
@@ -398,6 +521,22 @@ class RealNVPCoefficientPosterior(nn.Module):
         generator: torch.Generator | None = None,
         antithetic: bool = False,
     ) -> torch.Tensor:
+        """Estimate the KL to a standard normal prior.
+
+        Parameters
+        ----------
+        num_samples : int, optional
+            Monte Carlo sample count.
+        generator : torch.Generator, optional
+            Random generator.
+        antithetic : bool, default=False
+            Whether to use antithetic base samples.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar Monte Carlo KL estimate.
+        """
         _, kl_terms, _ = self.rsample_with_kl(
             int(num_samples or self.kl_num_samples),
             generator=generator,

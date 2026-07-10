@@ -532,7 +532,22 @@ class SIP(nn.Module):
     # ------------------------------------------------------------------
 
     def predict_f_samples(self, X, num_samples, *, seed=None):
-        """Draw latent sparse-conditional paths with shape ``[S, N, D]``."""
+        """Draw latent sparse-conditional paths.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of posterior paths.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Function samples with shape ``[S, N, D]``.
+        """
         if self.dtype != X.dtype:
             X = X.to(self.dtype)
         mX, mZ, KZZ, KXZ, _, KXX = self._estimate_prior_moments(X)
@@ -545,7 +560,23 @@ class SIP(nn.Module):
         return samples.mean(dim=0), samples.var(dim=0, unbiased=False)
 
     def predict_y_samples(self, X, num_samples, *, seed=None):
-        """Draw likelihood samples with shape ``[S, N, D]``."""
+        """Draw predictive observation samples.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of predictive samples.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Observation samples or classification logits with shape
+            ``[S, N, D]``.
+        """
         with temporary_generator_seed(self, seed), fork_torch_rng(seed):
             F_samples = self.predict_f_samples(X, num_samples)
             if self.likelihood_type == "regression":
@@ -589,7 +620,32 @@ class SIP(nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
-        """Fit SIP while running its critic hook before each primal step."""
+        """Fit SIP while updating its critic before each primal step.
+
+        Parameters
+        ----------
+        train_loader : torch.utils.data.DataLoader
+            Minibatches of input and target tensors.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer for variational parameters; defaults to Adam.
+        lr : float, default=0.001
+            Learning rate used when creating the default optimizer.
+        epochs : int, optional
+            Number of complete training epochs.
+        iterations : int, optional
+            Number of optimizer steps. Mutually exclusive with ``epochs``.
+        use_tqdm : bool, default=False
+            Whether to display a progress bar.
+        return_loss : bool, default=False
+            Whether to return the per-step loss history.
+        cosine_annealing : bool, default=False
+            Whether to use cosine learning-rate annealing.
+
+        Returns
+        -------
+        list of float or None
+            Loss history when ``return_loss`` is true, otherwise ``None``.
+        """
         validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam(self.vi_parameters(), lr=lr)

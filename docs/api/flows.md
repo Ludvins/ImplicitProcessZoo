@@ -1,5 +1,7 @@
 # Flows
 
+::: implicit_process_zoo.flows.rq_spline_forward
+
 ::: implicit_process_zoo.flows.flows.AffineLayer
 
 ::: implicit_process_zoo.flows.flows.CouplingLayer

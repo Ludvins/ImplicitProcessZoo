@@ -237,7 +237,22 @@ class VIP(torch.nn.Module):
             return Fmean.unsqueeze(0) + eps * std  # (S, N, D)
 
     def predict_f_samples(self, X, num_samples, *, seed=None):
-        """Draw coherent posterior paths with shape ``[S, N, D]``."""
+        """Draw coherent posterior function paths.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of posterior paths.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Function samples with shape ``[S, N, D]``.
+        """
         if self.dtype != X.dtype:
             X = X.to(self.dtype)
         with temporary_generator_seed(self, seed):
@@ -259,7 +274,23 @@ class VIP(torch.nn.Module):
             return torch.einsum("ind,aid->and", phi, coefficients) + mean.squeeze(0)
 
     def predict_y_samples(self, X, num_samples, *, seed=None):
-        """Draw likelihood samples with shape ``[S, N, D]``."""
+        """Draw predictive observation samples.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Inputs with shape ``[N, input_dim]``.
+        num_samples : int
+            Number of predictive samples.
+        seed : int, optional
+            Local random seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Observation samples or classification logits with shape
+            ``[S, N, D]``.
+        """
         with temporary_generator_seed(self, seed):
             values = self.predict_f_samples(X, int(num_samples))
             if self.likelihood_type == "regression":
@@ -411,30 +442,31 @@ class VIP(torch.nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
-        """
-        Train the model.
+        """Train the model.
 
         Parameters
         ----------
-        train_loader : DataLoader
-        optimizer : torch.optim.Optimizer or None
-            If None, creates Adam with the given lr.
-        lr : float
-            Learning rate (used only if optimizer is None).
-        epochs : int or None
-            Number of epochs. Exactly one of epochs/iterations must be set.
-        iterations : int or None
-            Number of gradient steps.
-        use_tqdm : bool
-        return_loss : bool
-        cosine_annealing : bool
-            If True, use CosineAnnealingLR with T_max=epochs, stepped once
-            per epoch. When using iterations, T_max is the number of
-            effective epochs (iterations // len(train_loader)).
+        train_loader : torch.utils.data.DataLoader
+            Minibatches of input and target tensors.
+        optimizer : torch.optim.Optimizer, optional
+            Optimizer to use; defaults to Adam.
+        lr : float, default=0.001
+            Learning rate used when creating the default optimizer.
+        epochs : int, optional
+            Number of complete training epochs.
+        iterations : int, optional
+            Number of optimizer steps. Mutually exclusive with ``epochs``.
+        use_tqdm : bool, default=False
+            Whether to display a progress bar.
+        return_loss : bool, default=False
+            Whether to return the per-step loss history.
+        cosine_annealing : bool, default=False
+            Whether to use cosine learning-rate annealing.
 
         Returns
         -------
-        losses : list of float (if return_loss=True)
+        list of float or None
+            Loss history when ``return_loss`` is true, otherwise ``None``.
         """
         validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:

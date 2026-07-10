@@ -80,6 +80,7 @@ class DampedOscillatorPrior(nn.Module):
         self._fixed_latents: torch.Tensor | None = None
         self._latent_cache: dict[tuple[int, int, bool], torch.Tensor] = {}
         self._grid_cache_key: tuple | None = None
+        self._grid_cache_source: torch.Tensor | None = None
         self._grid_cache_values: torch.Tensor | None = None
 
     @property
@@ -258,7 +259,7 @@ class DampedOscillatorPrior(nn.Module):
 
     def _cache_key(self, theta: torch.Tensor) -> tuple:
         return (
-            int(theta.data_ptr()),
+            int(theta._version),
             tuple(theta.shape),
             str(theta.dtype),
             str(theta.device),
@@ -270,9 +271,17 @@ class DampedOscillatorPrior(nn.Module):
 
     def _trajectory_grid(self, theta: torch.Tensor) -> torch.Tensor:
         key = self._cache_key(theta)
-        if self._grid_cache_key == key and self._grid_cache_values is not None:
+        if (
+            self._grid_cache_source is theta
+            and self._grid_cache_key == key
+            and self._grid_cache_values is not None
+        ):
             return self._grid_cache_values
         values = self._integrate_sorted(theta, self.t)
+        # Keep the source alive and compare object identity. A data pointer alone
+        # is not a stable tensor identity because PyTorch's allocator may reuse
+        # freed storage for the next fresh latent draw.
+        self._grid_cache_source = theta
         self._grid_cache_key = key
         self._grid_cache_values = values
         return values

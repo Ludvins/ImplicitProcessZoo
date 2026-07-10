@@ -27,6 +27,15 @@ Examples live in `docs/examples/`. Pages embed them with the snippets extension
 and CI executes the same files, preventing copied documentation code from
 silently drifting.
 
+Public API docstrings follow the NumPy style and are checked with:
+
+```bash
+python scripts/validate_docstrings.py
+```
+
+The gate covers every object exported by a library package, its public methods,
+and the additional model/prior classes rendered by the curated API reference.
+
 ## Publication
 
 Pull requests build but never deploy. A push to `main` uploads the strict build
