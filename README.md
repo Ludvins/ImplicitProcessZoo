@@ -31,20 +31,22 @@ The main regression benchmark currently supports:
   inducing variables and estimating the inducing-space KL with a separate
   critic.
 
-Python version used for development: `3.10.11`.
+Supported Python versions are 3.10 through 3.12. CI exercises Python 3.10 and
+3.12 on CPU.
 
 ## Installation
 
-Create an environment with PyTorch installed for your CUDA or CPU target, then
-install the repository dependencies:
+Install the complete editable research environment:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-`requirements.txt` contains the experiment, plotting, testing, and reporting
-dependencies. Install the PyTorch wheel separately if your environment does not
-already provide `torch`.
+`requirements.txt` delegates to the dependency groups in `pyproject.toml`. For
+a reproducible Python 3.12 CPU environment, install
+`requirements/lock-cpu-py312.txt` instead. Select the platform-appropriate
+PyTorch wheel before installing the project when CUDA or another accelerator is
+required.
 
 ## Repository Layout
 
@@ -494,12 +496,13 @@ python -m experiments.uci.benchmark --model all --dataset boston
 Supported UCI regression datasets:
 
 ```text
-boston, concrete, energy, kin8nm, naval, power, protein, winered, yatch
+boston, concrete, energy, kin8nm, naval, power, protein, winered, yacht
 ```
 
 The benchmark also exposes synthetic or diagnostic regression datasets through
 the shared dataset loader, including `gap`, `bimodal`, `skewed`,
-`heterocedastic`, `snelson`, and `variational_lla`.
+`heteroscedastic`, `snelson`, and `variational_lla`. The former misspellings
+`yatch` and `heterocedastic` remain deprecated command-line aliases.
 
 Common experiment flags:
 
@@ -610,6 +613,15 @@ python -m experiments.regression.benchmark \
 `data/airline.csv`. `taxi` uses `data/taxi.csv` when present, otherwise it can
 create it from the NYC yellow taxi parquet source if `pyarrow` is installed.
 
+## Electricity Load Forecasting
+
+The methodology-version 2 ELD experiments are documented in
+[`experiments/eld_forecasting/README.md`](experiments/eld_forecasting/README.md).
+That guide covers data preparation, non-overlapping index regions, leakage
+controls, validation-bank selection, resource expectations, result schemas,
+and exact seed-0 rerun commands. Version-1 outputs are historical artifacts and
+must not be aggregated with corrected version-2 results.
+
 ## Synthetic Plot Runner
 
 `experiments.synthetic.plot` trains selected regression methods on the
@@ -643,13 +655,18 @@ CSV summaries are also written. Regression metrics include RMSE, NLL, CRPS, and
 CQM when available.
 
 Checkpoints are saved by default; pass `--no_save_checkpoint` to disable them.
+Full version-1 training checkpoints support exact optimizer/scheduler/RNG
+resume. Use `--warm-start-from` for legacy model-only state dictionaries;
+passing one to `--resume-from-checkpoint` fails with migration guidance.
 
 ## Tests
 
 Run the full test suite:
 
 ```bash
-python -m pytest tests -q
+ruff format --check .
+ruff check .
+python -m pytest -q --cov
 ```
 
 Useful focused checks:
@@ -659,6 +676,17 @@ python -m pytest tests/test_gmvip.py -q
 python -m pytest tests/test_ftip.py -q
 python -m pytest tests/test_sip.py -q
 ```
+
+The measured publication baseline is 54% statement coverage across the
+library and experiment packages. Pull requests may raise this floor but must not
+lower it.
+
+## License and citation
+
+The software is released under the [MIT License](LICENSE). Citation metadata is
+provided in [`CITATION.cff`](CITATION.cff). Individual datasets retain their
+own licenses; in particular, ElectricityLoadDiagrams20112014 is CC BY 4.0 and
+requires attribution as described in the ELD guide.
 
 ## References
 

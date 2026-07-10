@@ -10,12 +10,15 @@ optional checkpoints.
 The UCI set is:
 
 ```text
-boston, concrete, energy, kin8nm, naval, power, protein, winered, yatch
+boston, concrete, energy, kin8nm, naval, power, protein, winered, yacht
 ```
 
 The same runner can also load diagnostic regression datasets exposed by the
-dataset loader, including `gap`, `bimodal`, `skewed`, `heterocedastic`,
+dataset loader, including `gap`, `bimodal`, `skewed`, `heteroscedastic`,
 `snelson`, and `variational_lla`.
+
+The historical spellings `yatch` and `heterocedastic` are accepted as
+deprecated CLI aliases.
 
 ## Commands
 

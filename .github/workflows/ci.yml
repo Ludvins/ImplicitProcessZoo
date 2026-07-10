@@ -18,9 +18,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[experiments,vision,test]"
+      - name: Install CPU PyTorch
+        run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e ".[experiments,tracking,test]"
       - run: python -m pip check
-      - run: python -m pytest -q --cov=implicit_process_zoo --cov=experiments --cov-report=term-missing
+      - run: python -m pytest -q --cov --cov-report=term-missing --cov-report=xml
 
   quality:
     runs-on: ubuntu-latest
@@ -30,11 +32,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e ".[experiments,vision,test]"
+      - run: python -m pip install --upgrade pip
+      - name: Install CPU PyTorch
+        run: python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e ".[experiments,tracking,test]"
+      - run: python -m pip check
       - run: ruff format --check .
       - run: ruff check .
-      - run: python -m build
-      - run: python -m twine check dist/*
       - name: Check CLI help
         shell: bash
         run: |
@@ -42,8 +46,28 @@ jobs:
           python -m experiments.regression.benchmark --help
           python -m experiments.classification.benchmark --help
           python -m experiments.synthetic.plot --help
+          python -m experiments.volterra.generate --help
           python -m experiments.volterra.run --help
+          python -m experiments.volterra.compare --help
+          python -m experiments.volterra.plot --help
+          python -m experiments.simulator_forecasting.generate --help
           python -m experiments.simulator_forecasting.run --help
+          python -m experiments.simulator_forecasting.compare --help
+          python -m experiments.simulator_forecasting.plot --help
+          python -m experiments.simulator_forecasting.paper_figure --help
+          python -m experiments.eld_forecasting.prepare --help
           python -m experiments.eld_forecasting.run --help
           python -m experiments.eld_forecasting.valbank --help
+          python -m experiments.eld_forecasting.compare --help
           python -m experiments.eld_forecasting.plot_predictions --help
+      - name: ELD methodology-v2 synthetic smoke
+        run: >-
+          python -m experiments.eld_forecasting.run
+          --preset eld_smoke
+          --method all
+          --synthetic-smoke
+          --seed 0
+          --output-dir results/ci_eld_v2
+          --disable-tqdm
+      - run: python -m build
+      - run: python -m twine check dist/*
