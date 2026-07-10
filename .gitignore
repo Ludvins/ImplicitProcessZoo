@@ -26,4 +26,5 @@ data
 /CLUSTER_EXPERIMENTS_120K_HANDOFF.md
 /build/
 /dist/
+/site/
 *.egg-info/

@@ -667,6 +667,7 @@ class GeneralizedMatheronVIP(nn.Module):
         *,
         seed: int | None = None,
     ) -> torch.Tensor:
+        """Draw likelihood samples with shape ``[S, N, D]``."""
         samples = self.sample_posterior_values(X, int(num_samples), seed=seed)
         if self.likelihood_type == "multiclass":
             return samples
@@ -712,6 +713,7 @@ class GeneralizedMatheronVIP(nn.Module):
     def predict_f_samples(
         self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
     ) -> torch.Tensor:
+        """Draw latent posterior function samples with shape ``[S, N, D]``."""
         samples = self.sample_posterior_values(X, int(num_samples), seed=seed)
         if self.output_dim == 1 and samples.ndim == 2:
             samples = samples.unsqueeze(-1)

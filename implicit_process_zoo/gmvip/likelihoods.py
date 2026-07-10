@@ -5,6 +5,8 @@ from torch import nn
 
 
 class GaussianRegressionLikelihood(nn.Module):
+    """Gaussian observation likelihood with optional learned noise scale."""
+
     def __init__(
         self,
         init_log_noise: float = -2.0,

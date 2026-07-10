@@ -64,6 +64,7 @@ class DeterministicMAP(torch.nn.Module):
         return self.layers[-1](x)
 
     def predict_f_samples(self, X, num_samples, *, seed=None):
+        """Repeat latent MAP predictions with shape ``[S, N, D]``."""
         F = self.predict_f(X)
         return F.unsqueeze(0).expand(num_samples, *F.shape)
 
@@ -87,6 +88,7 @@ class DeterministicMAP(torch.nn.Module):
             )
 
     def predict_y_samples(self, X, num_samples, *, seed=None):
+        """Draw Gaussian observation samples with shape ``[S, N, D]``."""
         with fork_torch_rng(seed):
             mean, std = self.predict(X, num_samples)
             return mean + std * torch.randn_like(mean)
@@ -134,6 +136,7 @@ class DeterministicMAP(torch.nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
+        """Fit for exactly one epoch- or iteration-based duration."""
         validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam(self.parameters(), lr=lr)

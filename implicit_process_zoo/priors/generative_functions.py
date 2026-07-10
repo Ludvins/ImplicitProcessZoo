@@ -67,6 +67,8 @@ class GenerativeFunction(torch.nn.Module):
 
 @preserve_constructor_rng
 class BayesLinear(GenerativeFunction):
+    """Gaussian-weight Bayesian linear layer producing coherent samples."""
+
     def __init__(
         self,
         num_samples,
@@ -282,6 +284,8 @@ class SimplerBayesLinear(BayesLinear):
 
 @preserve_constructor_rng
 class BayesianNN(GenerativeFunction):
+    """Multilayer Bayesian neural-network prior function generator."""
+
     def __init__(
         self,
         structure,
@@ -1065,6 +1069,8 @@ class BayesianLSTM(GenerativeFunction):
 
 @preserve_constructor_rng
 class GP(GenerativeFunction):
+    """Gaussian-process function generator with configurable kernel."""
+
     def __init__(
         self,
         num_samples=1,

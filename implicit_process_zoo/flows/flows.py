@@ -67,6 +67,8 @@ class AffineLayer(torch.nn.Module):
 
 
 class CouplingLayer(torch.nn.Module):
+    """Single affine coupling transform with a near-identity initialization."""
+
     def __init__(self, input_dim, device, dtype, init_scale=1e-3):
         super().__init__()
         self.input_dim = input_dim
@@ -98,6 +100,8 @@ class CouplingLayer(torch.nn.Module):
 
 @preserve_constructor_rng
 class CouplingFlow(torch.nn.Module):
+    """Stack of affine coupling layers with optional affine pre-transform."""
+
     def __init__(self, depth, input_dim, device, dtype, seed, init_scale=1e-3):
         super().__init__()
         self.depth = depth

@@ -16,6 +16,7 @@ CHECKPOINT_SCHEMA_VERSION = 1
 
 
 def capture_rng_state(model: torch.nn.Module | None = None) -> dict[str, Any]:
+    """Capture Python, NumPy, PyTorch, CUDA, and optional model RNG state."""
     state: dict[str, Any] = {
         "python": random.getstate(),
         "numpy": np.random.get_state(),
@@ -28,6 +29,7 @@ def capture_rng_state(model: torch.nn.Module | None = None) -> dict[str, Any]:
 
 
 def restore_rng_state(state: Mapping[str, Any], model: torch.nn.Module | None = None) -> None:
+    """Restore a state produced by :func:`capture_rng_state`."""
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
     torch.random.set_rng_state(state["torch"])
@@ -66,6 +68,7 @@ def build_training_checkpoint(
 
 
 def save_training_checkpoint(path: str | Path, checkpoint: Mapping[str, Any]) -> None:
+    """Atomically save a versioned training checkpoint."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -78,6 +81,7 @@ def load_training_checkpoint(
     *,
     map_location: str | torch.device | None = None,
 ) -> dict[str, Any]:
+    """Load and validate a complete checkpoint for training resumption."""
     checkpoint = torch.load(path, map_location=map_location, weights_only=False)
     if not isinstance(checkpoint, dict) or "schema_version" not in checkpoint:
         raise ValueError(

@@ -15,6 +15,8 @@ from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 @preserve_constructor_rng
 class MFVI(torch.nn.Module):
+    """Mean-field Gaussian weight-space variational inference baseline."""
+
     def __init__(
         self,
         generative_function,

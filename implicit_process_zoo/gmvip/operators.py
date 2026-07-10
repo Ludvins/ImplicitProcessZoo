@@ -17,6 +17,8 @@ def _freeze_prior(prior: nn.Module) -> None:
 
 
 class BaseMatheronOperator(nn.Module):
+    """Base interface for inducing-point Matheron interpolation operators."""
+
     def __init__(
         self,
         inducing_points: torch.Tensor,
@@ -161,6 +163,8 @@ class BaseMatheronOperator(nn.Module):
 
 
 class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
+    """Matheron operator estimated from a coherent prior-function bank."""
+
     def __init__(
         self,
         base_prior: nn.Module,
@@ -274,6 +278,8 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
 
 
 class RBFCardinalMatheronOperator(BaseMatheronOperator):
+    """Cardinal Matheron operator built from a configurable RBF kernel."""
+
     def __init__(
         self,
         base_prior: nn.Module,

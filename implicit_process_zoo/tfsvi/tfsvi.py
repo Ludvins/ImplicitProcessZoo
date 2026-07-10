@@ -258,7 +258,10 @@ class TFSVI(nn.Module):
         Parameters
         ----------
         X : [N, D_in]
-        S : int, number of MC parameter samples
+        num_samples : int
+            Number of Monte Carlo parameter samples.
+        seed : int or None
+            Optional temporary prediction seed.
 
         Returns
         -------

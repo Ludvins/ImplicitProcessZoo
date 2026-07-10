@@ -13,6 +13,7 @@ ALIASES = {
 
 
 def canonical_dataset_name(name: str) -> str:
+    """Normalize deprecated dataset spellings to their canonical names."""
     if name in ALIASES:
         canonical = ALIASES[name]
         warnings.warn(
@@ -25,4 +26,5 @@ def canonical_dataset_name(name: str) -> str:
 
 
 def get_dataset(name: str):
+    """Construct a registered dataset after canonicalizing its name."""
     return _legacy_get_dataset(canonical_dataset_name(name))

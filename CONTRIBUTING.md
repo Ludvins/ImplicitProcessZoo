@@ -4,10 +4,11 @@ Create a focused branch, install the development environment, and run the
 quality gates before opening a pull request:
 
 ```bash
-python -m pip install -e ".[experiments,vision,tracking,test]"
+python -m pip install -e ".[experiments,vision,tracking,test,docs]"
 ruff format --check .
 ruff check .
 python -m pytest -q --cov
+mkdocs build --strict
 python -m build
 python -m twine check dist/*
 ```
@@ -19,5 +20,6 @@ outside version control.
 
 Coverage is enforced across `implicit_process_zoo` and `experiments`. New work
 must not reduce the `fail_under` value in `pyproject.toml`; bug fixes and new
-public behavior should normally increase it. Keep methodology-version 1 and 2
-ELD artifacts in separate roots and never rewrite published scientific output.
+public behavior should normally increase it. The ELD code has one canonical
+corrected protocol and no result-version switch; never rewrite published
+scientific output in place.

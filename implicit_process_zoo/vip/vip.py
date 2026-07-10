@@ -25,6 +25,8 @@ from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 @preserve_constructor_rng
 class VIP(torch.nn.Module):
+    """Variational Implicit Process with Gaussian basis coefficients."""
+
     def __init__(
         self,
         generative_function,

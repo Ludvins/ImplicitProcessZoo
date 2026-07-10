@@ -532,6 +532,7 @@ class SIP(nn.Module):
     # ------------------------------------------------------------------
 
     def predict_f_samples(self, X, num_samples, *, seed=None):
+        """Draw latent sparse-conditional paths with shape ``[S, N, D]``."""
         if self.dtype != X.dtype:
             X = X.to(self.dtype)
         mX, mZ, KZZ, KXZ, _, KXX = self._estimate_prior_moments(X)
@@ -544,6 +545,7 @@ class SIP(nn.Module):
         return samples.mean(dim=0), samples.var(dim=0, unbiased=False)
 
     def predict_y_samples(self, X, num_samples, *, seed=None):
+        """Draw likelihood samples with shape ``[S, N, D]``."""
         with temporary_generator_seed(self, seed), fork_torch_rng(seed):
             F_samples = self.predict_f_samples(X, num_samples)
             if self.likelihood_type == "regression":
@@ -587,6 +589,7 @@ class SIP(nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
+        """Fit SIP while running its critic hook before each primal step."""
         validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam(self.vi_parameters(), lr=lr)

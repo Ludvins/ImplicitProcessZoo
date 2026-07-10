@@ -41,6 +41,10 @@ experiments = [
 ]
 vision = ["torchvision>=0.21"]
 tracking = ["wandb>=0.19"]
+docs = [
+  "mkdocs-material>=9.6",
+  "mkdocstrings[python]>=0.29",
+]
 test = [
   "build>=1.2",
   "pytest>=8",
@@ -50,6 +54,7 @@ test = [
 ]
 
 [project.urls]
+Documentation = "https://ludvins.github.io/ImplicitProcessZoo/"
 Repository = "https://github.com/Ludvins/ImplicitProcessZoo"
 Issues = "https://github.com/Ludvins/ImplicitProcessZoo/issues"
 

@@ -1,1 +1,1 @@
--e .[experiments,vision,tracking,test]
+-e .[experiments,vision,tracking,test,docs]

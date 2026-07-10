@@ -25,6 +25,8 @@ from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 @preserve_constructor_rng
 class FTIP(torch.nn.Module):
+    """Flow-Transformed Implicit Process over sampled prior features."""
+
     def __init__(
         self,
         generative_function,
