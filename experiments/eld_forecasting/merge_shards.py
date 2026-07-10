@@ -45,8 +45,6 @@ def merge_method_shards(
     target_sources: dict[int, Path] = {}
     for source in sources:
         shard_rows = _read_csv(source / "metrics_per_target_region.csv")
-        if any(int(row.get("methodology_version", 0)) != 2 for row in shard_rows):
-            raise ValueError(f"Shard {source} contains non-v2 metric rows.")
         rows.extend(shard_rows)
         for runtime in json.loads((source / "runtime.json").read_text(encoding="utf-8")):
             target_id = int(runtime["target_id"])
@@ -75,9 +73,8 @@ def merge_method_shards(
     write_json(
         destination / "metrics.json",
         {
-            "methodology_version": 2,
             "method": method,
-            "seed": int(seed),
+            "run_seed": int(seed),
             "targets": sorted(target_sources),
             "summary": _summarize(rows),
             "merged_shards": [str(Path(root)) for root in shard_roots],

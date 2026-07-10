@@ -227,26 +227,31 @@ def _select_prior_rules(
                 dtype=dtype,
                 window_index=window_index,
             )
-            model = base_run.build_model(
-                args.selection_method, task, config, seed=target_seed, device=device, dtype=dtype
-            )
-            train_info = base_run.fit_model(model, task, config, device=device)
-            metrics = _score_validation(
-                model,
-                args.selection_method,
-                task,
-                config,
-                seed=target_seed,
-                train_hours=args.train_hours,
-                val_hours=args.val_hours,
-            )
+            with base_run.fork_torch_rng(target_seed):
+                model = base_run.build_model(
+                    args.selection_method,
+                    task,
+                    config,
+                    seed=target_seed,
+                    device=device,
+                    dtype=dtype,
+                )
+                train_info = base_run.fit_model(model, task, config, device=device)
+                metrics = _score_validation(
+                    model,
+                    args.selection_method,
+                    task,
+                    config,
+                    seed=target_seed,
+                    train_hours=args.train_hours,
+                    val_hours=args.val_hours,
+                )
             score = float(metrics[args.selection_metric])
             if score < best_score:
                 best_score = score
                 best_rule = prior_selection
             rows.append(
                 {
-                    "methodology_version": 2,
                     "target_id": target_id,
                     "client_id": task.metadata["client_id"],
                     "start_time": task.metadata["start_time"],
@@ -366,13 +371,20 @@ def _run_final_methods(
             target_id = int(task.metadata["target_id"])
             target_seed = int(args.seed) + 1000 * target_id
             prior_selection = selected[target_id]
-            model = base_run.build_model(
-                method, task, final_config, seed=target_seed, device=device, dtype=dtype
-            )
-            train_info = base_run.fit_model(model, task, final_config, device=device)
-            target_rows = base_run.evaluate_target(
-                model, method, task, final_config, seed=target_seed, out_dir=method_dir
-            )
+            with base_run.fork_torch_rng(target_seed):
+                model = base_run.build_model(
+                    method, task, final_config, seed=target_seed, device=device, dtype=dtype
+                )
+                train_info = base_run.fit_model(model, task, final_config, device=device)
+                target_rows = base_run.evaluate_target(
+                    model,
+                    method,
+                    task,
+                    final_config,
+                    run_seed=int(args.seed),
+                    target_seed=target_seed,
+                    out_dir=method_dir,
+                )
             for row in target_rows:
                 row["train_time_sec"] = float(train_info["train_time_sec"])
                 row["train_steps"] = int(train_info["steps"])
@@ -392,9 +404,8 @@ def _run_final_methods(
                 {"target_id": target_id, "selected_prior_selection": prior_selection, **train_info}
             )
         summary = {
-            "methodology_version": 2,
             "method": method,
-            "seed": int(args.seed),
+            "run_seed": int(args.seed),
             "targets": list(range(len(targets))),
             "summary": base_run._summarize(rows),
         }
@@ -411,7 +422,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--root", default="data/electricity_load_diagrams")
     parser.add_argument(
-        "--output-dir", default="results/eld_forecasting_v2_valbank_context15_val5_test28"
+        "--output-dir", default="results/eld_forecasting_valbank_context15_val5_test28"
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-targets", type=int, default=3)
@@ -518,7 +529,6 @@ def main(argv: list[str] | None = None):
         window_index=context_index,
     )
     manifest = {
-        "methodology_version": 2,
         "elapsed_sec": time.time() - start,
         "train_points": train_points,
         "validation_points": context_points - train_points,

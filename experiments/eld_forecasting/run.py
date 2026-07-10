@@ -31,38 +31,41 @@ from experiments.eld_forecasting.datasets import (
     processed_exists,
 )
 from experiments.eld_forecasting.metrics import (
-    DEFAULT_REGIONS,
     coerce_regions,
     forecast_regions,
     metrics_by_region,
 )
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
+from implicit_process_zoo.utils.random import fork_torch_rng
 from implicit_process_zoo.vip import VIP
 
 METHODS = ("analog", "seasonal_naive", "vip", "vip_512", "ftip", "gmvip_empirical")
+PAPER_METHODS = ("analog", "vip", "ftip", "gmvip_empirical")
 
 
 DEFAULT_CONFIG: dict = {
     "experiment": "eld_forecasting",
-    "methodology_version": 2,
-    "method": "gmvip_empirical",
+    "method": ",".join(PAPER_METHODS),
     "data": {
         "root": "data/electricity_load_diagrams",
         "split": "test",
-        "n_targets": 200,
+        "n_targets": 25,
         "window_length": 192,
-        "prefix_length": 32,
+        "prefix_length": 96,
         "noise_std_norm": 0.05,
         "min_nonzero_fraction": 0.9,
         "min_prefix_std": 1.0e-3,
+        "prior_years": [2011, 2012, 2013],
+        "target_years": [2014],
+        "target_manifest": "bundled:paper_targets.csv",
     },
     "prior": {
         "bank_size": 2048,
-        "selection": "calendar",
+        "selection": "calendar_prefix_nn",
     },
     "gmvip": {
-        "num_inducing": 96,
+        "num_inducing": 192,
         "jitter": 1.0e-5,
         "shrinkage": 0.02,
         "beta": 1.0,
@@ -77,17 +80,17 @@ DEFAULT_CONFIG: dict = {
     },
     "training": {
         "learning_rate": 5.0e-3,
-        "max_steps": 1500,
-        "n_mc_train": 16,
-        "n_mc_eval": 512,
+        "max_steps": 500,
+        "n_mc_train": 8,
+        "n_mc_eval": 256,
         "batch_size": "full",
-        "regression_coeffs": 256,
+        "regression_coeffs": 20,
         "max_grad_norm": 10.0,
-        "disable_tqdm": False,
+        "disable_tqdm": True,
     },
     "metrics": {
         "levels": [0.9, 0.95],
-        "regions": DEFAULT_REGIONS,
+        "regions": {"test_forecast": {"start": 96, "stop": 192}},
     },
     "plots": {
         "skip": True,
@@ -100,7 +103,9 @@ VALIDATION_CONFIG: dict = {
     "data": {
         **copy.deepcopy(DEFAULT_CONFIG["data"]),
         "split": "validation",
-        "n_targets": 100,
+        "prior_years": [2011, 2012],
+        "target_years": [2013],
+        "target_manifest": None,
     },
 }
 
@@ -113,6 +118,7 @@ SMOKE_CONFIG: dict = {
         "n_targets": 1,
         "window_length": 48,
         "prefix_length": 8,
+        "target_manifest": None,
     },
     "prior": {"bank_size": 16, "selection": "calendar"},
     "gmvip": {
@@ -129,6 +135,7 @@ SMOKE_CONFIG: dict = {
         "regression_coeffs": 8,
         "disable_tqdm": True,
     },
+    "metrics": {"levels": [0.9, 0.95], "regions": None},
 }
 
 
@@ -137,6 +144,7 @@ PILOT_CONFIG: dict = {
     "data": {
         **copy.deepcopy(DEFAULT_CONFIG["data"]),
         "n_targets": 40,
+        "target_manifest": None,
     },
     "prior": {"bank_size": 512, "selection": "calendar"},
     "gmvip": {
@@ -148,6 +156,7 @@ PILOT_CONFIG: dict = {
         "max_steps": 500,
         "n_mc_eval": 256,
     },
+    "metrics": {"levels": [0.9, 0.95], "regions": None},
 }
 
 
@@ -168,10 +177,13 @@ def _load_config(args: argparse.Namespace) -> dict:
     if args.config:
         config = _deep_update(config, load_yaml(args.config))
     data_cfg = config.setdefault("data", {})
-    config.setdefault("metrics", {})["regions"] = forecast_regions(
-        int(data_cfg.get("window_length", 192)),
-        int(data_cfg.get("prefix_length", 32)),
-    )
+    metrics_cfg = config.setdefault("metrics", {})
+    if metrics_cfg.get("regions") is None:
+        metrics_cfg["regions"] = forecast_regions(
+            int(data_cfg.get("window_length", 192)),
+            int(data_cfg.get("prefix_length", 96)),
+        )
+    coerce_regions(metrics_cfg["regions"])
     return config
 
 
@@ -428,11 +440,20 @@ def _unnormalize(task, values: torch.Tensor) -> torch.Tensor:
 
 
 def evaluate_target(
-    model, method: str, task, config: dict, *, seed: int, out_dir: Path
+    model,
+    method: str,
+    task,
+    config: dict,
+    *,
+    run_seed: int,
+    target_seed: int,
+    out_dir: Path,
 ) -> list[dict]:
     eval_samples = int(_training_config(config).n_mc_eval)
     start = time.time()
-    samples_norm = predictive_function_samples(model, method, task.X_plot, eval_samples, seed + 501)
+    samples_norm = predictive_function_samples(
+        model, method, task.X_plot, eval_samples, target_seed + 501
+    )
     samples = _unnormalize(task, samples_norm)
     y_true = _unnormalize(task, task.y_plot_true)
     t_grid = torch.as_tensor(task.metadata["t_grid"], dtype=samples.dtype, device=samples.device)
@@ -459,7 +480,14 @@ def evaluate_target(
     samples_np = samples.detach().cpu().numpy()
     np.savez_compressed(
         pred_dir / f"target_{task.metadata['target_id']}.npz",
-        methodology_version=np.asarray(2, dtype=np.int64),
+        target_id=np.asarray(int(task.metadata["target_id"]), dtype=np.int64),
+        client_id=np.asarray(str(task.metadata["client_id"])),
+        start_time=np.asarray(str(task.metadata["start_time"])),
+        run_seed=np.asarray(int(run_seed), dtype=np.int64),
+        target_seed=np.asarray(int(target_seed), dtype=np.int64),
+        forecast_start_hour=np.asarray(
+            float(task.metadata["forecast_start_hour"]), dtype=np.float64
+        ),
         t=np.asarray(task.metadata["t_grid"], dtype=np.float64),
         truth=y_true.detach().cpu().numpy(),
         context_t=np.asarray(task.metadata["t_grid"], dtype=np.float64)[
@@ -481,7 +509,6 @@ def evaluate_target(
         rows.append(
             {
                 "experiment": "eld_forecasting",
-                "methodology_version": 2,
                 "method": method,
                 "target_id": int(task.metadata["target_id"]),
                 "client_id": task.metadata["client_id"],
@@ -512,7 +539,8 @@ def evaluate_target(
                 "forecast_points": int(task.metadata.get("forecast_points", task.X_test.shape[0])),
                 "last_observed_hour": float(task.metadata["last_observed_hour"]),
                 "forecast_start_hour": float(task.metadata["forecast_start_hour"]),
-                "seed": int(seed),
+                "run_seed": int(run_seed),
+                "target_seed": int(target_seed),
                 "region": region,
                 "stress": stress,
                 "stress_prefix_cv": task.metadata.get("stress_prefix_cv"),
@@ -563,6 +591,9 @@ def _summarize(rows: list[dict]) -> dict:
             values = np.asarray([row[metric] for row in group if metric in row], dtype=np.float64)
             if values.size:
                 summary[key][metric] = {
+                    "median": float(np.nanmedian(values)),
+                    "q25": float(np.nanquantile(values, 0.25)),
+                    "q75": float(np.nanquantile(values, 0.75)),
                     "mean": float(np.nanmean(values)),
                     "stderr": float(np.nanstd(values) / max(1.0, math.sqrt(values.size))),
                 }
@@ -571,7 +602,7 @@ def _summarize(rows: list[dict]) -> dict:
 
 def _requested_methods(value: str) -> list[str]:
     if str(value) == "all":
-        return list(METHODS)
+        return list(PAPER_METHODS)
     methods = [item.strip() for item in str(value).split(",") if item.strip()]
     return list(dict.fromkeys(methods))
 
@@ -584,6 +615,32 @@ def _parse_years(value) -> list[int] | None:
             return None
         return [int(item.strip()) for item in value.split(",") if item.strip()]
     return [int(item) for item in value]
+
+
+def _load_expected_targets(path_value, *, run_seed: int) -> dict[int, tuple[str, str]] | None:
+    if path_value is None:
+        return None
+    path = (
+        Path(__file__).with_name("paper_targets.csv")
+        if str(path_value) == "bundled:paper_targets.csv"
+        else Path(path_value)
+    )
+    if not path.is_file():
+        raise FileNotFoundError(f"Frozen ELD target manifest not found: {path}")
+    expected: dict[int, tuple[str, str]] = {}
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            if int(row["run_seed"]) != int(run_seed):
+                continue
+            target_id = int(row["target_id"])
+            if target_id in expected:
+                raise ValueError(
+                    f"Frozen ELD target manifest repeats seed {run_seed}, target {target_id}."
+                )
+            expected[target_id] = (str(row["client_id"]), str(row["start_time"]))
+    if not expected:
+        raise ValueError(f"Frozen ELD target manifest has no entries for run seed {run_seed}.")
+    return expected
 
 
 def _requested_target_ids(args: argparse.Namespace, n_targets: int) -> list[int]:
@@ -640,10 +697,10 @@ def _load_tasks(config: dict, args: argparse.Namespace, *, seed: int, device, dt
         min_prefix_std=float(data_cfg.get("min_prefix_std", 1e-3)),
         prior_selection=str(prior_cfg.get("selection", "calendar")),
         target_ids=requested_ids,
+        expected_targets=_load_expected_targets(data_cfg.get("target_manifest"), run_seed=seed),
         device=device,
         dtype=dtype,
     )
-    _mark_stress_tasks(tasks)
     return tasks
 
 
@@ -682,7 +739,7 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     tasks = tasks or _load_tasks(config, args, seed=seed, device=device, dtype=dtype)
     ids = [int(task.metadata["target_id"]) for task in tasks]
-    out_dir = Path(args.output_dir or "results/eld_forecasting_v2") / method / f"seed_{seed}"
+    out_dir = Path(args.output_dir or "results/eld_forecasting") / method / f"seed_{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
     config_path = out_dir / "config.yaml"
     config_text = yaml.safe_dump(config, sort_keys=False)
@@ -711,9 +768,8 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
     def flush() -> dict:
         completed_ids = sorted({int(row["target_id"]) for row in runtimes})
         metrics = {
-            "methodology_version": 2,
             "method": method,
-            "seed": seed,
+            "run_seed": seed,
             "targets": completed_ids,
             "summary": _summarize(rows),
         }
@@ -727,11 +783,18 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
         if target_idx in completed:
             continue
         target_seed = seed + 1000 * target_idx
-        model = build_model(method, task, config, seed=target_seed, device=device, dtype=dtype)
-        train_info = fit_model(model, task, config, device=device)
-        target_rows = evaluate_target(
-            model, method, task, config, seed=target_seed, out_dir=out_dir
-        )
+        with fork_torch_rng(target_seed):
+            model = build_model(method, task, config, seed=target_seed, device=device, dtype=dtype)
+            train_info = fit_model(model, task, config, device=device)
+            target_rows = evaluate_target(
+                model,
+                method,
+                task,
+                config,
+                run_seed=seed,
+                target_seed=target_seed,
+                out_dir=out_dir,
+            )
         for row in target_rows:
             row["train_time_sec"] = float(train_info["train_time_sec"])
             row["train_steps"] = int(train_info["steps"])
@@ -795,7 +858,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Continue an interrupted ELD result root after validating its config.",
     )
     parser.add_argument("--disable-tqdm", action="store_true")
-    parser.add_argument("--output-dir", default="results/eld_forecasting_v2")
+    parser.add_argument("--output-dir", default="results/eld_forecasting")
     parser.add_argument("--device", default=None)
     parser.add_argument("--dtype", choices=["float64", "float32"], default="float64")
     return parser.parse_args(argv)

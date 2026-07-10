@@ -12,14 +12,20 @@ from experiments.eld_forecasting.datasets import (
     ElectricityData,
     WindowIndex,
     WindowSpec,
+    _validate_expected_targets,
     load_synthetic_tasks,
+    stress_diagnostics_for_targets,
 )
 from experiments.eld_forecasting.metrics import forecast_regions, validation_test_regions
 from experiments.eld_forecasting.priors import HistoricalLoadWindowPrior
 from experiments.eld_forecasting.run import (
+    DEFAULT_CONFIG,
+    _load_config,
+    _load_expected_targets,
     build_model,
     fit_model,
     main,
+    parse_args,
     predictive_function_samples,
 )
 
@@ -102,11 +108,60 @@ def test_eld_synthetic_runner_writes_metrics(tmp_path):
         with path.open("r", newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
         assert {row["region"] for row in rows} >= {"full_forecast", "same_day_forecast"}
-        assert {row["methodology_version"] for row in rows} == {"2"}
+        assert {row["run_seed"] for row in rows} == {"0"}
+        assert {row["target_seed"] for row in rows} == {"0"}
         assert all("region_start_idx" in row and "region_stop_idx" in row for row in rows)
         assert all("region_include_left" not in row for row in rows)
         metrics = json.loads((path.parent / "metrics.json").read_text(encoding="utf-8"))
-        assert metrics["methodology_version"] == 2
+        assert metrics["run_seed"] == 0
+
+
+def test_eld_paper_preset_is_the_frozen_original_experiment():
+    config = _load_config(parse_args(["--preset", "eld_paper"]))
+
+    assert config == DEFAULT_CONFIG
+    assert config["method"] == "analog,vip,ftip,gmvip_empirical"
+    assert config["data"]["n_targets"] == 25
+    assert config["data"]["window_length"] == 192
+    assert config["data"]["prefix_length"] == 96
+    assert config["data"]["prior_years"] == [2011, 2012, 2013]
+    assert config["data"]["target_years"] == [2014]
+    assert config["prior"] == {"bank_size": 2048, "selection": "calendar_prefix_nn"}
+    assert config["gmvip"]["num_inducing"] == 192
+    assert config["training"]["max_steps"] == 500
+    assert config["training"]["n_mc_train"] == 8
+    assert config["training"]["n_mc_eval"] == 256
+    assert config["training"]["regression_coeffs"] == 20
+    assert config["metrics"]["regions"] == {"test_forecast": {"start": 96, "stop": 192}}
+    expected = _load_expected_targets(config["data"]["target_manifest"], run_seed=0)
+    assert expected is not None
+    assert len(expected) == 25
+    assert expected[18] == ("MT_353", "2014-09-23 00:00:00")
+
+
+def test_frozen_target_validation_rejects_identity_drift():
+    targets = [
+        WindowSpec(0, 0, "2014-01-01 00:00:00", 2014, 1, False, 0.1, 0.2),
+        WindowSpec(1, 1, "2014-01-02 00:00:00", 2014, 1, False, 0.2, 0.3),
+    ]
+    expected = {
+        0: ("MT_001", "2014-01-01 00:00:00"),
+        1: ("MT_999", "2014-01-02 00:00:00"),
+    }
+    with pytest.raises(ValueError, match="target selection drifted"):
+        _validate_expected_targets(targets, ["MT_001", "MT_002"], expected)
+
+
+def test_stress_diagnostics_are_ranked_against_complete_target_set():
+    targets = [
+        WindowSpec(index, index, str(index), 2014, 1, False, float(index + 1), float(5 - index))
+        for index in range(5)
+    ]
+    diagnostics = stress_diagnostics_for_targets(targets)
+
+    assert len(diagnostics) == 5
+    assert [item["stress_threshold"] for item in diagnostics] == pytest.approx([0.6] * 5)
+    assert [item["stress_score"] for item in diagnostics] == pytest.approx([0.6] * 5)
 
 
 def test_eld_artifact_resume_skips_complete_targets_and_rejects_config_changes(tmp_path):

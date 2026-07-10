@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -383,6 +383,7 @@ def make_task_from_spec(
     prefix_eps: float,
     prior_selection: str = "calendar",
     window_index: WindowIndex | None = None,
+    stress_diagnostics: Mapping[str, float | bool] | None = None,
 ) -> ElectricityForecastingTask:
     raw = np.asarray(
         data.values[target.start_idx : target.start_idx + window_length, target.client_idx],
@@ -435,7 +436,6 @@ def make_task_from_spec(
         target_std=y_std,
     )
     metadata = {
-        "methodology_version": 2,
         "protocol": "historical_prior_online_forecasting",
         "target_id": int(target_id),
         "client_idx": int(target.client_idx),
@@ -471,6 +471,7 @@ def make_task_from_spec(
         "prior_years": sorted(int(year) for year in prior_years),
         "target_years": sorted(int(year) for year in target_years),
         "prior_bank_size": int(bank_size),
+        **dict(stress_diagnostics or {}),
         **prior_diagnostics,
     }
     return ElectricityForecastingTask(
@@ -508,6 +509,61 @@ def _select_targets(
     return selected
 
 
+def _percentile_ranks(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="stable")
+    ranks = np.empty(values.size, dtype=np.float64)
+    ranks[order] = (np.arange(values.size, dtype=np.float64) + 1.0) / values.size
+    return ranks
+
+
+def stress_diagnostics_for_targets(targets: list[WindowSpec]) -> list[dict[str, float | bool]]:
+    """Rank stress against the complete target set, independent of execution shards."""
+    if not targets:
+        return []
+    prefix_cv = np.asarray([target.prefix_cv for target in targets], dtype=np.float64)
+    prefix_ramp = np.asarray(
+        [target.prefix_ramp_standardized for target in targets], dtype=np.float64
+    )
+    cv_ranks = _percentile_ranks(prefix_cv)
+    ramp_ranks = _percentile_ranks(prefix_ramp)
+    scores = 0.5 * (cv_ranks + ramp_ranks)
+    threshold = float(np.quantile(scores, 0.8))
+    return [
+        {
+            "stress_prefix_cv_rank": float(cv_rank),
+            "stress_prefix_ramp_rank": float(ramp_rank),
+            "stress_score": float(score),
+            "stress_threshold": threshold,
+            "stress": bool(score >= threshold),
+        }
+        for cv_rank, ramp_rank, score in zip(cv_ranks, ramp_ranks, scores)
+    ]
+
+
+def _validate_expected_targets(
+    targets: list[WindowSpec],
+    clients: list[str],
+    expected_targets: Mapping[int, tuple[str, str]],
+) -> None:
+    expected_ids = set(range(len(targets)))
+    if set(expected_targets) != expected_ids:
+        raise ValueError(
+            "The frozen ELD target manifest does not match the configured target count."
+        )
+    mismatches = []
+    for target_id, target in enumerate(targets):
+        actual = (str(clients[target.client_idx]), str(target.start_time))
+        expected = tuple(str(value) for value in expected_targets[target_id])
+        if actual != expected:
+            mismatches.append((target_id, expected, actual))
+    if mismatches:
+        target_id, expected, actual = mismatches[0]
+        raise ValueError(
+            "ELD target selection drifted from the frozen original experiment: "
+            f"target {target_id} expected {expected}, got {actual}."
+        )
+
+
 def _year_set(values: Iterable[int] | None) -> set[int] | None:
     if values is None:
         return None
@@ -530,6 +586,7 @@ def load_electricity_tasks(
     min_prefix_std: float = 1.0e-3,
     prior_selection: str = "calendar",
     target_ids: Iterable[int] | None = None,
+    expected_targets: Mapping[int, tuple[str, str]] | None = None,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.float64,
 ) -> list[ElectricityForecastingTask]:
@@ -563,6 +620,9 @@ def load_electricity_tasks(
             f"got prior_years={sorted(resolved_prior_years)}, target_years={sorted(resolved_target_years)}."
         )
     targets = _select_targets(specs, years=resolved_target_years, n_targets=n_targets, seed=seed)
+    if expected_targets is not None:
+        _validate_expected_targets(targets, data.clients, expected_targets)
+    stress_diagnostics = stress_diagnostics_for_targets(targets)
     requested_ids = (
         list(range(len(targets))) if target_ids is None else [int(idx) for idx in target_ids]
     )
@@ -595,6 +655,7 @@ def load_electricity_tasks(
             prefix_eps=min_prefix_std,
             prior_selection=prior_selection,
             window_index=window_index,
+            stress_diagnostics=stress_diagnostics[target_id],
         )
         for target_id, target in ((idx, targets[idx]) for idx in requested_ids)
     ]
@@ -650,7 +711,6 @@ def load_synthetic_tasks(
         prefix_raw = target_raw[:prefix_length]
         prefix_std = max(float(prefix_raw.std()), 1.0e-3)
         metadata = {
-            "methodology_version": 2,
             "protocol": "synthetic_historical_prior_online_forecasting",
             "target_id": int(target_id),
             "client_idx": int(target_id),

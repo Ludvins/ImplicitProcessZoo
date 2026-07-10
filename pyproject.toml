@@ -56,6 +56,9 @@ Issues = "https://github.com/Ludvins/ImplicitProcessZoo/issues"
 [tool.setuptools.packages.find]
 include = ["implicit_process_zoo*", "experiments*"]
 
+[tool.setuptools.package-data]
+"experiments.eld_forecasting" = ["paper_targets.csv", "regeneration.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 xfail_strict = true

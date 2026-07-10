@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +43,12 @@ PAPER_MIN_WIDTH = 9.0
 PAPER_TITLE_FONTSIZE = 12
 PAPER_TICK_LABELSIZE = 8.5
 PAPER_POSTERIOR_SAMPLE_LINES = 20
+PDF_METADATA = {
+    "Creator": "ImplicitProcessZoo",
+    "Producer": "Matplotlib",
+    "CreationDate": datetime(2026, 1, 1, tzinfo=timezone.utc),
+    "ModDate": datetime(2026, 1, 1, tzinfo=timezone.utc),
+}
 
 
 def _method_dirs(results_root: Path, methods: list[str] | None, *, seed: int = 0) -> list[Path]:
@@ -66,10 +73,15 @@ def _load_prediction(method_dir: Path, target_id: int):
     path = method_dir / "predictions" / f"target_{target_id}.npz"
     if not path.exists():
         return None
-    data = np.load(path)
-    if "methodology_version" not in data or int(data["methodology_version"]) != 2:
-        raise ValueError(f"Refusing non-v2 ELD prediction artifact: {path}")
-    return data
+    return np.load(path)
+
+
+def _forecast_start(data, context_t: np.ndarray) -> float:
+    if "forecast_start_hour" in data:
+        return float(data["forecast_start_hour"])
+    if context_t.size > 1:
+        return float(context_t[-1] + np.median(np.diff(context_t)))
+    return float(context_t[-1]) if context_t.size else 0.0
 
 
 def _samples_2d(data) -> np.ndarray:
@@ -91,6 +103,34 @@ def _reference_series(data):
     return t, truth, context_t, context_y
 
 
+def _validate_loaded_predictions(loaded, *, target_id: int, seed: int) -> None:
+    reference_method, reference = loaded[0]
+    reference_t, reference_truth, reference_context_t, reference_context_y = _reference_series(
+        reference
+    )
+    reference_identity = tuple(
+        str(reference[key]) if key in reference else None for key in ("client_id", "start_time")
+    )
+    for method, data in loaded[1:]:
+        t, truth, context_t, context_y = _reference_series(data)
+        identity = tuple(
+            str(data[key]) if key in data else None for key in ("client_id", "start_time")
+        )
+        if identity != reference_identity or not all(
+            np.array_equal(left, right)
+            for left, right in (
+                (t, reference_t),
+                (truth, reference_truth),
+                (context_t, reference_context_t),
+                (context_y, reference_context_y),
+            )
+        ):
+            raise ValueError(
+                f"Prediction artifact mismatch for seed {seed}, target {target_id}: "
+                f"{reference_method} and {method} do not describe the same trajectory."
+            )
+
+
 def _save_figure(fig, path_base: Path, formats: list[str], *, dpi: int = 180) -> list[Path]:
     written = []
     path_base.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +141,8 @@ def _save_figure(fig, path_base: Path, formats: list[str], *, dpi: int = 180) ->
         out_path = path_base.with_suffix(f".{suffix}")
         if suffix == "png":
             fig.savefig(out_path, dpi=int(dpi))
+        elif suffix == "pdf":
+            fig.savefig(out_path, metadata=PDF_METADATA)
         else:
             fig.savefig(out_path)
         written.append(out_path)
@@ -125,6 +167,7 @@ def _load_target_predictions(
         raise FileNotFoundError(
             f"No prediction files found for target {target_id} seed {seed} under {results_root}."
         )
+    _validate_loaded_predictions(loaded, target_id=target_id, seed=seed)
     return loaded
 
 
@@ -142,12 +185,12 @@ def plot_target(
     loaded = _load_target_predictions(results_root, target_id, methods, seed=seed)
     reference = loaded[0][1]
     t, truth, context_t, context_y = _reference_series(reference)
-    t_obs = float(context_t[-1]) if context_t.size else 0.0
+    forecast_start = _forecast_start(reference, context_t)
 
     fig, ax = plt.subplots(figsize=(9.0, 4.8))
     ax.plot(t, truth, color="black", linewidth=2.0, label="truth", zorder=5)
     ax.scatter(context_t, context_y, color="black", s=18, label="observed context", zorder=6)
-    ax.axvline(t_obs, color="black", linewidth=1.0, linestyle="--", alpha=0.6)
+    ax.axvline(forecast_start, color="black", linewidth=1.0, linestyle="--", alpha=0.6)
 
     for method, data in loaded:
         color = DEFAULT_COLORS.get(method)
@@ -201,10 +244,24 @@ def plot_target_method_grid(
         mean = samples.mean(axis=0)
         q05 = np.quantile(samples, 0.05, axis=0)
         q95 = np.quantile(samples, 0.95, axis=0)
-        t_obs = float(train_t[-1]) if train_t.size else 0.0
+        forecast_start = _forecast_start(data, train_t)
 
-        ax.axvspan(0.0, t_obs, color=PAPER_OBSERVED_WINDOW_COLOR, alpha=0.7, linewidth=0, zorder=-2)
-        ax.axvline(t_obs, color="black", linestyle="--", linewidth=0.85, alpha=0.6, zorder=2)
+        ax.axvspan(
+            0.0,
+            forecast_start,
+            color=PAPER_OBSERVED_WINDOW_COLOR,
+            alpha=0.7,
+            linewidth=0,
+            zorder=-2,
+        )
+        ax.axvline(
+            forecast_start,
+            color="black",
+            linestyle="--",
+            linewidth=0.85,
+            alpha=0.6,
+            zorder=2,
+        )
         for sample in samples[:PAPER_POSTERIOR_SAMPLE_LINES]:
             ax.plot(t, sample, color=PAPER_POSTERIOR_COLOR, alpha=0.20, linewidth=0.8, zorder=1)
         ax.fill_between(t, q05, q95, color=PAPER_POSTERIOR_COLOR, alpha=0.22, linewidth=0, zorder=2)
@@ -227,7 +284,7 @@ def plot_target_method_grid(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot ELD prediction illustrations.")
-    parser.add_argument("--results-root", default="results/eld_forecasting_v2")
+    parser.add_argument("--results-root", default="results/eld_forecasting")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument(
         "--target-ids", default=None, help="Comma-separated target ids. Defaults to all available."

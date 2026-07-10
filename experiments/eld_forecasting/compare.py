@@ -12,13 +12,32 @@ def aggregate(results_root: str | Path) -> pd.DataFrame:
     paths = list(root.glob("*/*/metrics_per_target_region.csv"))
     if not paths:
         raise FileNotFoundError(f"No ELD metrics_per_target_region.csv files found under {root}.")
-    frames = [pd.read_csv(path) for path in paths]
+    configs = [(path.parent / "config.yaml").read_text(encoding="utf-8") for path in paths]
+    if any(config != configs[0] for config in configs[1:]):
+        raise ValueError("ELD result configurations differ; refusing to aggregate them.")
+    frames = []
+    for path in paths:
+        frame = pd.read_csv(path)
+        if "run_seed" not in frame:
+            try:
+                frame["run_seed"] = int(path.parent.name.removeprefix("seed_"))
+            except ValueError as error:
+                raise ValueError(f"Cannot infer run seed from {path}.") from error
+        frames.append(frame)
     data = pd.concat(frames, ignore_index=True)
-    if "methodology_version" not in data:
-        raise ValueError("ELD methodology-v1 and v2 results cannot be mixed; use a v2-only root.")
-    data = data[data["methodology_version"] == 2]
-    if data.empty:
-        raise ValueError("No methodology-version 2 ELD rows were found under the selected root.")
+    duplicate_keys = ["method", "run_seed", "target_id", "region"]
+    if data.duplicated(duplicate_keys).any():
+        raise ValueError("ELD results contain duplicate method/seed/target/region rows.")
+    identity_counts = data.groupby(["run_seed", "target_id"])[["client_id", "start_time"]].nunique()
+    if bool((identity_counts > 1).any().any()):
+        raise ValueError("ELD methods do not share identical target identities.")
+    target_sets = {
+        method: set(zip(group["run_seed"], group["target_id"], group["region"]))
+        for method, group in data.groupby("method")
+    }
+    reference_targets = next(iter(target_sets.values()))
+    if any(targets != reference_targets for targets in target_sets.values()):
+        raise ValueError("ELD methods do not contain identical seed/target/region rows.")
     metrics = [
         "rmse",
         "nll",
@@ -34,23 +53,43 @@ def aggregate(results_root: str | Path) -> pd.DataFrame:
         "eval_time_sec",
     ]
     rows = []
-    for keys, group in data.groupby(["method", "region", "stress"], dropna=False):
-        method, region, stress = keys
-        row = {"method": method, "region": region, "stress": stress, "n": len(group)}
-        for metric in metrics:
-            if metric in group:
+    seed_groups = [("all", data)] + [
+        (str(int(run_seed)), group) for run_seed, group in data.groupby("run_seed")
+    ]
+    for run_seed, seed_group in seed_groups:
+        for (method, region), group in seed_group.groupby(["method", "region"]):
+            row = {
+                "run_seed": run_seed,
+                "method": method,
+                "region": region,
+                "n": len(group),
+            }
+            for metric in metrics:
+                if metric not in group:
+                    continue
                 values = group[metric].to_numpy(dtype=np.float64)
-                row[f"{metric}_mean"] = float(np.nanmean(values))
-                row[f"{metric}_stderr"] = float(
-                    np.nanstd(values) / max(1.0, np.sqrt(np.isfinite(values).sum()))
-                )
-        rows.append(row)
-    return pd.DataFrame(rows).sort_values(["region", "stress", "method"]).reset_index(drop=True)
+                finite = values[np.isfinite(values)]
+                if not finite.size:
+                    continue
+                row[f"{metric}_median"] = float(np.median(finite))
+                row[f"{metric}_q25"] = float(np.quantile(finite, 0.25))
+                row[f"{metric}_q75"] = float(np.quantile(finite, 0.75))
+                row[f"{metric}_mean"] = float(np.mean(finite))
+            rows.append(row)
+    result = pd.DataFrame(rows)
+    result["_seed_order"] = result["run_seed"].map(
+        lambda value: -1 if str(value) == "all" else int(value)
+    )
+    return (
+        result.sort_values(["_seed_order", "region", "method"])
+        .drop(columns="_seed_order")
+        .reset_index(drop=True)
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Aggregate ELD forecasting metrics.")
-    parser.add_argument("--results-root", default="results/eld_forecasting_v2")
+    parser.add_argument("--results-root", default="results/eld_forecasting")
     parser.add_argument("--output", default=None)
     return parser.parse_args(argv)
 

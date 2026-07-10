@@ -615,12 +615,12 @@ create it from the NYC yellow taxi parquet source if `pyarrow` is installed.
 
 ## Electricity Load Forecasting
 
-The methodology-version 2 ELD experiments are documented in
+The canonical corrected ELD experiment is documented in
 [`experiments/eld_forecasting/README.md`](experiments/eld_forecasting/README.md).
-That guide covers data preparation, non-overlapping index regions, leakage
-controls, validation-bank selection, resource expectations, result schemas,
-and exact seed-0 rerun commands. Version-1 outputs are historical artifacts and
-must not be aggregated with corrected version-2 results.
+That guide freezes the original 24-hour-context/24-hour-forecast protocol and
+target identities, and covers data preparation, corrected half-open index
+regions, reporting, resource expectations, and exact three-seed and figure
+reproduction commands.
 
 ## Synthetic Plot Runner
 

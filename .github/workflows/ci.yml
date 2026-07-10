@@ -61,14 +61,14 @@ jobs:
           python -m experiments.eld_forecasting.merge_shards --help
           python -m experiments.eld_forecasting.compare --help
           python -m experiments.eld_forecasting.plot_predictions --help
-      - name: ELD methodology-v2 synthetic smoke
+      - name: ELD synthetic smoke
         run: >-
           python -m experiments.eld_forecasting.run
           --preset eld_smoke
           --method all
           --synthetic-smoke
           --seed 0
-          --output-dir results/ci_eld_v2
+          --output-dir results/ci_eld
           --disable-tqdm
       - run: python -m build
       - run: python -m twine check dist/*
