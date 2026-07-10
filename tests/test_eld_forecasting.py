@@ -1,8 +1,18 @@
 import csv
+from types import SimpleNamespace
 
+import numpy as np
+import pandas as pd
 import torch
 
-from experiments.eld_forecasting.datasets import load_synthetic_tasks
+from experiments.eld_forecasting import valbank
+from experiments.eld_forecasting.datasets import (
+    ElectricityData,
+    WindowIndex,
+    WindowSpec,
+    load_synthetic_tasks,
+)
+from experiments.eld_forecasting.metrics import forecast_regions, validation_test_regions
 from experiments.eld_forecasting.priors import HistoricalLoadWindowPrior
 from experiments.eld_forecasting.run import (
     build_model,
@@ -90,3 +100,133 @@ def test_eld_synthetic_runner_writes_metrics(tmp_path):
         with path.open("r", newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
         assert {row["region"] for row in rows} >= {"full_forecast", "same_day_forecast"}
+        assert {row["methodology_version"] for row in rows} == {"2"}
+        assert all("region_start_idx" in row and "region_stop_idx" in row for row in rows)
+        assert all("region_include_left" not in row for row in rows)
+
+
+def test_eld_regions_are_half_open_nonoverlapping_and_dynamic():
+    default = forecast_regions(window_points=192, prefix_points=32)
+    assert default["observed_prefix"] == {"start": 0, "stop": 32}
+    assert default["full_forecast"] == {"start": 32, "stop": 192}
+    assert default["same_day_forecast"] == {"start": 32, "stop": 96}
+    assert default["next_day_forecast"] == {"start": 96, "stop": 192}
+
+    smoke = forecast_regions(window_points=48, prefix_points=8)
+    assert smoke["observed_prefix"]["stop"] == smoke["full_forecast"]["start"]
+    assert "next_day_forecast" not in smoke
+
+    split = validation_test_regions(window_points=192, train_points=60, context_points=80)
+    assert split["validation"] == {"start": 60, "stop": 80}
+    assert split["final_test"] == {"start": 80, "stop": 192}
+    assert split["same_day_test"] == {"start": 80, "stop": 96}
+    assert split["next_day_test"] == {"start": 96, "stop": 192}
+
+
+def test_validation_candidates_share_target_seed(monkeypatch):
+    args = valbank.parse_args([])
+    args.candidate_prior_selections = "calendar,prefix_nn"
+    observed_seeds = []
+
+    def fake_make_task(*_args, prior_selection, seed, **_kwargs):
+        observed_seeds.append(seed)
+        return SimpleNamespace(
+            metadata={
+                "client_id": "client",
+                "start_time": "time",
+                "rule": prior_selection,
+                "prior_candidate_count": 4,
+                "prior_requested_candidate_count": 4,
+                "prior_fallback_tier": 0,
+                "prior_actual_calendar_constraint": prior_selection == "calendar",
+                "prior_actual_client_constraint": "any",
+            }
+        )
+
+    monkeypatch.setattr(valbank, "_make_task", fake_make_task)
+    monkeypatch.setattr(valbank.base_run, "build_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        valbank.base_run,
+        "fit_model",
+        lambda *_args, **_kwargs: {"train_time_sec": 0.0, "steps": 0},
+    )
+    monkeypatch.setattr(
+        valbank,
+        "_score_validation",
+        lambda _model, _method, task, _config, **_kwargs: {
+            "crps": 0.0 if task.metadata["rule"] == "prefix_nn" else 1.0
+        },
+    )
+
+    selected, rows = valbank._select_prior_rules(
+        [object()],
+        None,
+        None,
+        args=args,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        train_points=60,
+        window_points=192,
+        window_index=None,
+    )
+    assert len(set(observed_seeds)) == 1
+    assert selected == {0: "prefix_nn"}
+    assert all(row["candidate_rule_count"] == 2 for row in rows)
+
+
+def test_window_index_vectorized_selection_records_fallback_and_caches():
+    values = np.asarray(
+        [
+            [10.0, 30.0],
+            [12.0, 29.0],
+            [11.0, 28.0],
+            [13.0, 27.0],
+            [20.0, 40.0],
+            [24.0, 39.0],
+            [21.0, 38.0],
+            [25.0, 37.0],
+            [15.0, 10.0],
+            [16.0, 12.0],
+            [17.0, 11.0],
+            [18.0, 13.0],
+        ],
+        dtype=np.float32,
+    )
+    data = ElectricityData(
+        values=values,
+        timestamps=pd.date_range("2014-01-01", periods=len(values), freq="15min"),
+        clients=["a", "b"],
+    )
+    target = WindowSpec(0, 0, "target", 2014, 1, False, 0.1, 2.0)
+    same_client_noncalendar = WindowSpec(0, 4, "prior-a", 2011, 6, False, 0.1, 2.0)
+    other_client_calendar = WindowSpec(1, 8, "prior-b", 2011, 1, False, 0.1, 2.0)
+    index = WindowIndex(
+        data,
+        [target, same_client_noncalendar, other_client_calendar],
+        window_length=4,
+        prefix_length=2,
+        prefix_eps=1e-3,
+    )
+    target_prefix = np.asarray([-1.0, 1.0], dtype=np.float32)
+    selected, diagnostics = index.select(
+        target,
+        years={2011},
+        bank_size=2,
+        seed=9,
+        target_prefix_norm=target_prefix,
+        selection="same_client_calendar_prefix_nn",
+    )
+    assert {spec.start_idx for spec in selected} == {4}
+    assert diagnostics["prior_requested_candidate_count"] == 0
+    assert diagnostics["prior_fallback_tier"] == 1
+    assert diagnostics["prior_actual_client_constraint"] == "same"
+    cached, cached_diagnostics = index.select(
+        target,
+        years={2011},
+        bank_size=2,
+        seed=9,
+        target_prefix_norm=target_prefix,
+        selection="same_client_calendar_prefix_nn",
+    )
+    assert [spec.start_idx for spec in cached] == [spec.start_idx for spec in selected]
+    assert cached_diagnostics == diagnostics

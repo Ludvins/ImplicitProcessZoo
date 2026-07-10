@@ -6,12 +6,95 @@ import torch
 
 from experiments.common.metrics import empirical_crps
 
-DEFAULT_REGIONS = {
-    "observed_prefix": (0.0, 8.0, True),
-    "full_forecast": (8.0, 48.0, False),
-    "same_day_forecast": (8.0, 24.0, False),
-    "next_day_forecast": (24.0, 48.0, False),
-}
+DAY_POINTS = 96
+
+
+def forecast_regions(window_points: int, prefix_points: int) -> dict[str, dict[str, int]]:
+    """Build half-open observed/forecast regions for any ELD preset."""
+    window_points = int(window_points)
+    prefix_points = int(prefix_points)
+    if not 0 < prefix_points < window_points:
+        raise ValueError("prefix_points must leave nonempty observed and forecast partitions.")
+    regions = {
+        "observed_prefix": {"start": 0, "stop": prefix_points},
+        "full_forecast": {"start": prefix_points, "stop": window_points},
+    }
+    same_day_stop = min(DAY_POINTS, window_points)
+    if prefix_points < same_day_stop:
+        regions["same_day_forecast"] = {"start": prefix_points, "stop": same_day_stop}
+    next_day_start = max(DAY_POINTS, prefix_points)
+    if next_day_start < window_points:
+        regions["next_day_forecast"] = {"start": next_day_start, "stop": window_points}
+    validate_region_partition(
+        regions,
+        window_points,
+        partition_names=("observed_prefix", "full_forecast"),
+        cover=(0, window_points),
+    )
+    return regions
+
+
+def validation_test_regions(
+    window_points: int,
+    train_points: int,
+    context_points: int,
+) -> dict[str, dict[str, int]]:
+    """Build train/validation/test half-open regions for validation-bank runs."""
+    window_points = int(window_points)
+    train_points = int(train_points)
+    context_points = int(context_points)
+    if not 0 < train_points < context_points < window_points:
+        raise ValueError("train, validation, and final-test partitions must all be nonempty.")
+    regions = {
+        "training_context": {"start": 0, "stop": train_points},
+        "validation": {"start": train_points, "stop": context_points},
+        "observed_context": {"start": 0, "stop": context_points},
+        "final_test": {"start": context_points, "stop": window_points},
+    }
+    same_day_stop = min(DAY_POINTS, window_points)
+    if context_points < same_day_stop:
+        regions["same_day_test"] = {"start": context_points, "stop": same_day_stop}
+    next_day_start = max(DAY_POINTS, context_points)
+    if next_day_start < window_points:
+        regions["next_day_test"] = {"start": next_day_start, "stop": window_points}
+    validate_region_partition(
+        regions,
+        window_points,
+        partition_names=("training_context", "validation", "final_test"),
+        cover=(0, window_points),
+    )
+    return regions
+
+
+def validate_region_partition(
+    regions: dict[str, dict[str, int]],
+    window_points: int,
+    *,
+    partition_names: tuple[str, ...],
+    cover: tuple[int, int],
+) -> None:
+    intervals = []
+    for name in partition_names:
+        if name not in regions:
+            raise ValueError(f"Required metric region {name!r} is missing.")
+        start = int(regions[name]["start"])
+        stop = int(regions[name]["stop"])
+        if not 0 <= start < stop <= int(window_points):
+            raise ValueError(
+                f"Metric region {name!r} is empty or out of bounds: [{start}, {stop})."
+            )
+        intervals.append((start, stop, name))
+    intervals.sort()
+    if intervals[0][0] != int(cover[0]) or intervals[-1][1] != int(cover[1]):
+        raise ValueError(f"Metric regions do not cover intended interval {cover}.")
+    for previous, current in zip(intervals, intervals[1:]):
+        if previous[1] != current[0]:
+            raise ValueError(
+                f"Metric regions {previous[2]!r} and {current[2]!r} overlap or leave a gap."
+            )
+
+
+DEFAULT_REGIONS = forecast_regions(192, 32)
 
 
 def _as_tensor(value, *, like: torch.Tensor | None = None) -> torch.Tensor:
@@ -81,31 +164,35 @@ def cqm_from_samples(samples, y_true, levels=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7,
     return torch.stack(errors).mean()
 
 
-def coerce_regions(regions: dict | None = None) -> dict[str, tuple[float, float, bool]]:
+def coerce_regions(regions: dict | None = None) -> dict[str, tuple[int, int]]:
     if regions is None:
         return dict(DEFAULT_REGIONS)
-    result: dict[str, tuple[float, float, bool]] = {}
+    result: dict[str, tuple[int, int]] = {}
     for name, spec in regions.items():
         if isinstance(spec, dict):
-            lo = spec["lo"]
-            hi = spec["hi"]
-            include_left = spec.get("include_left", False)
+            start = spec["start"]
+            stop = spec["stop"]
         else:
             values = list(spec)
-            lo, hi = values[:2]
-            include_left = values[2] if len(values) > 2 else False
-        result[str(name)] = (float(lo), float(hi), bool(include_left))
+            start, stop = values[:2]
+        start = int(start)
+        stop = int(stop)
+        if start < 0 or stop <= start:
+            raise ValueError(f"Invalid half-open region {name!r}: [{start}, {stop}).")
+        result[str(name)] = (start, stop)
     return result
 
 
-def region_masks(t, regions: dict[str, tuple[float, float, bool]] | None = None):
+def region_masks(t, regions: dict | None = None):
     t = _as_tensor(t).reshape(-1)
     masks = {}
-    for name, (lo, hi, include_left) in coerce_regions(regions).items():
-        if include_left:
-            mask = (t >= lo) & (t <= hi)
-        else:
-            mask = (t > lo) & (t <= hi)
+    indices = torch.arange(t.numel(), device=t.device)
+    for name, (start, stop) in coerce_regions(regions).items():
+        if stop > t.numel():
+            raise ValueError(
+                f"Metric region {name!r} stops at {stop}, beyond the {t.numel()} samples."
+            )
+        mask = (indices >= start) & (indices < stop)
         masks[name] = mask
     return masks
 
@@ -136,6 +223,7 @@ def metrics_by_region(
     t = _as_tensor(t, like=samples).reshape(-1)
     noise_var = _as_tensor(noise_std, like=samples).square()
     rows = {}
+    coerced = coerce_regions(regions)
     for region, mask in region_masks(t, regions=regions).items():
         if not bool(mask.any()):
             continue
@@ -145,6 +233,10 @@ def metrics_by_region(
         coverage = interval_coverage(region_samples, region_y, levels=levels)
         widths = interval_width(region_samples, levels=levels)
         row = {
+            "region_start_idx": int(coerced[region][0]),
+            "region_stop_idx": int(coerced[region][1]),
+            "region_first_time": float(region_t[0].detach().cpu()),
+            "region_last_time": float(region_t[-1].detach().cpu()),
             "rmse": float(rmse(region_samples.mean(dim=0), region_y).detach().cpu()),
             "nll": float(mixture_gaussian_nlpd(region_samples, region_y, noise_var).detach().cpu()),
             "crps": float(crps_from_samples(region_samples, region_y).detach().cpu()),

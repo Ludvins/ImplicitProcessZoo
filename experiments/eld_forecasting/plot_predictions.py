@@ -66,7 +66,10 @@ def _load_prediction(method_dir: Path, target_id: int):
     path = method_dir / "predictions" / f"target_{target_id}.npz"
     if not path.exists():
         return None
-    return np.load(path)
+    data = np.load(path)
+    if "methodology_version" not in data or int(data["methodology_version"]) != 2:
+        raise ValueError(f"Refusing non-v2 ELD prediction artifact: {path}")
+    return data
 
 
 def _samples_2d(data) -> np.ndarray:
@@ -224,7 +227,7 @@ def plot_target_method_grid(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot ELD prediction illustrations.")
-    parser.add_argument("--results-root", default="results/eld_forecasting_visual_online_beta1")
+    parser.add_argument("--results-root", default="results/eld_forecasting_v2")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument(
         "--target-ids", default=None, help="Comma-separated target ids. Defaults to all available."

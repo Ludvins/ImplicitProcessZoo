@@ -11,7 +11,7 @@ htmlcov/
 .venv/
 data
 !/implicit_process_zoo/data/
-!/implicit_process_zoo/data/**
+!/implicit_process_zoo/data/*.py
 *.pdf
 /checkpoints
 /figures

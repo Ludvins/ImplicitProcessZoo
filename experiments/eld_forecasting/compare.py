@@ -14,6 +14,11 @@ def aggregate(results_root: str | Path) -> pd.DataFrame:
         raise FileNotFoundError(f"No ELD metrics_per_target_region.csv files found under {root}.")
     frames = [pd.read_csv(path) for path in paths]
     data = pd.concat(frames, ignore_index=True)
+    if "methodology_version" not in data:
+        raise ValueError("ELD methodology-v1 and v2 results cannot be mixed; use a v2-only root.")
+    data = data[data["methodology_version"] == 2]
+    if data.empty:
+        raise ValueError("No methodology-version 2 ELD rows were found under the selected root.")
     metrics = [
         "rmse",
         "nll",
@@ -45,7 +50,7 @@ def aggregate(results_root: str | Path) -> pd.DataFrame:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Aggregate ELD forecasting metrics.")
-    parser.add_argument("--results-root", default="results/eld_forecasting")
+    parser.add_argument("--results-root", default="results/eld_forecasting_v2")
     parser.add_argument("--output", default=None)
     return parser.parse_args(argv)
 

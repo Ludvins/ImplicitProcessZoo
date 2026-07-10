@@ -20,8 +20,154 @@ class WindowSpec:
     year: int
     month: int
     is_weekend: bool
-    prefix_volatility: float
-    prefix_ramp: float
+    prefix_cv: float
+    prefix_ramp_standardized: float
+
+
+class WindowIndex:
+    """Vectorized active-window index and cached prior selection engine."""
+
+    def __init__(
+        self,
+        data: ElectricityData,
+        specs: list[WindowSpec],
+        *,
+        window_length: int,
+        prefix_length: int,
+        prefix_eps: float,
+    ):
+        if not specs:
+            raise ValueError("WindowIndex requires at least one active window specification.")
+        self.data = data
+        self.specs = tuple(specs)
+        self.window_length = int(window_length)
+        self.prefix_length = int(prefix_length)
+        self.prefix_eps = float(prefix_eps)
+        self.client_indices = np.asarray([spec.client_idx for spec in specs], dtype=np.int32)
+        self.start_indices = np.asarray([spec.start_idx for spec in specs], dtype=np.int64)
+        self.years = np.asarray([spec.year for spec in specs], dtype=np.int16)
+        self.months = np.asarray([spec.month for spec in specs], dtype=np.int8)
+        self.weekends = np.asarray([spec.is_weekend for spec in specs], dtype=bool)
+        positions = self.start_indices[:, None] + np.arange(self.prefix_length, dtype=np.int64)
+        prefixes = np.asarray(
+            data.values[positions, self.client_indices[:, None]], dtype=np.float32
+        )
+        means = prefixes.mean(axis=1, keepdims=True)
+        scales = np.maximum(prefixes.std(axis=1, keepdims=True), self.prefix_eps)
+        self.normalized_prefixes = np.ascontiguousarray((prefixes - means) / scales)
+        self._selection_cache: dict[tuple, tuple[np.ndarray, dict]] = {}
+
+    def select(
+        self,
+        target: WindowSpec,
+        *,
+        years: set[int],
+        bank_size: int,
+        seed: int,
+        target_prefix_norm: np.ndarray,
+        selection: str,
+    ) -> tuple[list[WindowSpec], dict]:
+        cache_key = (
+            target.client_idx,
+            target.start_idx,
+            tuple(sorted(int(year) for year in years)),
+            int(bank_size),
+            int(seed),
+            str(selection),
+        )
+        cached = self._selection_cache.get(cache_key)
+        if cached is not None:
+            indices, diagnostics = cached
+            return [self.specs[int(index)] for index in indices], dict(diagnostics)
+
+        selection = str(selection)
+        prefix_rules = {
+            "prefix_nn",
+            "calendar_prefix_nn",
+            "same_client_prefix_nn",
+            "same_client_calendar_prefix_nn",
+            "other_client_prefix_nn",
+            "other_client_calendar_prefix_nn",
+        }
+        valid_rules = prefix_rules | {"calendar", "other_client_calendar"}
+        if selection not in valid_rules:
+            raise ValueError(f"Unknown ELD prior-selection rule {selection!r}.")
+        requested_calendar = "calendar" in selection
+        requested_client = (
+            "same"
+            if selection.startswith("same_client")
+            else "other"
+            if selection.startswith("other_client")
+            else "any"
+        )
+        months = {target.month, 1 + ((target.month - 2) % 12), 1 + (target.month % 12)}
+        base = np.isin(self.years, list(years))
+        base &= ~(
+            (self.client_indices == target.client_idx) & (self.start_indices == target.start_idx)
+        )
+
+        def constraint_mask(*, calendar: bool, client: str) -> np.ndarray:
+            mask = base.copy()
+            if calendar:
+                mask &= np.isin(self.months, list(months)) & (self.weekends == target.is_weekend)
+            if client == "same":
+                mask &= self.client_indices == target.client_idx
+            elif client == "other":
+                mask &= self.client_indices != target.client_idx
+            return mask
+
+        requested_mask = constraint_mask(calendar=requested_calendar, client=requested_client)
+        tiers = [(requested_calendar, requested_client)]
+        if requested_calendar:
+            tiers.append((False, requested_client))
+        if requested_client != "any":
+            tiers.append((False, "any"))
+        candidate_indices = np.empty(0, dtype=np.int64)
+        applied_tier = 0
+        actual_calendar = requested_calendar
+        actual_client = requested_client
+        for tier, (calendar, client) in enumerate(dict.fromkeys(tiers)):
+            candidate_indices = np.flatnonzero(constraint_mask(calendar=calendar, client=client))
+            if candidate_indices.size:
+                applied_tier = tier
+                actual_calendar = calendar
+                actual_client = client
+                break
+        if not candidate_indices.size:
+            raise ValueError(f"No historical prior windows available for target {target}.")
+
+        rng = np.random.default_rng(seed)
+        diagnostics = {
+            "prior_selection": selection,
+            "prior_selected_rule": selection,
+            "prior_requested_candidate_count": int(requested_mask.sum()),
+            "prior_candidate_count": int(candidate_indices.size),
+            "prior_fallback_tier": int(applied_tier),
+            "prior_actual_calendar_constraint": bool(actual_calendar),
+            "prior_actual_client_constraint": actual_client,
+        }
+        if selection in prefix_rules:
+            target_prefix = np.asarray(target_prefix_norm[: self.prefix_length], dtype=np.float32)
+            differences = self.normalized_prefixes[candidate_indices] - target_prefix[None, :]
+            distances = np.mean(np.square(differences), axis=1, dtype=np.float64)
+            order = np.argsort(distances, kind="stable")
+            nearest_count = min(int(bank_size), order.size)
+            chosen = candidate_indices[order[:nearest_count]]
+            if nearest_count < int(bank_size):
+                extras = rng.integers(0, nearest_count, size=int(bank_size) - nearest_count)
+                chosen = np.concatenate([chosen, chosen[extras]])
+            selected_distances = distances[order[:nearest_count]]
+            diagnostics.update(
+                {
+                    "prior_neighbor_distance_mean": float(selected_distances.mean()),
+                    "prior_neighbor_distance_max": float(selected_distances.max()),
+                }
+            )
+        else:
+            chosen = candidate_indices[rng.integers(0, candidate_indices.size, size=int(bank_size))]
+        chosen = np.asarray(chosen, dtype=np.int64)
+        self._selection_cache[cache_key] = (chosen, dict(diagnostics))
+        return [self.specs[int(index)] for index in chosen], diagnostics
 
 
 @dataclass
@@ -119,6 +265,7 @@ def build_window_specs(
                 continue
             prefix = window[:prefix_length].astype(np.float64)
             prefix_std = max(float(prefix.std()), min_prefix_std)
+            prefix_mean_abs = max(abs(float(prefix.mean())), min_prefix_std)
             specs.append(
                 WindowSpec(
                     client_idx=int(client_idx),
@@ -127,8 +274,8 @@ def build_window_specs(
                     year=int(stamp.year),
                     month=int(stamp.month),
                     is_weekend=bool(stamp.weekday() >= 5),
-                    prefix_volatility=float(prefix.std()),
-                    prefix_ramp=float(abs(prefix[-1] - prefix[0]) / prefix_std),
+                    prefix_cv=float(prefix.std() / prefix_mean_abs),
+                    prefix_ramp_standardized=float(abs(prefix[-1] - prefix[0]) / prefix_std),
                 )
             )
     return specs
@@ -157,89 +304,23 @@ def _sample_prior_specs(
     prefix_eps: float,
     target_prefix_norm: np.ndarray,
     selection: str = "calendar",
+    window_index: WindowIndex | None = None,
 ) -> tuple[list[WindowSpec], dict]:
-    rng = np.random.default_rng(seed)
-    selection = str(selection)
-    months = {target.month, 1 + ((target.month - 2) % 12), 1 + (target.month % 12)}
-    use_calendar = selection in {
-        "calendar",
-        "calendar_prefix_nn",
-        "same_client_calendar_prefix_nn",
-        "other_client_calendar",
-        "other_client_calendar_prefix_nn",
-    }
-    use_same_client = selection in {"same_client_prefix_nn", "same_client_calendar_prefix_nn"}
-    use_other_client = selection in {
-        "other_client_prefix_nn",
-        "other_client_calendar",
-        "other_client_calendar_prefix_nn",
-    }
-    candidates = [
-        spec
-        for spec in specs
-        if spec.year in years
-        and (not use_calendar or (spec.month in months and spec.is_weekend == target.is_weekend))
-        and (not use_same_client or spec.client_idx == target.client_idx)
-        and (not use_other_client or spec.client_idx != target.client_idx)
-        and not (spec.client_idx == target.client_idx and spec.start_idx == target.start_idx)
-    ]
-    if not candidates:
-        candidates = [
-            spec
-            for spec in specs
-            if spec.year in years
-            and (not use_same_client or spec.client_idx == target.client_idx)
-            and (not use_other_client or spec.client_idx != target.client_idx)
-            and not (spec.client_idx == target.client_idx and spec.start_idx == target.start_idx)
-        ]
-    if not candidates and use_same_client:
-        candidates = [
-            spec
-            for spec in specs
-            if spec.year in years
-            and not (spec.client_idx == target.client_idx and spec.start_idx == target.start_idx)
-        ]
-    if not candidates:
-        raise ValueError(f"No historical prior windows available for target {target}.")
-
-    diagnostics = {
-        "prior_selection": selection,
-        "prior_candidate_count": len(candidates),
-    }
-    if selection in {
-        "prefix_nn",
-        "calendar_prefix_nn",
-        "same_client_prefix_nn",
-        "same_client_calendar_prefix_nn",
-        "other_client_prefix_nn",
-        "other_client_calendar_prefix_nn",
-    }:
-        target_prefix_norm = np.asarray(target_prefix_norm[:prefix_length], dtype=np.float32)
-        distances = np.empty(len(candidates), dtype=np.float64)
-        for index, spec in enumerate(candidates):
-            window = np.asarray(
-                data.values[spec.start_idx : spec.start_idx + window_length, spec.client_idx],
-                dtype=np.float64,
-            )
-            candidate_norm = _normalize_window(window, prefix_length, prefix_eps)[0][:prefix_length]
-            distances[index] = float(np.mean(np.square(candidate_norm - target_prefix_norm)))
-        order = np.argsort(distances, kind="stable")
-        nearest_count = min(int(bank_size), len(order))
-        nearest = [candidates[int(index)] for index in order[:nearest_count]]
-        if nearest_count < int(bank_size):
-            extra_indices = rng.integers(0, nearest_count, size=int(bank_size) - nearest_count)
-            nearest.extend(nearest[int(index)] for index in extra_indices)
-        chosen_distances = distances[order[:nearest_count]]
-        diagnostics.update(
-            {
-                "prior_neighbor_distance_mean": float(np.mean(chosen_distances)),
-                "prior_neighbor_distance_max": float(np.max(chosen_distances)),
-            }
-        )
-        return nearest, diagnostics
-
-    indices = rng.integers(0, len(candidates), size=int(bank_size))
-    return [candidates[int(idx)] for idx in indices], diagnostics
+    window_index = window_index or WindowIndex(
+        data,
+        specs,
+        window_length=window_length,
+        prefix_length=prefix_length,
+        prefix_eps=prefix_eps,
+    )
+    return window_index.select(
+        target,
+        years=years,
+        bank_size=bank_size,
+        seed=seed,
+        target_prefix_norm=target_prefix_norm,
+        selection=selection,
+    )
 
 
 def _make_tensors(
@@ -301,6 +382,7 @@ def make_task_from_spec(
     dtype: torch.dtype,
     prefix_eps: float,
     prior_selection: str = "calendar",
+    window_index: WindowIndex | None = None,
 ) -> ElectricityForecastingTask:
     raw = np.asarray(
         data.values[target.start_idx : target.start_idx + window_length, target.client_idx],
@@ -319,16 +401,19 @@ def make_task_from_spec(
         prefix_eps=prefix_eps,
         target_prefix_norm=y_norm[:prefix_length],
         selection=prior_selection,
+        window_index=window_index,
     )
-    prior_windows = []
-    for spec in prior_specs:
-        window = np.asarray(
-            data.values[spec.start_idx : spec.start_idx + window_length, spec.client_idx],
-            dtype=np.float64,
-        )
-        prior_windows.append(_normalize_window(window, prefix_length, prefix_eps)[0])
+    prior_starts = np.asarray([spec.start_idx for spec in prior_specs], dtype=np.int64)
+    prior_clients = np.asarray([spec.client_idx for spec in prior_specs], dtype=np.int32)
+    positions = prior_starts[:, None] + np.arange(window_length, dtype=np.int64)
+    prior_raw = np.asarray(data.values[positions, prior_clients[:, None]], dtype=np.float64)
+    prior_means = prior_raw[:, :prefix_length].mean(axis=1, keepdims=True)
+    prior_stds = np.maximum(
+        prior_raw[:, :prefix_length].std(axis=1, keepdims=True), float(prefix_eps)
+    )
+    prior_windows = ((prior_raw - prior_means) / prior_stds).astype(np.float32)
     prior = HistoricalLoadWindowPrior(
-        np.stack(prior_windows, axis=0),
+        prior_windows,
         num_samples=bank_size,
         seed=seed,
         device=device,
@@ -350,6 +435,7 @@ def make_task_from_spec(
         target_std=y_std,
     )
     metadata = {
+        "methodology_version": 2,
         "protocol": "historical_prior_online_forecasting",
         "target_id": int(target_id),
         "client_idx": int(target.client_idx),
@@ -363,11 +449,11 @@ def make_task_from_spec(
         "year": int(target.year),
         "month": int(target.month),
         "is_weekend": bool(target.is_weekend),
-        "prefix_volatility": float(target.prefix_volatility),
-        "prefix_ramp": float(target.prefix_ramp),
-        "stress_score": float(max(target.prefix_volatility, target.prefix_ramp)),
+        "stress_prefix_cv": float(target.prefix_cv),
+        "stress_prefix_ramp_standardized": float(target.prefix_ramp_standardized),
         "t_grid": hours,
-        "t_obs": float(prefix_length * 0.25),
+        "last_observed_hour": float((prefix_length - 1) * 0.25),
+        "forecast_start_hour": float(prefix_length * 0.25),
         "context_hours": float(prefix_length * 0.25),
         "context_points": int(prefix_length),
         "forecast_points": int(window_length - prefix_length),
@@ -443,6 +529,7 @@ def load_electricity_tasks(
     min_nonzero_fraction: float = 0.9,
     min_prefix_std: float = 1.0e-3,
     prior_selection: str = "calendar",
+    target_ids: Iterable[int] | None = None,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.float64,
 ) -> list[ElectricityForecastingTask]:
@@ -476,12 +563,25 @@ def load_electricity_tasks(
             f"got prior_years={sorted(resolved_prior_years)}, target_years={sorted(resolved_target_years)}."
         )
     targets = _select_targets(specs, years=resolved_target_years, n_targets=n_targets, seed=seed)
+    requested_ids = (
+        list(range(len(targets))) if target_ids is None else [int(idx) for idx in target_ids]
+    )
+    invalid_ids = [idx for idx in requested_ids if idx < 0 or idx >= len(targets)]
+    if invalid_ids:
+        raise ValueError(f"Requested target ids are out of range: {invalid_ids}")
+    window_index = WindowIndex(
+        data,
+        specs,
+        window_length=window_length,
+        prefix_length=prefix_length,
+        prefix_eps=min_prefix_std,
+    )
     return [
         make_task_from_spec(
             data,
             specs,
             target,
-            target_id=idx,
+            target_id=target_id,
             prior_years=resolved_prior_years,
             target_years=resolved_target_years,
             split_name=split,
@@ -489,13 +589,14 @@ def load_electricity_tasks(
             window_length=window_length,
             prefix_length=prefix_length,
             noise_std_norm=noise_std_norm,
-            seed=seed + 7919 * idx,
+            seed=seed + 7919 * target_id,
             device=device,
             dtype=dtype,
             prefix_eps=min_prefix_std,
             prior_selection=prior_selection,
+            window_index=window_index,
         )
-        for idx, target in enumerate(targets)
+        for target_id, target in ((idx, targets[idx]) for idx in requested_ids)
     ]
 
 
@@ -546,7 +647,10 @@ def load_synthetic_tasks(
             dtype=dtype,
         )
         hours = np.arange(window_length, dtype=np.float64) * 0.25
+        prefix_raw = target_raw[:prefix_length]
+        prefix_std = max(float(prefix_raw.std()), 1.0e-3)
         metadata = {
+            "methodology_version": 2,
             "protocol": "synthetic_historical_prior_online_forecasting",
             "target_id": int(target_id),
             "client_idx": int(target_id),
@@ -560,11 +664,15 @@ def load_synthetic_tasks(
             "year": 2014,
             "month": 1,
             "is_weekend": False,
-            "prefix_volatility": float(np.std(target_raw[:prefix_length])),
-            "prefix_ramp": float(abs(y_norm[prefix_length - 1] - y_norm[0])),
-            "stress_score": float(abs(y_norm[prefix_length - 1] - y_norm[0])),
+            "stress_prefix_cv": float(
+                prefix_raw.std() / max(abs(float(prefix_raw.mean())), 1.0e-3)
+            ),
+            "stress_prefix_ramp_standardized": float(
+                abs(prefix_raw[-1] - prefix_raw[0]) / prefix_std
+            ),
             "t_grid": hours,
-            "t_obs": float(prefix_length * 0.25),
+            "last_observed_hour": float((prefix_length - 1) * 0.25),
+            "forecast_start_hour": float(prefix_length * 0.25),
             "context_hours": float(prefix_length * 0.25),
             "context_points": int(prefix_length),
             "forecast_points": int(window_length - prefix_length),
@@ -583,7 +691,12 @@ def load_synthetic_tasks(
             "target_years": ["synthetic"],
             "prior_bank_size": int(bank_size),
             "prior_selection": "synthetic",
+            "prior_selected_rule": "synthetic",
+            "prior_requested_candidate_count": int(bank_size),
             "prior_candidate_count": int(bank_size),
+            "prior_fallback_tier": 0,
+            "prior_actual_calendar_constraint": False,
+            "prior_actual_client_constraint": "any",
         }
         tasks.append(
             ElectricityForecastingTask(

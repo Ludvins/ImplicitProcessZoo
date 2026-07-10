@@ -13,13 +13,14 @@ import yaml
 from experiments.common import write_csv_rows
 from experiments.eld_forecasting import run as base_run
 from experiments.eld_forecasting.datasets import (
+    WindowIndex,
     _select_targets,
     build_window_specs,
     load_processed,
     make_task_from_spec,
     processed_exists,
 )
-from experiments.eld_forecasting.metrics import metrics_by_region
+from experiments.eld_forecasting.metrics import metrics_by_region, validation_test_regions
 
 CANDIDATE_PRIOR_SELECTIONS = (
     "same_client_prefix_nn",
@@ -92,16 +93,11 @@ def _base_config(
 
 
 def _final_regions(train_hours: float, val_hours: float, window_hours: float) -> dict:
-    context_end = float(train_hours) + float(val_hours)
-    regions = {
-        "observed_context": (0.0, context_end, True),
-        "test_forecast": (context_end, float(window_hours), False),
-    }
-    if context_end < 24.0:
-        regions["same_day_test"] = (context_end, min(24.0, float(window_hours)), False)
-    if window_hours > 24.0:
-        regions["next_day_test"] = (max(24.0, context_end), float(window_hours), False)
-    return regions
+    return validation_test_regions(
+        _hours_to_points(window_hours),
+        _hours_to_points(train_hours),
+        _hours_to_points(train_hours + val_hours),
+    )
 
 
 def _make_task(
@@ -117,6 +113,7 @@ def _make_task(
     seed: int,
     device,
     dtype,
+    window_index: WindowIndex,
 ):
     prior_years = _parse_years(args.prior_years)
     target_years = _parse_years(args.target_years)
@@ -137,6 +134,7 @@ def _make_task(
         dtype=dtype,
         prefix_eps=1.0e-3,
         prior_selection=prior_selection,
+        window_index=window_index,
     )
     return task
 
@@ -160,7 +158,12 @@ def _score_validation(
         t_grid,
         noise_std,
         levels=tuple(config.get("metrics", {}).get("levels", [0.9, 0.95])),
-        regions={"validation": (float(train_hours), float(train_hours) + float(val_hours), False)},
+        regions={
+            "validation": {
+                "start": _hours_to_points(train_hours),
+                "stop": _hours_to_points(train_hours + val_hours),
+            }
+        },
     )
     return rows["validation"]
 
@@ -179,6 +182,7 @@ def _select_prior_rules(
     dtype,
     train_points: int,
     window_points: int,
+    window_index: WindowIndex,
 ) -> tuple[dict[int, str], list[dict]]:
     candidates = _parse_csv(args.candidate_prior_selections)
     unknown = sorted(set(candidates) - set(CANDIDATE_PRIOR_SELECTIONS))
@@ -194,11 +198,10 @@ def _select_prior_rules(
     selection_config["training"]["max_steps"] = args.selection_max_steps
     selection_config["gmvip"]["num_inducing"] = train_points
     selection_config["metrics"]["regions"] = {
-        "validation": (
-            float(args.train_hours),
-            float(args.train_hours) + float(args.val_hours),
-            False,
-        )
+        "validation": {
+            "start": train_points,
+            "stop": _hours_to_points(args.train_hours + args.val_hours),
+        }
     }
 
     chosen: dict[int, str] = {}
@@ -206,8 +209,8 @@ def _select_prior_rules(
     for target_id, target in enumerate(targets):
         best_rule = None
         best_score = math.inf
-        for cand_idx, prior_selection in enumerate(candidates):
-            target_seed = int(args.seed) + 1000 * target_id + 37 * cand_idx
+        for prior_selection in candidates:
+            target_seed = int(args.seed) + 1000 * target_id
             config = copy.deepcopy(selection_config)
             config["prior"]["selection"] = prior_selection
             task = _make_task(
@@ -222,6 +225,7 @@ def _select_prior_rules(
                 seed=target_seed,
                 device=device,
                 dtype=dtype,
+                window_index=window_index,
             )
             model = base_run.build_model(
                 args.selection_method, task, config, seed=target_seed, device=device, dtype=dtype
@@ -242,10 +246,24 @@ def _select_prior_rules(
                 best_rule = prior_selection
             rows.append(
                 {
+                    "methodology_version": 2,
                     "target_id": target_id,
                     "client_id": task.metadata["client_id"],
                     "start_time": task.metadata["start_time"],
                     "candidate_prior_selection": prior_selection,
+                    "candidate_rule_count": len(candidates),
+                    "candidate_target_seed": target_seed,
+                    "prior_candidate_count": task.metadata.get("prior_candidate_count"),
+                    "prior_requested_candidate_count": task.metadata.get(
+                        "prior_requested_candidate_count"
+                    ),
+                    "prior_fallback_tier": task.metadata.get("prior_fallback_tier"),
+                    "prior_actual_calendar_constraint": task.metadata.get(
+                        "prior_actual_calendar_constraint"
+                    ),
+                    "prior_actual_client_constraint": task.metadata.get(
+                        "prior_actual_client_constraint"
+                    ),
                     "selection_method": args.selection_method,
                     "selection_metric": args.selection_metric,
                     "selection_score": score,
@@ -262,6 +280,7 @@ def _select_prior_rules(
         for row in rows:
             if row["target_id"] == target_id:
                 row["selected_prior_selection"] = best_rule
+                row["selected_rule"] = best_rule
                 row["selected"] = row["candidate_prior_selection"] == best_rule
     return chosen, rows
 
@@ -278,6 +297,7 @@ def _run_final_methods(
     context_points: int,
     window_points: int,
     output_dir: Path,
+    window_index: WindowIndex,
 ) -> dict:
     methods = base_run._requested_methods(args.methods)
     final_config = _base_config(
@@ -298,6 +318,41 @@ def _run_final_methods(
         "candidate_prior_selections": _parse_csv(args.candidate_prior_selections),
     }
 
+    task_blueprints = []
+    for target_id, target in enumerate(targets):
+        target_seed = int(args.seed) + 1000 * target_id
+        prior_selection = selected[target_id]
+        task = _make_task(
+            data,
+            specs,
+            target,
+            target_id=target_id,
+            prefix_points=context_points,
+            window_points=window_points,
+            prior_selection=prior_selection,
+            args=args,
+            seed=target_seed,
+            device=device,
+            dtype=dtype,
+            window_index=window_index,
+        )
+        task.metadata.update(
+            {
+                "selection_protocol": "train_context_validation_refit_test",
+                "selection_train_hours": float(args.train_hours),
+                "selection_val_hours": float(args.val_hours),
+                "selection_context_hours": float(args.train_hours + args.val_hours),
+                "selection_test_hours": float(
+                    args.window_hours - args.train_hours - args.val_hours
+                ),
+                "selection_method": args.selection_method,
+                "selection_metric": args.selection_metric,
+                "selected_prior_selection": prior_selection,
+            }
+        )
+        task_blueprints.append(task)
+    base_run._mark_stress_tasks(task_blueprints)
+
     summaries = {}
     for method in methods:
         method_dir = output_dir / method / f"seed_{args.seed}"
@@ -307,36 +362,10 @@ def _run_final_methods(
         )
         rows = []
         runtimes = []
-        for target_id, target in enumerate(targets):
+        for task in task_blueprints:
+            target_id = int(task.metadata["target_id"])
             target_seed = int(args.seed) + 1000 * target_id
             prior_selection = selected[target_id]
-            task = _make_task(
-                data,
-                specs,
-                target,
-                target_id=target_id,
-                prefix_points=context_points,
-                window_points=window_points,
-                prior_selection=prior_selection,
-                args=args,
-                seed=target_seed,
-                device=device,
-                dtype=dtype,
-            )
-            task.metadata.update(
-                {
-                    "selection_protocol": "train_context_validation_refit_test",
-                    "selection_train_hours": float(args.train_hours),
-                    "selection_val_hours": float(args.val_hours),
-                    "selection_context_hours": float(args.train_hours + args.val_hours),
-                    "selection_test_hours": float(
-                        args.window_hours - args.train_hours - args.val_hours
-                    ),
-                    "selection_method": args.selection_method,
-                    "selection_metric": args.selection_metric,
-                    "selected_prior_selection": prior_selection,
-                }
-            )
             model = base_run.build_model(
                 method, task, final_config, seed=target_seed, device=device, dtype=dtype
             )
@@ -363,6 +392,7 @@ def _run_final_methods(
                 {"target_id": target_id, "selected_prior_selection": prior_selection, **train_info}
             )
         summary = {
+            "methodology_version": 2,
             "method": method,
             "seed": int(args.seed),
             "targets": list(range(len(targets))),
@@ -381,7 +411,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--root", default="data/electricity_load_diagrams")
     parser.add_argument(
-        "--output-dir", default="results/eld_forecasting_valbank_context15_val5_test28"
+        "--output-dir", default="results/eld_forecasting_v2_valbank_context15_val5_test28"
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-targets", type=int, default=3)
@@ -443,6 +473,20 @@ def main(argv: list[str] | None = None):
         min_nonzero_fraction=0.9,
         min_prefix_std=1.0e-3,
     )
+    selection_index = WindowIndex(
+        data,
+        specs,
+        window_length=window_points,
+        prefix_length=train_points,
+        prefix_eps=1.0e-3,
+    )
+    context_index = WindowIndex(
+        data,
+        specs,
+        window_length=window_points,
+        prefix_length=context_points,
+        prefix_eps=1.0e-3,
+    )
     targets = _select_targets(
         specs, years=_parse_years(args.target_years), n_targets=args.n_targets, seed=args.seed
     )
@@ -457,6 +501,7 @@ def main(argv: list[str] | None = None):
         dtype=dtype,
         train_points=train_points,
         window_points=window_points,
+        window_index=selection_index,
     )
     _write_csv(output_dir / "selection_decisions.csv", selection_rows)
     summaries = _run_final_methods(
@@ -470,8 +515,10 @@ def main(argv: list[str] | None = None):
         context_points=context_points,
         window_points=window_points,
         output_dir=output_dir,
+        window_index=context_index,
     )
     manifest = {
+        "methodology_version": 2,
         "elapsed_sec": time.time() - start,
         "train_points": train_points,
         "validation_points": context_points - train_points,

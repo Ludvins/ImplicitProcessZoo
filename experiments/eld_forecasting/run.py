@@ -28,7 +28,12 @@ from experiments.eld_forecasting.datasets import (
     load_synthetic_tasks,
     processed_exists,
 )
-from experiments.eld_forecasting.metrics import DEFAULT_REGIONS, coerce_regions, metrics_by_region
+from experiments.eld_forecasting.metrics import (
+    DEFAULT_REGIONS,
+    coerce_regions,
+    forecast_regions,
+    metrics_by_region,
+)
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
 from implicit_process_zoo.vip import VIP
@@ -38,6 +43,7 @@ METHODS = ("analog", "seasonal_naive", "vip", "vip_512", "ftip", "gmvip_empirica
 
 DEFAULT_CONFIG: dict = {
     "experiment": "eld_forecasting",
+    "methodology_version": 2,
     "method": "gmvip_empirical",
     "data": {
         "root": "data/electricity_load_diagrams",
@@ -159,6 +165,11 @@ def _load_config(args: argparse.Namespace) -> dict:
     config = copy.deepcopy(CONFIG_PRESETS[args.preset])
     if args.config:
         config = _deep_update(config, load_yaml(args.config))
+    data_cfg = config.setdefault("data", {})
+    config.setdefault("metrics", {})["regions"] = forecast_regions(
+        int(data_cfg.get("window_length", 192)),
+        int(data_cfg.get("prefix_length", 32)),
+    )
     return config
 
 
@@ -426,7 +437,12 @@ def evaluate_target(
     noise_std = torch.as_tensor(
         [float(task.metadata["sigma_y"])], dtype=samples.dtype, device=samples.device
     )
-    regions = coerce_regions(config.get("metrics", {}).get("regions", DEFAULT_REGIONS))
+    region_config = config.get("metrics", {}).get("regions")
+    if region_config is None:
+        region_config = forecast_regions(
+            int(task.metadata["window_length"]), int(task.metadata["prefix_length"])
+        )
+    regions = coerce_regions(region_config)
     metric_rows = metrics_by_region(
         samples,
         y_true,
@@ -441,6 +457,7 @@ def evaluate_target(
     samples_np = samples.detach().cpu().numpy()
     np.savez_compressed(
         pred_dir / f"target_{task.metadata['target_id']}.npz",
+        methodology_version=np.asarray(2, dtype=np.int64),
         t=np.asarray(task.metadata["t_grid"], dtype=np.float64),
         truth=y_true.detach().cpu().numpy(),
         context_t=np.asarray(task.metadata["t_grid"], dtype=np.float64)[
@@ -459,10 +476,10 @@ def evaluate_target(
     rows = []
     stress = bool(task.metadata.get("stress", False))
     for region, values in metric_rows.items():
-        lo, hi, include_left = regions[region]
         rows.append(
             {
                 "experiment": "eld_forecasting",
+                "methodology_version": 2,
                 "method": method,
                 "target_id": int(task.metadata["target_id"]),
                 "client_id": task.metadata["client_id"],
@@ -474,18 +491,36 @@ def evaluate_target(
                     str(year) for year in task.metadata.get("target_years", [])
                 ),
                 "prior_selection": task.metadata.get("prior_selection"),
+                "prior_selected_rule": task.metadata.get("prior_selected_rule"),
                 "prior_candidate_count": task.metadata.get("prior_candidate_count"),
+                "prior_requested_candidate_count": task.metadata.get(
+                    "prior_requested_candidate_count"
+                ),
+                "prior_fallback_tier": task.metadata.get("prior_fallback_tier"),
+                "prior_actual_calendar_constraint": task.metadata.get(
+                    "prior_actual_calendar_constraint"
+                ),
+                "prior_actual_client_constraint": task.metadata.get(
+                    "prior_actual_client_constraint"
+                ),
                 "prior_neighbor_distance_mean": task.metadata.get("prior_neighbor_distance_mean"),
                 "context_points": int(
                     task.metadata.get("context_points", task.metadata["prefix_length"])
                 ),
                 "forecast_points": int(task.metadata.get("forecast_points", task.X_test.shape[0])),
+                "last_observed_hour": float(task.metadata["last_observed_hour"]),
+                "forecast_start_hour": float(task.metadata["forecast_start_hour"]),
                 "seed": int(seed),
                 "region": region,
-                "region_start": lo,
-                "region_end": hi,
-                "region_include_left": include_left,
                 "stress": stress,
+                "stress_prefix_cv": task.metadata.get("stress_prefix_cv"),
+                "stress_prefix_ramp_standardized": task.metadata.get(
+                    "stress_prefix_ramp_standardized"
+                ),
+                "stress_prefix_cv_rank": task.metadata.get("stress_prefix_cv_rank"),
+                "stress_prefix_ramp_rank": task.metadata.get("stress_prefix_ramp_rank"),
+                "stress_score": task.metadata.get("stress_score"),
+                "stress_threshold": task.metadata.get("stress_threshold"),
                 "eval_time_sec": time.time() - start,
                 **values,
             }
@@ -544,14 +579,29 @@ def _parse_years(value) -> list[int] | None:
     return [int(item) for item in value]
 
 
+def _requested_target_ids(args: argparse.Namespace, n_targets: int) -> list[int]:
+    if args.target_ids:
+        ids = [int(value) for value in args.target_ids.split(",") if value.strip()]
+    else:
+        start = 0 if args.target_start is None else int(args.target_start)
+        stop = n_targets if args.target_stop is None else min(int(args.target_stop), n_targets)
+        ids = list(range(start, stop))
+    resolved = list(dict.fromkeys(idx for idx in ids if 0 <= idx < n_targets))
+    if not resolved:
+        raise ValueError("Target selection did not resolve to any valid target ids.")
+    return resolved
+
+
 def _load_tasks(config: dict, args: argparse.Namespace, *, seed: int, device, dtype):
     data_cfg = dict(config.get("data", {}))
     prior_cfg = dict(config.get("prior", {}))
     bank_size = int(prior_cfg.get("bank_size", 512))
+    n_targets = int(data_cfg.get("n_targets", 1 if args.synthetic_smoke else 200))
+    requested_ids = _requested_target_ids(args, n_targets)
     if args.synthetic_smoke:
         tasks = load_synthetic_tasks(
             seed=seed,
-            n_targets=int(data_cfg.get("n_targets", 1)),
+            n_targets=n_targets,
             bank_size=bank_size,
             window_length=int(data_cfg.get("window_length", 48)),
             prefix_length=int(data_cfg.get("prefix_length", 8)),
@@ -559,6 +609,7 @@ def _load_tasks(config: dict, args: argparse.Namespace, *, seed: int, device, dt
             device=device,
             dtype=dtype,
         )
+        tasks = [tasks[index] for index in requested_ids]
         _mark_stress_tasks(tasks)
         return tasks
     root = data_cfg.get("root", "data/electricity_load_diagrams")
@@ -570,7 +621,7 @@ def _load_tasks(config: dict, args: argparse.Namespace, *, seed: int, device, dt
     tasks = load_electricity_tasks(
         root,
         seed=seed,
-        n_targets=int(data_cfg.get("n_targets", 200)),
+        n_targets=n_targets,
         split=str(data_cfg.get("split", "test")),
         bank_size=bank_size,
         prior_years=_parse_years(data_cfg.get("prior_years")),
@@ -581,6 +632,7 @@ def _load_tasks(config: dict, args: argparse.Namespace, *, seed: int, device, dt
         min_nonzero_fraction=float(data_cfg.get("min_nonzero_fraction", 0.9)),
         min_prefix_std=float(data_cfg.get("min_prefix_std", 1e-3)),
         prior_selection=str(prior_cfg.get("selection", "calendar")),
+        target_ids=requested_ids,
         device=device,
         dtype=dtype,
     )
@@ -591,35 +643,46 @@ def _load_tasks(config: dict, args: argparse.Namespace, *, seed: int, device, dt
 def _mark_stress_tasks(tasks) -> None:
     if not tasks:
         return
-    scores = np.asarray(
-        [float(task.metadata.get("stress_score", 0.0)) for task in tasks], dtype=np.float64
+    prefix_cv = np.asarray(
+        [float(task.metadata["stress_prefix_cv"]) for task in tasks], dtype=np.float64
     )
+    prefix_ramp = np.asarray(
+        [float(task.metadata["stress_prefix_ramp_standardized"]) for task in tasks],
+        dtype=np.float64,
+    )
+
+    def percentile_ranks(values: np.ndarray) -> np.ndarray:
+        order = np.argsort(values, kind="stable")
+        ranks = np.empty(values.size, dtype=np.float64)
+        ranks[order] = (np.arange(values.size, dtype=np.float64) + 1.0) / values.size
+        return ranks
+
+    cv_ranks = percentile_ranks(prefix_cv)
+    ramp_ranks = percentile_ranks(prefix_ramp)
+    scores = 0.5 * (cv_ranks + ramp_ranks)
     threshold = float(np.quantile(scores, 0.8))
-    for task, score in zip(tasks, scores):
+    for task, cv_rank, ramp_rank, score in zip(tasks, cv_ranks, ramp_ranks, scores):
+        task.metadata["stress_prefix_cv_rank"] = float(cv_rank)
+        task.metadata["stress_prefix_ramp_rank"] = float(ramp_rank)
+        task.metadata["stress_score"] = float(score)
         task.metadata["stress_threshold"] = threshold
         task.metadata["stress"] = bool(score >= threshold)
 
 
-def run_method(method: str, config: dict, args: argparse.Namespace) -> dict:
+def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=None) -> dict:
     seed = int(args.seed)
     dtype = torch.float64 if str(args.dtype) == "float64" else torch.float32
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    tasks = _load_tasks(config, args, seed=seed, device=device, dtype=dtype)
-    if args.target_ids:
-        ids = [int(value) for value in args.target_ids.split(",") if value.strip()]
-    else:
-        start = 0 if args.target_start is None else int(args.target_start)
-        stop = len(tasks) if args.target_stop is None else min(int(args.target_stop), len(tasks))
-        ids = list(range(start, stop))
-    ids = [idx for idx in ids if 0 <= idx < len(tasks)]
-    out_dir = Path(args.output_dir or "results/eld_forecasting") / method / f"seed_{seed}"
+    tasks = tasks or _load_tasks(config, args, seed=seed, device=device, dtype=dtype)
+    ids = [int(task.metadata["target_id"]) for task in tasks]
+    out_dir = Path(args.output_dir or "results/eld_forecasting_v2") / method / f"seed_{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
     rows = []
     runtimes = []
-    for target_idx in ids:
-        task = tasks[target_idx]
+    for task in tasks:
+        target_idx = int(task.metadata["target_id"])
         target_seed = seed + 1000 * target_idx
         model = build_model(method, task, config, seed=target_seed, device=device, dtype=dtype)
         train_info = fit_model(model, task, config, device=device)
@@ -668,6 +731,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "calendar_prefix_nn",
             "same_client_prefix_nn",
             "same_client_calendar_prefix_nn",
+            "other_client_prefix_nn",
+            "other_client_calendar_prefix_nn",
+            "other_client_calendar",
         ],
         default=None,
     )
@@ -680,7 +746,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-ids", default=None)
     parser.add_argument("--synthetic-smoke", action="store_true")
     parser.add_argument("--disable-tqdm", action="store_true")
-    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--output-dir", default="results/eld_forecasting_v2")
     parser.add_argument("--device", default=None)
     parser.add_argument("--dtype", choices=["float64", "float32"], default="float64")
     return parser.parse_args(argv)
@@ -726,11 +792,14 @@ def main(argv: list[str] | None = None):
     if config.get("experiment") != "eld_forecasting":
         raise ValueError("This runner only supports experiment: eld_forecasting.")
     methods = _requested_methods(config.get("method", "gmvip_empirical"))
+    dtype = torch.float64 if str(args.dtype) == "float64" else torch.float32
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    tasks = _load_tasks(config, args, seed=int(args.seed), device=device, dtype=dtype)
     results = {}
     for method in methods:
         if method not in METHODS:
             raise ValueError(f"Unknown method {method!r}; expected one of {METHODS}.")
-        results[method] = run_method(method, config, args)
+        results[method] = run_method(method, config, args, tasks=tasks)
     return results
 
 
