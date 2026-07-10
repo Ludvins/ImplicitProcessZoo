@@ -7,12 +7,13 @@ from pathlib import Path
 
 import numpy as np
 
-
 DEFAULT_RESULTS_ROOT = Path("results/simprior_paper_ready_defaults/lotka_volterra")
 DEFAULT_METHOD_ROOTS = {
     "vip": DEFAULT_RESULTS_ROOT,
     "ftip": Path("results/simprior_search_ordering/ftip_steps625_mc8_coeff128/lotka_volterra"),
-    "gmvip_empirical": Path("results/simprior_search_ordering/gmvip_bank512_z96_beta1_steps800/lotka_volterra"),
+    "gmvip_empirical": Path(
+        "results/simprior_search_ordering/gmvip_bank512_z96_beta1_steps800/lotka_volterra"
+    ),
 }
 DEFAULT_OUTPUT_DIR = Path("results/simprior_search_ordering")
 
@@ -87,14 +88,18 @@ def _resolved_method_roots(
 ) -> dict[str, Path]:
     use_default_roots = results_root == DEFAULT_RESULTS_ROOT
     roots = {
-        method: DEFAULT_METHOD_ROOTS.get(method, results_root) if use_default_roots else results_root
+        method: DEFAULT_METHOD_ROOTS.get(method, results_root)
+        if use_default_roots
+        else results_root
         for method in methods
     }
     roots.update(method_root_overrides)
     return roots
 
 
-def _load_prediction(results_root: Path, method: str, seed: int, target_id: int) -> dict[str, np.ndarray]:
+def _load_prediction(
+    results_root: Path, method: str, seed: int, target_id: int
+) -> dict[str, np.ndarray]:
     path = results_root / method / f"seed_{seed}" / "predictions" / f"target_{target_id}.npz"
     if not path.exists():
         raise FileNotFoundError(
@@ -116,7 +121,9 @@ def _available_target_ids(results_root: Path, method: str, seed: int) -> list[in
     return sorted(ids)
 
 
-def _parse_target_ids(raw: str, *, first_root: Path, first_method: str, seed: int) -> tuple[int, ...]:
+def _parse_target_ids(
+    raw: str, *, first_root: Path, first_method: str, seed: int
+) -> tuple[int, ...]:
     raw = str(raw).strip()
     if raw.lower() == "all":
         return tuple(_available_target_ids(first_root, first_method, seed))
@@ -150,7 +157,9 @@ def _finite_minmax(values: list[np.ndarray], pad_fraction: float = 0.055) -> tup
     return lo - pad, hi + pad
 
 
-def _shared_species_limits(predictions: dict[str, dict[str, np.ndarray]]) -> tuple[tuple[float, float], ...]:
+def _shared_species_limits(
+    predictions: dict[str, dict[str, np.ndarray]],
+) -> tuple[tuple[float, float], ...]:
     limits: list[tuple[float, float]] = []
     for dim in range(2):
         values: list[np.ndarray] = []
@@ -177,9 +186,7 @@ def plot_trajectory_grid(
 ) -> dict[str, str]:
     plt = _plt()
     path_base = _path_base(path_base)
-    y_limits = _shared_species_limits(
-        {method: predictions_by_method[method] for method in methods}
-    )
+    y_limits = _shared_species_limits({method: predictions_by_method[method] for method in methods})
 
     fig, axes = plt.subplots(
         2,
@@ -202,7 +209,9 @@ def plot_trajectory_grid(
 
         for dim, species_color in enumerate(SPECIES_COLORS):
             ax = axes[dim, col]
-            ax.axvspan(0.0, OBSERVED_CUTOFF, color=OBSERVED_WINDOW_COLOR, alpha=0.7, linewidth=0, zorder=-2)
+            ax.axvspan(
+                0.0, OBSERVED_CUTOFF, color=OBSERVED_WINDOW_COLOR, alpha=0.7, linewidth=0, zorder=-2
+            )
             ax.axvline(
                 OBSERVED_CUTOFF,
                 color="black",
@@ -244,7 +253,9 @@ def plot_trajectory_grid(
     return {"png": str(png_path), "pdf": str(pdf_path)}
 
 
-def _output_base(args: argparse.Namespace, methods: tuple[str, ...], target_id: int, multiple_targets: bool) -> Path:
+def _output_base(
+    args: argparse.Namespace, methods: tuple[str, ...], target_id: int, multiple_targets: bool
+) -> Path:
     if args.out:
         base = _path_base(args.out)
         return base.parent / f"{base.name}_target{target_id}" if multiple_targets else base
@@ -295,12 +306,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Plot Lotka-Volterra posterior trajectories for saved experiment results."
     )
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
-    parser.add_argument("--method-root", action="append", default=[], help="Override one method root as METHOD=PATH.")
+    parser.add_argument(
+        "--method-root",
+        action="append",
+        default=[],
+        help="Override one method root as METHOD=PATH.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--methods", default="vip,ftip,gmvip_empirical")
-    parser.add_argument("--target-ids", default="9", help="Comma-separated ids, ranges like 0-4, or all.")
+    parser.add_argument(
+        "--target-ids", default="9", help="Comma-separated ids, ranges like 0-4, or all."
+    )
     parser.add_argument("--out-dir", default=str(DEFAULT_OUTPUT_DIR))
-    parser.add_argument("--out", default=None, help="Single output path base. For multiple targets, target ids are appended.")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Single output path base. For multiple targets, target ids are appended.",
+    )
     return parser.parse_args(argv)
 
 

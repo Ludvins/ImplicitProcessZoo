@@ -20,7 +20,17 @@ def _coerce(row: dict) -> dict:
     for key in ("seed", "target_id", "n_train", "train_steps"):
         if key in result and result[key] not in ("", None):
             result[key] = int(float(result[key]))
-    for key in ("rmse", "nlpd", "crps", "cov90", "cov95", "width90", "width95", "train_time_sec", "eval_time_sec"):
+    for key in (
+        "rmse",
+        "nlpd",
+        "crps",
+        "cov90",
+        "cov95",
+        "width90",
+        "width95",
+        "train_time_sec",
+        "eval_time_sec",
+    ):
         if key in result and result[key] not in ("", None):
             result[key] = float(result[key])
     return result
@@ -49,9 +59,15 @@ def write_summary(path: Path, rows: list[dict]) -> None:
         for (method, n_train, region), group in sorted(groups.items()):
             out = {"method": method, "n_train": n_train, "region": region}
             for metric in metrics:
-                values = np.asarray([row[metric] for row in group if metric in row], dtype=np.float64)
+                values = np.asarray(
+                    [row[metric] for row in group if metric in row], dtype=np.float64
+                )
                 out[f"{metric}_mean"] = float(np.nanmean(values)) if values.size else np.nan
-                out[f"{metric}_stderr"] = float(np.nanstd(values) / max(1.0, np.sqrt(values.size))) if values.size else np.nan
+                out[f"{metric}_stderr"] = (
+                    float(np.nanstd(values) / max(1.0, np.sqrt(values.size)))
+                    if values.size
+                    else np.nan
+                )
             writer.writerow(out)
 
 
@@ -71,7 +87,9 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
     write_summary(out, rows)
     if rows:
         try:
-            plot_metric_by_region(root / f"{args.plot_metric}_by_region", rows=rows, metric=args.plot_metric)
+            plot_metric_by_region(
+                root / f"{args.plot_metric}_by_region", rows=rows, metric=args.plot_metric
+            )
         except ImportError as exc:
             print(f"Skipping plot generation: {exc}")
     return {"summary": str(out)}

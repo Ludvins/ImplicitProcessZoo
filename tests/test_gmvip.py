@@ -2,17 +2,19 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.gmvip import (
+from implicit_process_zoo.gmvip import (
     CholeskyGaussianCoefficientPosterior,
     GeneralizedMatheronVIP,
     RBFKernel,
     RealNVPCoefficientPosterior,
 )
-from src.priors.function_bank import CoherentPriorFunctionSampler, PriorFunctionBank
-from src.priors.generative_functions import BayesianNN, BayesLinear
-from src.utils.empirical_covariance import empirical_cross_cov, empirical_mean
-from src.utils.linalg import right_cholesky_solve, safe_cholesky
-
+from implicit_process_zoo.priors.function_bank import (
+    CoherentPriorFunctionSampler,
+    PriorFunctionBank,
+)
+from implicit_process_zoo.priors.generative_functions import BayesianNN, BayesLinear
+from implicit_process_zoo.utils.empirical_covariance import empirical_cross_cov, empirical_mean
+from implicit_process_zoo.utils.linalg import right_cholesky_solve, safe_cholesky
 
 DTYPE = torch.float64
 DEVICE = torch.device("cpu")
@@ -302,7 +304,9 @@ def test_coefficient_posteriors_support_antithetic_base_samples():
     f_samples, f_kl_terms, _ = flow.rsample_with_kl(num_samples=8, antithetic=True)
 
     assert torch.allclose(g_samples[:4] + g_samples[4:], torch.zeros_like(g_samples[:4]))
-    assert torch.allclose(f_samples[:4] + f_samples[4:], torch.zeros_like(f_samples[:4]), atol=1e-12)
+    assert torch.allclose(
+        f_samples[:4] + f_samples[4:], torch.zeros_like(f_samples[:4]), atol=1e-12
+    )
     assert torch.allclose(f_kl_terms, torch.zeros_like(f_kl_terms), atol=1e-10)
 
 
@@ -474,7 +478,7 @@ def test_rbf_inducing_scale_is_empirical_prior_cholesky():
     bank_Z = model.operator.moment_bank.evaluate(model.Z)
     mu_Z = empirical_mean(bank_Z)
     K_ZZ_raw = empirical_cross_cov(bank_Z, bank_Z, mu_Z, mu_Z)
-    from src.utils.empirical_covariance import stabilize_covariance
+    from implicit_process_zoo.utils.empirical_covariance import stabilize_covariance
 
     K_ZZ = stabilize_covariance(
         K_ZZ_raw,
@@ -506,11 +510,13 @@ def test_empirical_operator_rejects_noncanonical_mean_or_scale():
 
 def test_empirical_inducing_map_is_empirical_mean_and_cholesky():
     torch.manual_seed(32)
-    model = _make_model(operator_type="empirical", posterior_type="gaussian", num_inducing=5, seed=32)
+    model = _make_model(
+        operator_type="empirical", posterior_type="gaussian", num_inducing=5, seed=32
+    )
     bank_Z = model.operator.bank.evaluate(model.Z)
     mu_Z = empirical_mean(bank_Z)
     K_ZZ_raw = empirical_cross_cov(bank_Z, bank_Z, mu_Z, mu_Z)
-    from src.utils.empirical_covariance import stabilize_covariance
+    from implicit_process_zoo.utils.empirical_covariance import stabilize_covariance
 
     K_ZZ = stabilize_covariance(
         K_ZZ_raw,
@@ -525,7 +531,9 @@ def test_empirical_inducing_map_is_empirical_mean_and_cholesky():
 
 def test_empirical_cross_covariance_uses_joint_xz_bank_evaluation():
     torch.manual_seed(33)
-    model = _make_model(operator_type="empirical", posterior_type="gaussian", num_inducing=5, seed=33)
+    model = _make_model(
+        operator_type="empirical", posterior_type="gaussian", num_inducing=5, seed=33
+    )
     X, _ = _toy_data(num_points=7)
     calls = []
     original_evaluate = model.operator.bank.evaluate
@@ -555,7 +563,9 @@ def test_rbf_identity_inducing_scale_and_zero_mean():
     expected = torch.eye(model.num_inducing, dtype=DTYPE, device=DEVICE)
 
     assert model.operator.inducing_scale == "identity"
-    assert torch.allclose(model.operator.inducing_mean(), torch.zeros(model.num_inducing, dtype=DTYPE))
+    assert torch.allclose(
+        model.operator.inducing_mean(), torch.zeros(model.num_inducing, dtype=DTYPE)
+    )
     assert torch.allclose(model.operator.inducing_scale_matrix(), expected)
 
 
@@ -574,7 +584,9 @@ def test_rbf_kernel_inducing_scale_and_zero_mean():
     expected = safe_cholesky(K_ZZ, initial_jitter=model.operator.jitter)
 
     assert model.operator.inducing_scale == "rbf_cholesky"
-    assert torch.allclose(model.operator.inducing_mean(), torch.zeros(model.num_inducing, dtype=DTYPE))
+    assert torch.allclose(
+        model.operator.inducing_mean(), torch.zeros(model.num_inducing, dtype=DTYPE)
+    )
     assert torch.allclose(model.operator.inducing_scale_matrix(), expected)
 
 
@@ -627,11 +639,7 @@ def test_inducing_scale_gradients_reach_tunable_prior(operator_type):
 
     scale = model.operator.inducing_scale_matrix()
     scale.square().sum().backward()
-    grad_sum = sum(
-        param.grad.abs().sum()
-        for param in prior.parameters()
-        if param.grad is not None
-    )
+    grad_sum = sum(param.grad.abs().sum() for param in prior.parameters() if param.grad is not None)
 
     assert torch.isfinite(grad_sum)
     assert grad_sum > 0.0
@@ -666,11 +674,7 @@ def test_detached_operator_prior_grad_keeps_z_and_residual_prior_gradients():
     )
     operator_objective.backward()
     prior_operator_grad = sum(
-        (
-            param.grad.abs().sum()
-            for param in prior.parameters()
-            if param.grad is not None
-        ),
+        (param.grad.abs().sum() for param in prior.parameters() if param.grad is not None),
         torch.tensor(0.0, dtype=DTYPE, device=DEVICE),
     )
 
@@ -683,11 +687,7 @@ def test_detached_operator_prior_grad_keeps_z_and_residual_prior_gradients():
     loss, _ = model.elbo_loss(X, y, num_samples=4, num_data=X.shape[0])
     loss.backward()
     prior_residual_grad = sum(
-        (
-            param.grad.abs().sum()
-            for param in prior.parameters()
-            if param.grad is not None
-        ),
+        (param.grad.abs().sum() for param in prior.parameters() if param.grad is not None),
         torch.tensor(0.0, dtype=DTYPE, device=DEVICE),
     )
 
@@ -770,11 +770,7 @@ def test_multiclass_elbo_backward_reaches_variational_and_prior_parameters(opera
     loss, diagnostics = model.elbo_loss(X, y, num_samples=4, num_data=X.shape[0])
     loss.backward()
     prior_grad = sum(
-        (
-            param.grad.abs().sum()
-            for param in prior.parameters()
-            if param.grad is not None
-        ),
+        (param.grad.abs().sum() for param in prior.parameters() if param.grad is not None),
         torch.tensor(0.0, dtype=DTYPE, device=DEVICE),
     )
 

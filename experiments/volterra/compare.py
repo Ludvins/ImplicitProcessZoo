@@ -20,7 +20,9 @@ def _parse_target_ids(value: str | None) -> list[int]:
     return [int(item) for item in _parse_csv_list(value)]
 
 
-def _read_metric_rows(results_root: Path, method: str, seed: int) -> dict[int, dict[str, float | str]]:
+def _read_metric_rows(
+    results_root: Path, method: str, seed: int
+) -> dict[int, dict[str, float | str]]:
     path = results_root / method / f"seed_{seed}" / "metrics_per_target.csv"
     rows: dict[int, dict[str, float | str]] = {}
     with path.open(newline="", encoding="utf-8") as handle:
@@ -53,7 +55,9 @@ def rank_gmvip_win_loss_targets(
     metric: str,
     n: int,
 ) -> dict[str, list[dict[str, object]]]:
-    common_targets = sorted(set.intersection(*(set(metrics_by_method[method]) for method in selection_methods)))
+    common_targets = sorted(
+        set.intersection(*(set(metrics_by_method[method]) for method in selection_methods))
+    )
     wins: list[dict[str, object]] = []
     losses: list[dict[str, object]] = []
     for target_id in common_targets:
@@ -90,7 +94,9 @@ def rank_gmvip_win_loss_targets(
     return {"wins": wins[:n], "losses": losses[:n]}
 
 
-def _load_prediction(results_root: Path, method: str, seed: int, target_id: int) -> dict[str, np.ndarray]:
+def _load_prediction(
+    results_root: Path, method: str, seed: int, target_id: int
+) -> dict[str, np.ndarray]:
     path = results_root / method / f"seed_{seed}" / "predictions" / f"target_{target_id}.npz"
     with np.load(path) as payload:
         return {key: payload[key] for key in payload.files}
@@ -107,8 +113,7 @@ def _plot_target(
     stem: str,
 ) -> Path:
     predictions = {
-        method: _load_prediction(results_root, method, seed, target_id)
-        for method in plot_methods
+        method: _load_prediction(results_root, method, seed, target_id) for method in plot_methods
     }
     path_base = out_dir / stem
     plot_lv_shared_axis_method_comparison(
@@ -187,7 +192,9 @@ def build_comparison_plots(args: argparse.Namespace) -> dict[str, object]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build shared-axis Lotka-Volterra comparison plots.")
+    parser = argparse.ArgumentParser(
+        description="Build shared-axis Lotka-Volterra comparison plots."
+    )
     parser.add_argument("--results-root", default="results/simprior/lotka_volterra")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--plot-methods", default="vip,gmvip_empirical,ftip,oracle_prior_bank")

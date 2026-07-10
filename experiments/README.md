@@ -1,7 +1,7 @@
 # Experiments
 
 This package contains runnable experiment entrypoints and experiment-specific
-helpers. Reusable model implementations live under `src/`; experiment packages
+helpers. Reusable model implementations live under `implicit_process_zoo/`; experiment packages
 compose those models with datasets, command-line interfaces, reporting, plots,
 and artifact conventions.
 
@@ -17,6 +17,8 @@ and artifact conventions.
 - `volterra/`: Lotka-Volterra simulator-prior regression experiment.
 - `simulator_forecasting/`: damped-oscillator simulator-prior forecasting
   experiment.
+- `eld_forecasting/`: ElectricityLoadDiagrams20112014 empirical-prior
+  forecasting experiment.
 
 ## Commands
 
@@ -33,6 +35,8 @@ python -m experiments.volterra.compare --help
 python -m experiments.volterra.plot --help
 python -m experiments.simulator_forecasting.run --help
 python -m experiments.simulator_forecasting.plot --help
+python -m experiments.eld_forecasting.run --help
+python -m experiments.eld_forecasting.valbank --help
 ```
 
 Generated data, model checkpoints, metrics, plots, logs, and W&B files are

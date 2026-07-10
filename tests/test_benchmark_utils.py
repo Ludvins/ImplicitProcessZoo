@@ -1,5 +1,6 @@
-import pytest
 import sys
+
+import pytest
 
 from experiments.benchmark_utils import training_decomposition, wandb_log_result
 

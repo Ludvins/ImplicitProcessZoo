@@ -41,8 +41,12 @@ def generate_dataset(
         sample_drag=bool(misspecified),
         dtype=torch.float64,
     )
-    latents = prior.sample_latents(int(n_targets), seed=int(seed) + 1_000_003, sample_drag=bool(misspecified))
-    X = torch.as_tensor(normalize_time(t_grid, t_max=float(t_max)).reshape(-1, 1), dtype=torch.float64)
+    latents = prior.sample_latents(
+        int(n_targets), seed=int(seed) + 1_000_003, sample_drag=bool(misspecified)
+    )
+    X = torch.as_tensor(
+        normalize_time(t_grid, t_max=float(t_max)).reshape(-1, 1), dtype=torch.float64
+    )
     with torch.no_grad():
         y = prior.evaluate_raw(X, latents).detach().cpu().numpy()
 
@@ -69,7 +73,8 @@ def generate_dataset(
         "misspecified": bool(misspecified),
         "target_drag_distribution": "Uniform(0.02, 0.08)" if misspecified else "point_mass_0",
         "seed_targets": int(seed) + 1_000_003,
-        "latent_schema": list(DampedOscillatorPrior.theta_names) + [f"u_{i}" for i in range(prior.forcing_count)],
+        "latent_schema": list(DampedOscillatorPrior.theta_names)
+        + [f"u_{i}" for i in range(prior.forcing_count)],
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return {"target_paths": str(target_path), "metadata": str(metadata_path)}

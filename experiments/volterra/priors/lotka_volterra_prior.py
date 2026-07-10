@@ -105,7 +105,7 @@ class LotkaVolterraPrior(nn.Module):
         y_std: np.ndarray | torch.Tensor | float,
         num_samples: int | None = None,
         seed: int | None = None,
-    ) -> "LotkaVolterraPrior":
+    ) -> LotkaVolterraPrior:
         return LotkaVolterraPrior(
             self.t.detach(),
             y_mean=y_mean,
@@ -123,7 +123,9 @@ class LotkaVolterraPrior(nn.Module):
         generator.manual_seed(self.seed if seed is None else int(seed))
         return generator
 
-    def sample_latents(self, num_samples: int, seed: int | None = None, *, cache: bool = True) -> torch.Tensor:
+    def sample_latents(
+        self, num_samples: int, seed: int | None = None, *, cache: bool = True
+    ) -> torch.Tensor:
         num_samples = int(num_samples)
         if num_samples <= 0:
             raise ValueError("num_samples must be positive.")
@@ -133,15 +135,13 @@ class LotkaVolterraPrior(nn.Module):
             if cached is not None:
                 return cached
         generator = self._generator(seed)
-        log_params = (
-            self.theta_log_means.reshape(1, 4)
-            + self.theta_log_stds.reshape(1, 4)
-            * torch.randn(num_samples, 4, generator=generator, dtype=self.dtype, device=self.device)
-        )
+        log_params = self.theta_log_means.reshape(1, 4) + self.theta_log_stds.reshape(
+            1, 4
+        ) * torch.randn(num_samples, 4, generator=generator, dtype=self.dtype, device=self.device)
         ode_params = torch.exp(log_params)
-        initials = self.initial_low.reshape(1, 2) + (
-            self.initial_high - self.initial_low
-        ).reshape(1, 2) * torch.rand(num_samples, 2, generator=generator, dtype=self.dtype, device=self.device)
+        initials = self.initial_low.reshape(1, 2) + (self.initial_high - self.initial_low).reshape(
+            1, 2
+        ) * torch.rand(num_samples, 2, generator=generator, dtype=self.dtype, device=self.device)
         latents = torch.cat([ode_params, initials], dim=-1)
         if cache:
             self._latent_cache[cache_key] = latents
@@ -250,7 +250,9 @@ class LotkaVolterraPrior(nn.Module):
         return self.evaluate(X, self.sample_latents(int(n), seed=seed))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        if self._fixed_latents is None or int(self._fixed_latents.shape[0]) != int(self.num_samples):
+        if self._fixed_latents is None or int(self._fixed_latents.shape[0]) != int(
+            self.num_samples
+        ):
             self._fixed_latents = self.sample_latents(self.num_samples, seed=self.seed)
         return self.evaluate(X, self._fixed_latents)
 

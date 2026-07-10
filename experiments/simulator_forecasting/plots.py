@@ -4,7 +4,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 METHOD_LABELS = {
     "gmvip": "GMVIP",
     "gmvip_cov": "GM-VIP Cov",
@@ -98,7 +97,9 @@ def plot_metric_by_region(path_base: str | Path, *, rows: list[dict], metric: st
     plt = _plt()
     preferred = ["interpolation", "near_extrapolation", "medium_extrapolation", "far_extrapolation"]
     present = list(dict.fromkeys(str(row["region"]) for row in rows))
-    regions = [region for region in preferred if region in present] + [region for region in present if region not in preferred]
+    regions = [region for region in preferred if region in present] + [
+        region for region in present if region not in preferred
+    ]
     methods = list(dict.fromkeys(row["method"] for row in rows))
     x = np.arange(len(regions))
     width = 0.8 / max(1, len(methods))
@@ -106,9 +107,18 @@ def plot_metric_by_region(path_base: str | Path, *, rows: list[dict], metric: st
     for idx, method in enumerate(methods):
         values = []
         for region in regions:
-            vals = [float(row[metric]) for row in rows if row["method"] == method and row["region"] == region]
+            vals = [
+                float(row[metric])
+                for row in rows
+                if row["method"] == method and row["region"] == region
+            ]
             values.append(float(np.mean(vals)) if vals else np.nan)
-        ax.bar(x + (idx - 0.5 * (len(methods) - 1)) * width, values, width=width, label=METHOD_LABELS.get(method, method))
+        ax.bar(
+            x + (idx - 0.5 * (len(methods) - 1)) * width,
+            values,
+            width=width,
+            label=METHOD_LABELS.get(method, method),
+        )
     ax.set_xticks(x)
     ax.set_xticklabels(regions, rotation=18, ha="right")
     ax.set_ylabel(metric)

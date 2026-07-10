@@ -6,7 +6,6 @@ import json
 import os
 import sys
 
-
 DEFAULT_METRICS = (
     "RMSE",
     "NLL",
@@ -486,9 +485,10 @@ def print_comparison(results, split="test", primary="RMSE"):
         print("  " + "  ".join(col.ljust(widths[col]) for col in columns))
         print("  " + "  ".join("-" * widths[col] for col in columns))
         for row in dataset_rows:
-            print("  " + "  ".join(
-                _format_cell(row.get(col, "")).ljust(widths[col]) for col in columns
-            ))
+            print(
+                "  "
+                + "  ".join(_format_cell(row.get(col, "")).ljust(widths[col]) for col in columns)
+            )
 
 
 def save_comparison(results, output_dir, name, split="test"):
@@ -502,9 +502,11 @@ def save_comparison(results, output_dir, name, split="test"):
     with open(json_path, "w") as f:
         json.dump(rows, f, indent=2)
 
-    columns = ["dataset", "model"] + [
-        metric for metric in DEFAULT_METRICS if any(metric in row for row in rows)
-    ] + ["train_time_s"]
+    columns = (
+        ["dataset", "model"]
+        + [metric for metric in DEFAULT_METRICS if any(metric in row for row in rows)]
+        + ["train_time_s"]
+    )
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()

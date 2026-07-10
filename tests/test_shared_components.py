@@ -1,33 +1,28 @@
 """Tests for shared components: generative functions, flows, likelihood utilities."""
 
-import pytest
 import torch
-import numpy as np
 
-from src.priors.generative_functions import (
-    BayesianNN, BayesLinear, SimplerBayesLinear, GP,
+from implicit_process_zoo.priors.generative_functions import (
+    SimplerBayesLinear,
 )
-from src.flows.flows import CouplingFlow
-from src.utils.likelihood import (
-    gaussian_logp,
+from implicit_process_zoo.utils.likelihood import (
     bernoulli_logp,
-    multiclass_logp,
-    inv_probit,
-    predict_mean_and_var_regression,
-    predict_mean_and_var_binary,
-    gaussian_variational_expectations,
     bernoulli_variational_expectations,
+    gaussian_logp,
+    gaussian_variational_expectations,
+    inv_probit,
+    multiclass_logp,
+    predict_mean_and_var_binary,
+    predict_mean_and_var_regression,
 )
-
-from tests.conftest import DEVICE, DTYPE, SEED, INPUT_DIM, OUTPUT_DIM, NUM_SAMPLES
-
+from tests.conftest import DEVICE, DTYPE, INPUT_DIM, NUM_SAMPLES, OUTPUT_DIM, SEED
 
 # ===================================================================
 # BayesianNN
 # ===================================================================
 
-class TestBayesianNN:
 
+class TestBayesianNN:
     def test_output_shape(self, bnn):
         X = torch.randn(10, INPUT_DIM, dtype=DTYPE, device=DEVICE)
         out = bnn(X)
@@ -65,11 +60,15 @@ class TestBayesianNN:
 
 
 class TestSimplerBayesLinear:
-
     def test_scalar_params(self):
         layer = SimplerBayesLinear(
-            NUM_SAMPLES, 3, 4, device=DEVICE, fix_random_noise=True,
-            seed=SEED, dtype=DTYPE,
+            NUM_SAMPLES,
+            3,
+            4,
+            device=DEVICE,
+            fix_random_noise=True,
+            seed=SEED,
+            dtype=DTYPE,
         )
         # SimplerBayesLinear has scalar mu and log_sigma
         assert layer.weight_log_sigma.dim() == 0
@@ -77,12 +76,22 @@ class TestSimplerBayesLinear:
 
     def test_kl_scales_with_dim(self):
         layer_small = SimplerBayesLinear(
-            NUM_SAMPLES, 2, 2, device=DEVICE, fix_random_noise=True,
-            seed=SEED, dtype=DTYPE,
+            NUM_SAMPLES,
+            2,
+            2,
+            device=DEVICE,
+            fix_random_noise=True,
+            seed=SEED,
+            dtype=DTYPE,
         )
         layer_big = SimplerBayesLinear(
-            NUM_SAMPLES, 10, 10, device=DEVICE, fix_random_noise=True,
-            seed=SEED, dtype=DTYPE,
+            NUM_SAMPLES,
+            10,
+            10,
+            device=DEVICE,
+            fix_random_noise=True,
+            seed=SEED,
+            dtype=DTYPE,
         )
         # At initialization (log_sigma=0, mu=0), KL should be 0
         assert abs(layer_small.KL().item()) < 1e-10
@@ -93,8 +102,8 @@ class TestSimplerBayesLinear:
 # GP
 # ===================================================================
 
-class TestGP:
 
+class TestGP:
     def test_output_shape(self, gp):
         X = torch.randn(10, INPUT_DIM, dtype=DTYPE, device=DEVICE)
         S = 7
@@ -119,8 +128,8 @@ class TestGP:
 # CouplingFlow
 # ===================================================================
 
-class TestCouplingFlow:
 
+class TestCouplingFlow:
     def test_forward_shape(self, coupling_flow):
         a = torch.randn(8, NUM_SAMPLES, dtype=DTYPE, device=DEVICE)
         transformed, ldj = coupling_flow(a)
@@ -140,8 +149,8 @@ class TestCouplingFlow:
 # Likelihood utilities
 # ===================================================================
 
-class TestLikelihoods:
 
+class TestLikelihoods:
     def test_gaussian_logp_shape(self):
         F = torch.randn(5, 10, 1, dtype=DTYPE)
         Y = torch.randn(10, 1, dtype=DTYPE)
@@ -170,7 +179,6 @@ class TestLikelihoods:
 
 
 class TestPredictMeanVar:
-
     def test_regression(self):
         Fmu = torch.randn(20, 1, dtype=DTYPE)
         Fvar = torch.rand(20, 1, dtype=DTYPE).abs() + 0.01
@@ -189,23 +197,21 @@ class TestPredictMeanVar:
 
 
 class TestVariationalExpectations:
-
     def test_gaussian(self):
         # gaussian_variational_expectations expects [S, N, D] inputs
         Fmu = torch.randn(1, 20, 1, dtype=DTYPE)
         Fvar = torch.rand(1, 20, 1, dtype=DTYPE).abs() + 0.01
         Y = torch.randn(20, 1, dtype=DTYPE)
         log_var = torch.tensor(-1.0, dtype=DTYPE)
-        ve = gaussian_variational_expectations(Fmu, Fvar, Y, alpha=0,
-                                                log_variance=log_var)
+        ve = gaussian_variational_expectations(Fmu, Fvar, Y, alpha=0, log_variance=log_var)
         assert ve.shape == (20, 1)
 
     def test_bernoulli(self):
         Fmu = torch.randn(1, 20, 1, dtype=DTYPE)
         Fvar = torch.rand(1, 20, 1, dtype=DTYPE).abs() + 0.01
         Y = torch.ones(20, 1, dtype=DTYPE)
-        ve = bernoulli_variational_expectations(Fmu, Fvar, Y,
-                                                 num_gh_points=20,
-                                                 dtype=DTYPE, device=DEVICE)
+        ve = bernoulli_variational_expectations(
+            Fmu, Fvar, Y, num_gh_points=20, dtype=DTYPE, device=DEVICE
+        )
         # hermgaussquadrature preserves the [S, N, D] input shape
         assert ve.shape == (1, 20, 1)

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 DEFAULT_RESULTS_ROOT = "results/simulator_forecasting_tobs15_20targets/simulator_forecasting"
 DEFAULT_METHODS = ("vip", "ftip", "gmvip")
 DEFAULT_TARGET_ID = 0
@@ -141,22 +140,38 @@ def _format_stem(stem: str, *, target_id: int, n_train: int, methods: tuple[str,
     )
 
 
-def _output_base(args: argparse.Namespace, *, target_id: int, methods: tuple[str, ...], n_targets: int) -> Path:
+def _output_base(
+    args: argparse.Namespace, *, target_id: int, methods: tuple[str, ...], n_targets: int
+) -> Path:
     if args.out is not None:
         out = str(args.out)
         if n_targets > 1 and "{target_id}" not in out:
             out = f"{out}_target{{target_id}}"
-        return _path_base(_format_stem(out, target_id=target_id, n_train=args.n_train, methods=methods))
+        return _path_base(
+            _format_stem(out, target_id=target_id, n_train=args.n_train, methods=methods)
+        )
 
-    out_dir = Path(args.out_dir) if args.out_dir is not None else _default_out_dir(Path(args.results_root))
+    out_dir = (
+        Path(args.out_dir)
+        if args.out_dir is not None
+        else _default_out_dir(Path(args.results_root))
+    )
     stem = args.stem or _default_stem(target_id, int(args.n_train), methods)
-    return _path_base(out_dir / _format_stem(stem, target_id=target_id, n_train=args.n_train, methods=methods))
+    return _path_base(
+        out_dir / _format_stem(stem, target_id=target_id, n_train=args.n_train, methods=methods)
+    )
 
 
-def _load_prediction(results_root: Path, method: str, seed: int, target_id: int, n_train: int) -> dict[str, np.ndarray]:
+def _load_prediction(
+    results_root: Path, method: str, seed: int, target_id: int, n_train: int
+) -> dict[str, np.ndarray]:
     candidates = METHOD_DIR_ALIASES.get(method, (method,))
     paths = [
-        results_root / method_dir / f"seed_{seed}" / "predictions" / f"target_{target_id}_ntrain_{n_train}.npz"
+        results_root
+        / method_dir
+        / f"seed_{seed}"
+        / "predictions"
+        / f"target_{target_id}_ntrain_{n_train}.npz"
         for method_dir in candidates
     ]
     path = next((candidate for candidate in paths if candidate.exists()), paths[0])
@@ -221,11 +236,20 @@ def plot_forecast_grid(
         q05 = _quantile(pred, "q05", 0.05)
         q95 = _quantile(pred, "q95", 0.95)
 
-        ax.axvspan(0.0, float(t_obs), color=OBSERVED_WINDOW_COLOR, alpha=0.7, linewidth=0, zorder=-2)
+        ax.axvspan(
+            0.0, float(t_obs), color=OBSERVED_WINDOW_COLOR, alpha=0.7, linewidth=0, zorder=-2
+        )
         ax.axvline(float(t_obs), color="black", linestyle="--", linewidth=0.85, alpha=0.6, zorder=2)
         if "samples" in pred:
             for sample in np.asarray(pred["samples"])[:N_POSTERIOR_SAMPLE_LINES]:
-                ax.plot(t, _sample_curve(sample), color=POSTERIOR_COLOR, alpha=0.20, linewidth=0.8, zorder=1)
+                ax.plot(
+                    t,
+                    _sample_curve(sample),
+                    color=POSTERIOR_COLOR,
+                    alpha=0.20,
+                    linewidth=0.8,
+                    zorder=1,
+                )
         ax.fill_between(t, q05, q95, color=POSTERIOR_COLOR, alpha=0.22, linewidth=0, zorder=2)
         ax.plot(t, mean, color=MEAN_COLOR, linewidth=1.9, zorder=4)
         ax.plot(t, truth, color="black", linewidth=1.2, zorder=5)
@@ -274,7 +298,9 @@ def build_figures(args: argparse.Namespace) -> dict[str, object]:
             )
             for method in methods
         }
-        out = _output_base(args, target_id=int(target_id), methods=methods, n_targets=len(target_ids))
+        out = _output_base(
+            args, target_id=int(target_id), methods=methods, n_targets=len(target_ids)
+        )
         written = plot_forecast_grid(
             out,
             predictions_by_method=predictions,
@@ -299,19 +325,38 @@ def build_figures(args: argparse.Namespace) -> dict[str, object]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plot simulator forecasting posterior trajectories.")
+    parser = argparse.ArgumentParser(
+        description="Plot simulator forecasting posterior trajectories."
+    )
     parser.add_argument("--results-root", default=DEFAULT_RESULTS_ROOT)
-    parser.add_argument("--method-root", action="append", default=[], help="Per-method result root override: method=path.")
+    parser.add_argument(
+        "--method-root",
+        action="append",
+        default=[],
+        help="Per-method result root override: method=path.",
+    )
     parser.add_argument("--methods", "--models", dest="methods", default=",".join(DEFAULT_METHODS))
-    parser.add_argument("--labels", default=None, help="Optional comma-separated display labels matching --methods.")
+    parser.add_argument(
+        "--labels", default=None, help="Optional comma-separated display labels matching --methods."
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--target-id", type=int, default=DEFAULT_TARGET_ID)
-    parser.add_argument("--target-ids", default=None, help="Comma-separated ids or inclusive ranges, e.g. 0,3-5.")
+    parser.add_argument(
+        "--target-ids", default=None, help="Comma-separated ids or inclusive ranges, e.g. 0,3-5."
+    )
     parser.add_argument("--n-train", type=int, default=DEFAULT_N_TRAIN)
     parser.add_argument("--t-obs", type=float, default=DEFAULT_T_OBS)
-    parser.add_argument("--out", default=None, help="Output path base. Use {target_id}, {n_train}, or {methods} placeholders.")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output path base. Use {target_id}, {n_train}, or {methods} placeholders.",
+    )
     parser.add_argument("--out-dir", default=None)
-    parser.add_argument("--stem", default=None, help="Filename stem for --out-dir. Supports {target_id}, {n_train}, {methods}.")
+    parser.add_argument(
+        "--stem",
+        default=None,
+        help="Filename stem for --out-dir. Supports {target_id}, {n_train}, {methods}.",
+    )
     parser.add_argument("--formats", default="png,pdf")
     parser.add_argument("--dpi", type=int, default=180)
     return parser.parse_args(argv)

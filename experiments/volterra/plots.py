@@ -77,13 +77,30 @@ def plot_lv_posterior_trajectory(
     for dim, ax in enumerate(axes):
         ax.axvspan(0.0, 15.0, color="#EAF2F8", alpha=0.7, label="train" if dim == 0 else None)
         ax.axvspan(15.0, 20.0, color="#F7F4E8", alpha=0.7, label="val" if dim == 0 else None)
-        ax.axvspan(20.0, float(t[-1]), color="#F2ECEC", alpha=0.7, label="test" if dim == 0 else None)
+        ax.axvspan(
+            20.0, float(t[-1]), color="#F2ECEC", alpha=0.7, label="test" if dim == 0 else None
+        )
         for sample in samples[:n_samples, :, dim]:
             ax.plot(t, sample, color="#4C78A8", alpha=0.22, linewidth=1)
         ax.fill_between(t, lower[:, dim], upper[:, dim], color="#4C78A8", alpha=0.22)
-        ax.plot(t, mean[:, dim], color="#1F5A93", linewidth=2, label="posterior mean" if dim == 0 else None)
-        ax.plot(t, y_true[:, dim], color="black", linewidth=1.5, label="truth" if dim == 0 else None)
-        ax.scatter(train_t, train_y[:, dim], color="black", s=18, zorder=4, label="observed" if dim == 0 else None)
+        ax.plot(
+            t,
+            mean[:, dim],
+            color="#1F5A93",
+            linewidth=2,
+            label="posterior mean" if dim == 0 else None,
+        )
+        ax.plot(
+            t, y_true[:, dim], color="black", linewidth=1.5, label="truth" if dim == 0 else None
+        )
+        ax.scatter(
+            train_t,
+            train_y[:, dim],
+            color="black",
+            s=18,
+            zorder=4,
+            label="observed" if dim == 0 else None,
+        )
         ax.set_ylabel(species[dim])
         ax.grid(alpha=0.2)
     axes[0].set_title(method)
@@ -213,7 +230,15 @@ def plot_lv_shared_axis_method_comparison(
             ax.fill_between(t, lower[:, dim], upper[:, dim], color=color, alpha=0.18, linewidth=0)
             ax.plot(t, mean[:, dim], color=color, linewidth=1.8, label="posterior mean")
             ax.plot(t, y_true[:, dim], color="black", linewidth=1.2, label="truth")
-            ax.scatter(y_train_x, y_train[:, dim], s=11, color="black", alpha=0.62, zorder=4, label="train obs")
+            ax.scatter(
+                y_train_x,
+                y_train[:, dim],
+                s=11,
+                color="black",
+                alpha=0.62,
+                zorder=4,
+                label="train obs",
+            )
             ax.axvspan(15.0, 20.0, color="#C7CEDB", alpha=0.16, linewidth=0)
             ax.axvline(20.0, color="#555555", linestyle="--", linewidth=0.8, alpha=0.55)
             ax.set_ylim(*ylims[dim])
@@ -226,7 +251,14 @@ def plot_lv_shared_axis_method_comparison(
                 ax.set_xlabel("time")
     handles, legend_labels = axes[0, 0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles[:3], legend_labels[:3], loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.02))
+        fig.legend(
+            handles[:3],
+            legend_labels[:3],
+            loc="upper center",
+            ncol=3,
+            frameon=False,
+            bbox_to_anchor=(0.5, 1.02),
+        )
     if title is not None:
         fig.suptitle(title, y=1.055, fontsize=12)
     _save(fig, path_base, bbox_inches="tight")
@@ -252,7 +284,11 @@ def plot_calibration_curve(path_base: str | Path, curves: dict[str, dict[float, 
     plt.close(fig)
 
 
-def plot_metric_bars(path_base: str | Path, metrics_by_method: dict[str, dict[str, float]], metric_names: tuple[str, ...]) -> None:
+def plot_metric_bars(
+    path_base: str | Path,
+    metrics_by_method: dict[str, dict[str, float]],
+    metric_names: tuple[str, ...],
+) -> None:
     plt = _plt()
     fig, axes = plt.subplots(1, len(metric_names), figsize=(4.2 * len(metric_names), 4))
     if len(metric_names) == 1:

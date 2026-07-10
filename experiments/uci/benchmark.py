@@ -11,49 +11,47 @@ Example:
 import argparse
 import copy
 import json
-import os
 import math
-import sys
+import os
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from src.utils.dataset import get_dataset
-from src.utils.metrics import MetricsRegression
-from src.utils.utils import infinite_loader
-from src.priors.generative_functions import BayesianNN, BayesLinear, GP
-from src.flows import CouplingFlow, SplineCouplingFlow, SplineCoupling1x1Flow
-from src.vip import VIP
-from src.ftip import FTIP
-from src.sip import SIP
-from src.fbnn import FBNN
-from src.tfsvi import TFSVI
-from src.mfvi import MFVI
-from src.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
-from src.map_baseline import DeterministicMAP
-
-
 from experiments.benchmark_utils import (
     add_wandb_args,
-    canonical_model_type,
     finish_wandb_run,
     init_wandb_run,
     wandb_log_eval,
     wandb_log_result,
     wandb_log_train_step,
 )
+from implicit_process_zoo.fbnn import FBNN
+from implicit_process_zoo.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
+from implicit_process_zoo.ftip import FTIP
+from implicit_process_zoo.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
+from implicit_process_zoo.map_baseline import DeterministicMAP
+from implicit_process_zoo.mfvi import MFVI
+from implicit_process_zoo.priors.generative_functions import GP, BayesianNN, BayesLinear
+from implicit_process_zoo.sip import SIP
+from implicit_process_zoo.tfsvi import TFSVI
+from implicit_process_zoo.utils.dataset import get_dataset
+from implicit_process_zoo.utils.metrics import MetricsRegression
+from implicit_process_zoo.utils.utils import infinite_loader
+from implicit_process_zoo.vip import VIP
 
 UCI_REGRESSION_DATASETS = [
-    "boston", "energy", "concrete", "naval", "power",
-    "protein", "kin8nm", "yatch", "winered",
+    "boston",
+    "energy",
+    "concrete",
+    "naval",
+    "power",
+    "protein",
+    "kin8nm",
+    "yatch",
+    "winered",
 ]
 
 # Default per-dataset training-iteration budgets, mirroring the FTIP
@@ -61,15 +59,15 @@ UCI_REGRESSION_DATASETS = [
 # results/uci/ftip_*_alpha1.0_bayes_*. Used only when the user does
 # not pass --iterations or --epochs explicitly.
 DEFAULT_UCI_ITERS = {
-    "boston":   30_000,
+    "boston": 30_000,
     "concrete": 30_000,
-    "energy":   30_000,
-    "protein":  30_000,
-    "kin8nm":   60_000,
-    "naval":    60_000,
-    "power":    60_000,
-    "winered":  60_000,
-    "yatch":    60_000,
+    "energy": 30_000,
+    "protein": 30_000,
+    "kin8nm": 60_000,
+    "naval": 60_000,
+    "power": 60_000,
+    "winered": 60_000,
+    "yatch": 60_000,
 }
 
 ACTIVATIONS = {
@@ -170,8 +168,8 @@ def compute_predictive_entropy(mean_pred, std_pred, n_mc=1000, batch_size=512):
     all_entropy = []
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
-        mu_b = mean_pred[:, start:end, :]   # (S, B, D)
-        std_b = std_pred[:, start:end, :]   # (S, B, D)
+        mu_b = mean_pred[:, start:end, :]  # (S, B, D)
+        std_b = std_pred[:, start:end, :]  # (S, B, D)
         B = end - start
 
         # Draw MC samples from the mixture
@@ -182,16 +180,16 @@ def compute_predictive_entropy(mean_pred, std_pred, n_mc=1000, batch_size=512):
         y_samples = mu_chosen + std_chosen * torch.randn_like(mu_chosen)  # (n_mc, B, D)
 
         # Evaluate log p(y|x) under the full mixture
-        y_exp = y_samples.unsqueeze(1)      # (n_mc, 1, B, D)
-        mu_exp = mu_b.unsqueeze(0)          # (1, S, B, D)
-        std_exp = std_b.unsqueeze(0)        # (1, S, B, D)
-        var_exp = std_exp ** 2
+        y_exp = y_samples.unsqueeze(1)  # (n_mc, 1, B, D)
+        mu_exp = mu_b.unsqueeze(0)  # (1, S, B, D)
+        std_exp = std_b.unsqueeze(0)  # (1, S, B, D)
+        var_exp = std_exp**2
 
         log_comp = -0.5 * (log2pi + var_exp.log() + (y_exp - mu_exp) ** 2 / var_exp)
-        log_comp = log_comp.sum(-1)         # (n_mc, S, B)
+        log_comp = log_comp.sum(-1)  # (n_mc, S, B)
 
         log_mix = torch.logsumexp(log_comp, dim=1) - log_S  # (n_mc, B)
-        all_entropy.append(-log_mix.mean(dim=0))             # (B,)
+        all_entropy.append(-log_mix.mean(dim=0))  # (B,)
 
     return torch.cat(all_entropy, dim=0)
 
@@ -200,7 +198,7 @@ def _batched_entropy(model, x, model_type, eval_samples, a=None, batch_size=2048
     """Compute per-point predictive entropy without materializing full (S, N, D)."""
     all_entropy = []
     for i in range(0, x.shape[0], batch_size):
-        xb = x[i:i + batch_size]
+        xb = x[i : i + batch_size]
         if model_type == "ftip" and a is not None:
             mean, std = model.forward_with_coefficients(xb, a)
             std = std.unsqueeze(-1).expand_as(mean)
@@ -208,9 +206,7 @@ def _batched_entropy(model, x, model_type, eval_samples, a=None, batch_size=2048
             mean, std = model(xb)
         elif model_type == "fbnn":
             mean, std = _fbnn_pred_components(model, xb)
-        elif model_type == "tfsvi":
-            mean, std = _tfsvi_pred_components(model, xb, eval_samples)
-        elif model_type == "mfvi":
+        elif model_type == "tfsvi" or model_type == "mfvi":
             mean, std = _tfsvi_pred_components(model, xb, eval_samples)
         elif model_type == "gmvip":
             mean, std = _gmvip_pred_components(model, xb, eval_samples)
@@ -265,8 +261,8 @@ def evaluate_ood(model, test_dataset, args, model_type=None, seed=42):
         "entropy_id_std": float(entropy_id.std().cpu()),
         "entropy_ood_mean": float(entropy_ood.mean().cpu()),
         "entropy_ood_std": float(entropy_ood.std().cpu()),
-        "n_id": int(len(entropy_id)),
-        "n_ood": int(len(entropy_ood)),
+        "n_id": len(entropy_id),
+        "n_ood": len(entropy_ood),
     }
 
 
@@ -285,330 +281,730 @@ def parse_args(
     )
 
     # --- Experiment ---
-    p.add_argument("--model", type=str, required=True,
-                    choices=REGRESSION_MODELS + ["all"],
-                    help="Model to train.")
-    p.add_argument("--dataset", type=str, required=True,
-                    choices=dataset_names + ["all"],
-                    help=f"Dataset name or 'all' for all {dataset_group_label}.")
+    p.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        choices=REGRESSION_MODELS + ["all"],
+        help="Model to train.",
+    )
+    p.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        choices=dataset_names + ["all"],
+        help=f"Dataset name or 'all' for all {dataset_group_label}.",
+    )
     p.add_argument("--seed", type=int, default=42, help="Random seed.")
-    p.add_argument("--test_size", type=float, default=0.1,
-                    help="Fraction of data used for testing.")
-    p.add_argument("--dtype", type=str, default="float32",
-                    choices=["float32", "float64"], help="Tensor dtype.")
-    p.add_argument("--device", type=str, default=None,
-                    help="Torch device (default: cuda if available, else cpu).")
-    p.add_argument("--test_ood", action="store_true", default=False,
-                    help="Evaluate OOD detection using predictive entropy as score.")
-    p.add_argument("--output_dir", type=str, default=default_output_dir,
-                    help="Directory to save result JSON files.")
+    p.add_argument(
+        "--test_size", type=float, default=0.1, help="Fraction of data used for testing."
+    )
+    p.add_argument(
+        "--dtype", type=str, default="float32", choices=["float32", "float64"], help="Tensor dtype."
+    )
+    p.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Torch device (default: cuda if available, else cpu).",
+    )
+    p.add_argument(
+        "--test_ood",
+        action="store_true",
+        default=False,
+        help="Evaluate OOD detection using predictive entropy as score.",
+    )
+    p.add_argument(
+        "--output_dir",
+        type=str,
+        default=default_output_dir,
+        help="Directory to save result JSON files.",
+    )
 
     # --- BayesianNN (generative function / prior) ---
-    p.add_argument("--hidden_dims", type=int, nargs="+", default=[10, 10],
-                    help="Hidden layer widths for the BayesianNN prior.")
-    p.add_argument("--activation", type=str, default="tanh",
-                    choices=list(ACTIVATIONS.keys()),
-                    help="Activation function for the BayesianNN.")
-    p.add_argument("--layer_model", type=str, default="BayesLinear",
-                    choices=list(LAYER_MODELS.keys()),
-                    help="Bayesian layer type. Benchmarks use full BayesLinear.")
-    p.add_argument("--dropout", type=float, default=0.0,
-                    help="Dropout rate in the BayesianNN.")
-    p.add_argument("--weight_log_sigma_init", type=float, default=0.0,
-                    help="Initial log std for shared BayesianNN weight/bias "
-                         "samples used by VIP/FTIP/MFVI/FBNN/TFSVI.")
+    p.add_argument(
+        "--hidden_dims",
+        type=int,
+        nargs="+",
+        default=[10, 10],
+        help="Hidden layer widths for the BayesianNN prior.",
+    )
+    p.add_argument(
+        "--activation",
+        type=str,
+        default="tanh",
+        choices=list(ACTIVATIONS.keys()),
+        help="Activation function for the BayesianNN.",
+    )
+    p.add_argument(
+        "--layer_model",
+        type=str,
+        default="BayesLinear",
+        choices=list(LAYER_MODELS.keys()),
+        help="Bayesian layer type. Benchmarks use full BayesLinear.",
+    )
+    p.add_argument("--dropout", type=float, default=0.0, help="Dropout rate in the BayesianNN.")
+    p.add_argument(
+        "--weight_log_sigma_init",
+        type=float,
+        default=0.0,
+        help="Initial log std for shared BayesianNN weight/bias "
+        "samples used by VIP/FTIP/MFVI/FBNN/TFSVI.",
+    )
 
     # --- Model (shared VIP / FTIP) ---
-    p.add_argument("--regression_coeffs", type=int, default=20,
-                    help="Number of regression coefficients (S).")
-    p.add_argument("--bb_alpha", type=float, default=None,
-                    help="BB-alpha parameter (0 = ELBO, 1 = BB-alpha energy). "
-                         "If unset: 0.0 for all models.")
-    p.add_argument("--use_prior_regularizer", action="store_true", default=False,
-                    help="Enable the method's optional prior regularizer.")
-    p.add_argument("--no_prior_regularizer", action="store_true",
-                    help="Disable prior regularizer.")
-    p.add_argument("--regularizer_mode", type=str, default="evidence",
-                    choices=["evidence", "KL"],
-                    help="Prior regularizer mode.")
-    p.add_argument("--prior_regularizer_scaler", type=float, default=1.0,
-                    help="Prior regularizer scaling factor.")
-    p.add_argument("--vip_learn_prior", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Train the VIP BayesianNN generator/prior parameters. "
-                         "Use --no-vip_learn_prior for a frozen standard BNN prior.")
-    p.add_argument("--ftip_learn_prior", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Train the FTIP BayesianNN generator/prior parameters. "
-                         "Use --no-ftip_learn_prior for a frozen standard BNN prior.")
+    p.add_argument(
+        "--regression_coeffs", type=int, default=20, help="Number of regression coefficients (S)."
+    )
+    p.add_argument(
+        "--bb_alpha",
+        type=float,
+        default=None,
+        help="BB-alpha parameter (0 = ELBO, 1 = BB-alpha energy). If unset: 0.0 for all models.",
+    )
+    p.add_argument(
+        "--use_prior_regularizer",
+        action="store_true",
+        default=False,
+        help="Enable the method's optional prior regularizer.",
+    )
+    p.add_argument("--no_prior_regularizer", action="store_true", help="Disable prior regularizer.")
+    p.add_argument(
+        "--regularizer_mode",
+        type=str,
+        default="evidence",
+        choices=["evidence", "KL"],
+        help="Prior regularizer mode.",
+    )
+    p.add_argument(
+        "--prior_regularizer_scaler",
+        type=float,
+        default=1.0,
+        help="Prior regularizer scaling factor.",
+    )
+    p.add_argument(
+        "--vip_learn_prior",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Train the VIP BayesianNN generator/prior parameters. "
+        "Use --no-vip_learn_prior for a frozen standard BNN prior.",
+    )
+    p.add_argument(
+        "--ftip_learn_prior",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Train the FTIP BayesianNN generator/prior parameters. "
+        "Use --no-ftip_learn_prior for a frozen standard BNN prior.",
+    )
 
     # --- FTIP-specific ---
-    p.add_argument("--flow_type", type=str, default="spline_1x1",
-                    choices=["affine", "spline", "spline_1x1"],
-                    help="FTIP flow class. 'affine' = original CouplingFlow "
-                         "(affine coupling), 'spline' = SplineCouplingFlow "
-                         "(RQ spline coupling), 'spline_1x1' = "
-                         "SplineCoupling1x1Flow (spline coupling + Glow 1x1 LU "
-                         "mixing, default).")
-    p.add_argument("--flow_num_bins", type=int, default=8,
-                    help="Bins per RQ-spline coupling layer (ignored if "
-                         "flow_type=affine).")
-    p.add_argument("--flow_domain", type=float, default=3.0,
-                    help="Spline domain half-width B (ignored if "
-                         "flow_type=affine).")
-    p.add_argument("--flow_depth", type=int, default=2,
-                    help="Number of coupling layers in the normalizing flow (FTIP only).")
-    p.add_argument("--num_samples", type=int, default=200,
-                    help="Number of MC posterior samples (FTIP only).")
-    p.add_argument("--eval_samples", type=int, default=1000,
-                    help="Number of MC samples used at evaluation time (FTIP only).")
-    p.add_argument("--warm_start_from", type=str, default=None,
-                    help="Path to a VIP checkpoint (.pt) for warm-starting FTIP.")
-    p.add_argument("--resume_from_checkpoint", type=str, default=None,
-                    help="Path to a model checkpoint (.pt) to load before training.")
-    p.add_argument("--resume_step_offset", type=int, default=0,
-                    help="Iteration offset for resumed runs, used for W&B/eval step numbers.")
-    p.add_argument("--learnable_affine", action="store_true", default=True,
-                    help="Make the affine warm-start layer trainable.")
-    p.add_argument("--no_learnable_affine", action="store_true",
-                    help="Fix the affine warm-start layer (not trainable).")
-
+    p.add_argument(
+        "--flow_type",
+        type=str,
+        default="spline_1x1",
+        choices=["affine", "spline", "spline_1x1"],
+        help="FTIP flow class. 'affine' = original CouplingFlow "
+        "(affine coupling), 'spline' = SplineCouplingFlow "
+        "(RQ spline coupling), 'spline_1x1' = "
+        "SplineCoupling1x1Flow (spline coupling + Glow 1x1 LU "
+        "mixing, default).",
+    )
+    p.add_argument(
+        "--flow_num_bins",
+        type=int,
+        default=8,
+        help="Bins per RQ-spline coupling layer (ignored if flow_type=affine).",
+    )
+    p.add_argument(
+        "--flow_domain",
+        type=float,
+        default=3.0,
+        help="Spline domain half-width B (ignored if flow_type=affine).",
+    )
+    p.add_argument(
+        "--flow_depth",
+        type=int,
+        default=2,
+        help="Number of coupling layers in the normalizing flow (FTIP only).",
+    )
+    p.add_argument(
+        "--num_samples", type=int, default=200, help="Number of MC posterior samples (FTIP only)."
+    )
+    p.add_argument(
+        "--eval_samples",
+        type=int,
+        default=1000,
+        help="Number of MC samples used at evaluation time (FTIP only).",
+    )
+    p.add_argument(
+        "--warm_start_from",
+        type=str,
+        default=None,
+        help="Path to a VIP checkpoint (.pt) for warm-starting FTIP.",
+    )
+    p.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a model checkpoint (.pt) to load before training.",
+    )
+    p.add_argument(
+        "--resume_step_offset",
+        type=int,
+        default=0,
+        help="Iteration offset for resumed runs, used for W&B/eval step numbers.",
+    )
+    p.add_argument(
+        "--learnable_affine",
+        action="store_true",
+        default=True,
+        help="Make the affine warm-start layer trainable.",
+    )
+    p.add_argument(
+        "--no_learnable_affine",
+        action="store_true",
+        help="Fix the affine warm-start layer (not trainable).",
+    )
 
     # --- FBNN-specific ---
-    p.add_argument("--fbnn_prior", type=str, default="gp",
-                    choices=["gp", "bnn"],
-                    help="fBNN prior family: 'gp' (RFF GP, paper default) "
-                         "or 'bnn' (Bayesian NN with SSGE prior score).")
-    p.add_argument("--fbnn_freeze_prior", action="store_true", default=False,
-                    help="Freeze the prior's parameters. By default the GP "
-                         "kernel hyperparameters are LEARNED jointly, "
-                         "matching Sun et al. 2019.")
-    p.add_argument("--fbnn_gp_inner_dim", type=int, default=10,
-                    help="Inner-layer dim of the RFF GP prior (number of "
-                         "random features).")
-    p.add_argument("--fbnn_gp_kernel_amp", type=float, default=1.0,
-                    help="Initial amplitude of the FBNN RFF GP prior.")
-    p.add_argument("--fbnn_gp_kernel_length", type=float, default=1.0,
-                    help="Initial length-scale of the FBNN RFF GP prior.")
-    p.add_argument("--fbnn_num_measurement", type=int, default=20,
-                    help="# training-point measurements for the functional KL.")
-    p.add_argument("--fbnn_num_context", type=int, default=20,
-                    help="# OOD context points sampled from N(0, context_std^2).")
-    p.add_argument("--fbnn_context_std", type=float, default=2.0,
-                    help="Std of the Gaussian from which context points are sampled.")
-    p.add_argument("--fbnn_lambda_kl", type=float, default=1.0,
-                    help="Weight on the functional KL term in the FBNN ELBO.")
-    p.add_argument("--fbnn_num_eval_samples", type=int, default=200,
-                    help="MC posterior samples used at FBNN evaluation time.")
+    p.add_argument(
+        "--fbnn_prior",
+        type=str,
+        default="gp",
+        choices=["gp", "bnn"],
+        help="fBNN prior family: 'gp' (RFF GP, paper default) "
+        "or 'bnn' (Bayesian NN with SSGE prior score).",
+    )
+    p.add_argument(
+        "--fbnn_freeze_prior",
+        action="store_true",
+        default=False,
+        help="Freeze the prior's parameters. By default the GP "
+        "kernel hyperparameters are LEARNED jointly, "
+        "matching Sun et al. 2019.",
+    )
+    p.add_argument(
+        "--fbnn_gp_inner_dim",
+        type=int,
+        default=10,
+        help="Inner-layer dim of the RFF GP prior (number of random features).",
+    )
+    p.add_argument(
+        "--fbnn_gp_kernel_amp",
+        type=float,
+        default=1.0,
+        help="Initial amplitude of the FBNN RFF GP prior.",
+    )
+    p.add_argument(
+        "--fbnn_gp_kernel_length",
+        type=float,
+        default=1.0,
+        help="Initial length-scale of the FBNN RFF GP prior.",
+    )
+    p.add_argument(
+        "--fbnn_num_measurement",
+        type=int,
+        default=20,
+        help="# training-point measurements for the functional KL.",
+    )
+    p.add_argument(
+        "--fbnn_num_context",
+        type=int,
+        default=20,
+        help="# OOD context points sampled from N(0, context_std^2).",
+    )
+    p.add_argument(
+        "--fbnn_context_std",
+        type=float,
+        default=2.0,
+        help="Std of the Gaussian from which context points are sampled.",
+    )
+    p.add_argument(
+        "--fbnn_lambda_kl",
+        type=float,
+        default=1.0,
+        help="Weight on the functional KL term in the FBNN ELBO.",
+    )
+    p.add_argument(
+        "--fbnn_num_eval_samples",
+        type=int,
+        default=200,
+        help="MC posterior samples used at FBNN evaluation time.",
+    )
 
     # --- TFSVI-specific (Rudner et al., 2022) ---
-    p.add_argument("--tfsvi_sigma_prior", type=float, default=1.0,
-                    help="Prior std for the parameter Gaussian "
-                         "p(theta) = N(0, sigma_prior^2 I).")
-    p.add_argument("--tfsvi_S_ctx", type=int, default=5,
-                    help="# context sets in the max-KL estimator.")
-    p.add_argument("--tfsvi_K_ctx", type=int, default=20,
-                    help="# points per context set.")
-    p.add_argument("--tfsvi_num_train_samples", type=int, default=20,
-                    help="MC parameter samples per TFSVI training step.")
-    p.add_argument("--tfsvi_num_eval_samples", type=int, default=200,
-                    help="MC parameter samples used at TFSVI evaluation time.")
+    p.add_argument(
+        "--tfsvi_sigma_prior",
+        type=float,
+        default=1.0,
+        help="Prior std for the parameter Gaussian p(theta) = N(0, sigma_prior^2 I).",
+    )
+    p.add_argument(
+        "--tfsvi_S_ctx", type=int, default=5, help="# context sets in the max-KL estimator."
+    )
+    p.add_argument("--tfsvi_K_ctx", type=int, default=20, help="# points per context set.")
+    p.add_argument(
+        "--tfsvi_num_train_samples",
+        type=int,
+        default=20,
+        help="MC parameter samples per TFSVI training step.",
+    )
+    p.add_argument(
+        "--tfsvi_num_eval_samples",
+        type=int,
+        default=200,
+        help="MC parameter samples used at TFSVI evaluation time.",
+    )
 
     # --- MFVI-specific ---
-    p.add_argument("--mfvi_num_eval_samples", type=int, default=200,
-                    help="MC weight samples used at MFVI evaluation time. "
-                         "Training uses --regression_coeffs as the per-step "
-                         "MC count (matches the other methods in this script).")
+    p.add_argument(
+        "--mfvi_num_eval_samples",
+        type=int,
+        default=200,
+        help="MC weight samples used at MFVI evaluation time. "
+        "Training uses --regression_coeffs as the per-step "
+        "MC count (matches the other methods in this script).",
+    )
 
     # --- SIP-specific (Sparse Implicit Process) ---
-    p.add_argument("--sip_num_inducing", type=int, default=100,
-                    help="Number of sparse inducing inputs Z.")
-    p.add_argument("--sip_inducing_method", type=str, default="kmeans",
-                    choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
-                    help="Initialization method for SIP inducing inputs.")
-    p.add_argument("--sip_num_prior_samples", type=int, default=512,
-                    help="Prior samples used to estimate SIP sparse moments.")
-    p.add_argument("--sip_num_train_samples", type=int, default=None,
-                    help=("Posterior/prior inducing samples used in SIP's "
-                          "Monte Carlo likelihood and critic KL. Defaults to "
-                          "--sip_num_prior_samples."))
-    p.add_argument("--sip_num_eval_samples", type=int, default=200,
-                    help="Posterior samples used at SIP evaluation time.")
-    p.add_argument("--sip_learn_inducing", action=argparse.BooleanOptionalAction,
-                    default=False,
-                    help="Optimize SIP inducing inputs Z.")
-    p.add_argument("--sip_learn_prior", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help=("Optimize SIP BNN-prior parameters. "
-                          "Use --no-sip_learn_prior for a frozen standard BNN prior."))
-    p.add_argument("--sip_detach_covariances", action=argparse.BooleanOptionalAction,
-                    default=False,
-                    help="Detach SIP empirical covariance estimates from prior gradients.")
-    p.add_argument("--sip_jitter", type=float, default=1e-5,
-                    help="Diagonal jitter added to SIP K_ZZ.")
-    p.add_argument("--sip_log_variance_init", type=float, default=-5.0,
-                    help="Initial log observation-noise variance for SIP regression.")
-    p.add_argument("--sip_min_log_variance", type=float, default=None,
-                    help="Optional lower bound for SIP regression log observation-noise variance.")
-    p.add_argument("--sip_fix_random_noise", action=argparse.BooleanOptionalAction,
-                    default=False,
-                    help=("Use cached BNN prior noise for SIP moment estimates "
-                          "and critic prior samples. Default False matches the "
-                          "paper's stochastic prior sampling."))
-    p.add_argument("--sip_beta", type=float, default=1.0,
-                    help="Weight on the SIP critic-estimated inducing KL.")
-    p.add_argument("--sip_beta_warmup_steps", type=int, default=0,
-                    help="Linear warmup steps for the SIP KL weight.")
-    p.add_argument("--sip_critic_hidden_dim", type=int, default=50,
-                    help="Hidden width of the SIP inducing-space critic.")
-    p.add_argument("--sip_critic_lr", type=float, default=1e-3,
-                    help="Learning rate for the SIP inducing-space critic.")
-    p.add_argument("--sip_critic_steps", type=int, default=1,
-                    help="Critic updates per SIP variational update.")
-    p.add_argument("--sip_posterior_noise_dim", type=int, default=100,
-                    help=("Noise dimension for the implicit SIP q_phi(u) sampler. "
-                          "The reference SIP implementation uses 100."))
-    p.add_argument("--sip_posterior_hidden_dim", type=int, default=50,
-                    help="Hidden width of the implicit SIP q_phi(u) sampler.")
-    p.add_argument("--sip_posterior_depth", type=int, default=2,
-                    help="Hidden-layer count of the implicit SIP q_phi(u) sampler.")
+    p.add_argument(
+        "--sip_num_inducing", type=int, default=100, help="Number of sparse inducing inputs Z."
+    )
+    p.add_argument(
+        "--sip_inducing_method",
+        type=str,
+        default="kmeans",
+        choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+        help="Initialization method for SIP inducing inputs.",
+    )
+    p.add_argument(
+        "--sip_num_prior_samples",
+        type=int,
+        default=512,
+        help="Prior samples used to estimate SIP sparse moments.",
+    )
+    p.add_argument(
+        "--sip_num_train_samples",
+        type=int,
+        default=None,
+        help=(
+            "Posterior/prior inducing samples used in SIP's "
+            "Monte Carlo likelihood and critic KL. Defaults to "
+            "--sip_num_prior_samples."
+        ),
+    )
+    p.add_argument(
+        "--sip_num_eval_samples",
+        type=int,
+        default=200,
+        help="Posterior samples used at SIP evaluation time.",
+    )
+    p.add_argument(
+        "--sip_learn_inducing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Optimize SIP inducing inputs Z.",
+    )
+    p.add_argument(
+        "--sip_learn_prior",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Optimize SIP BNN-prior parameters. "
+            "Use --no-sip_learn_prior for a frozen standard BNN prior."
+        ),
+    )
+    p.add_argument(
+        "--sip_detach_covariances",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Detach SIP empirical covariance estimates from prior gradients.",
+    )
+    p.add_argument(
+        "--sip_jitter", type=float, default=1e-5, help="Diagonal jitter added to SIP K_ZZ."
+    )
+    p.add_argument(
+        "--sip_log_variance_init",
+        type=float,
+        default=-5.0,
+        help="Initial log observation-noise variance for SIP regression.",
+    )
+    p.add_argument(
+        "--sip_min_log_variance",
+        type=float,
+        default=None,
+        help="Optional lower bound for SIP regression log observation-noise variance.",
+    )
+    p.add_argument(
+        "--sip_fix_random_noise",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use cached BNN prior noise for SIP moment estimates "
+            "and critic prior samples. Default False matches the "
+            "paper's stochastic prior sampling."
+        ),
+    )
+    p.add_argument(
+        "--sip_beta",
+        type=float,
+        default=1.0,
+        help="Weight on the SIP critic-estimated inducing KL.",
+    )
+    p.add_argument(
+        "--sip_beta_warmup_steps",
+        type=int,
+        default=0,
+        help="Linear warmup steps for the SIP KL weight.",
+    )
+    p.add_argument(
+        "--sip_critic_hidden_dim",
+        type=int,
+        default=50,
+        help="Hidden width of the SIP inducing-space critic.",
+    )
+    p.add_argument(
+        "--sip_critic_lr",
+        type=float,
+        default=1e-3,
+        help="Learning rate for the SIP inducing-space critic.",
+    )
+    p.add_argument(
+        "--sip_critic_steps", type=int, default=1, help="Critic updates per SIP variational update."
+    )
+    p.add_argument(
+        "--sip_posterior_noise_dim",
+        type=int,
+        default=100,
+        help=(
+            "Noise dimension for the implicit SIP q_phi(u) sampler. "
+            "The reference SIP implementation uses 100."
+        ),
+    )
+    p.add_argument(
+        "--sip_posterior_hidden_dim",
+        type=int,
+        default=50,
+        help="Hidden width of the implicit SIP q_phi(u) sampler.",
+    )
+    p.add_argument(
+        "--sip_posterior_depth",
+        type=int,
+        default=2,
+        help="Hidden-layer count of the implicit SIP q_phi(u) sampler.",
+    )
 
     # --- GMVIP-specific ---
-    p.add_argument("--gmvip_operator_type", choices=["empirical", "rbf"], default="rbf",
-                    help="GMVIP Matheron operator.")
-    p.add_argument("--gmvip_posterior_type", choices=["gaussian", "realnvp"],
-                    default="gaussian",
-                    help="GMVIP latent coefficient posterior.")
-    p.add_argument("--gmvip_num_inducing", type=int, default=32,
-                    help="Number of GMVIP inducing points.")
-    p.add_argument("--gmvip_inducing_method", type=str, default="kmeans",
-                    choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
-                    help="Initialization rule for GMVIP inducing points.")
-    p.add_argument("--gmvip_num_operator_bank_samples", type=int, default=256,
-                    help="Prior samples used to initialize GMVIP operator moments.")
-    p.add_argument("--gmvip_num_train_samples", type=int, default=16,
-                    help="Posterior function samples per GMVIP training step.")
-    p.add_argument("--gmvip_num_eval_samples", type=int, default=200,
-                    help="Posterior function samples used at GMVIP evaluation time.")
-    p.add_argument("--gmvip_antithetic_samples", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Use antithetic base Gaussian pairs for Gaussian/RealNVP GMVIP coefficient samples.")
-    p.add_argument("--gmvip_beta", type=float, default=1.0,
-                    help="Weight on the GMVIP latent coefficient KL.")
-    p.add_argument("--gmvip_beta_warmup_steps", type=int, default=0,
-                    help="Linear warmup steps for GMVIP beta.")
-    p.add_argument("--gmvip_data_alpha", type=float, default=0.0,
-                    help="Alpha data objective for GMVIP; 0 gives the standard ELBO data term.")
-    p.add_argument("--gmvip_weight_log_sigma_init", type=float, default=0.0,
-                    help="Frozen BNN prior weight log sigma for GMVIP.")
-    p.add_argument("--gmvip_learn_prior", action=argparse.BooleanOptionalAction,
-                    default=False,
-                    help="Train the GMVIP BNN basis/prior parameters as in VIP.")
-    p.add_argument("--gmvip_detach_operator_prior_grad",
-                    action=argparse.BooleanOptionalAction,
-                    default=False,
-                    help="Stop GMVIP operator-statistics gradients from updating "
-                         "the BNN prior parameters while preserving gradients "
-                         "through residual prior samples and learnable Z.")
-    p.add_argument("--gmvip_learn_noise", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Learn GMVIP Gaussian observation noise.")
-    p.add_argument("--gmvip_init_log_noise", type=float, default=-2.5,
-                    help="Initial GMVIP log observation noise.")
-    p.add_argument("--gmvip_min_log_noise", type=_optional_float, default=-5.0,
-                    help="Optional minimum GMVIP log observation noise; pass none to disable.")
-    p.add_argument("--gmvip_max_log_noise", type=_optional_float, default=None,
-                    help="Optional maximum GMVIP log observation noise; pass none to disable.")
-    p.add_argument("--gmvip_learn_Z", action=argparse.BooleanOptionalAction,
-                    default=False,
-                    help="Learn GMVIP inducing locations after initialization.")
-    p.add_argument("--gmvip_learn_kernel", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Learn the GMVIP RBF operator kernel hyperparameters.")
-    p.add_argument("--gmvip_ard", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="Use ARD lengthscales in the GMVIP RBF operator.")
-    p.add_argument("--gmvip_init_lengthscale", type=_float_or_median, default="median",
-                    help="Initial GMVIP RBF lengthscale or 'median'.")
-    p.add_argument("--gmvip_init_outputscale", type=_float_or_prior_marginal,
-                    default="prior_marginal",
-                    help="Initial GMVIP RBF outputscale or 'prior_marginal'.")
-    p.add_argument("--gmvip_inducing_scale", type=str, default="prior_cholesky",
-                    choices=["prior_cholesky", "rbf_cholesky", "prior_diag", "identity"],
-                    help="Map from whitened GMVIP coefficients a to inducing values u.")
-    p.add_argument("--gmvip_mean_mode", type=str, default="prior_sample",
-                    choices=["prior_sample", "zero", "prior_api"],
-                    help="Mean initialization mode for GMVIP inducing values.")
-    p.add_argument("--gmvip_jitter", type=float, default=1e-5,
-                    help="GMVIP linear algebra jitter.")
-    p.add_argument("--gmvip_shrinkage", type=float, default=0.02,
-                    help="Empirical-operator covariance shrinkage.")
-    p.add_argument("--gmvip_posterior_init_mean", type=float, default=0.0,
-                    help="Initial GMVIP Gaussian coefficient posterior mean.")
-    p.add_argument("--gmvip_posterior_init_log_std", type=float, default=0.0,
-                    help="Initial GMVIP Gaussian coefficient posterior log std.")
-    p.add_argument("--gmvip_posterior_min_log_std", type=_optional_float, default=-8.0,
-                    help="Optional minimum GMVIP posterior log std; pass none to disable.")
-    p.add_argument("--gmvip_posterior_max_log_std", type=_optional_float, default=None,
-                    help="Optional maximum GMVIP posterior log std; pass none to disable.")
-    p.add_argument("--gmvip_flow_depth", type=int, default=4,
-                    help="Number of affine coupling layers for GMVIP RealNVP q(a).")
-    p.add_argument("--gmvip_flow_hidden_dim", type=int, default=128,
-                    help="Hidden width for GMVIP RealNVP coupling nets.")
-    p.add_argument("--gmvip_flow_num_layers", type=int, default=2,
-                    help="MLP layer count for GMVIP RealNVP coupling nets.")
-    p.add_argument("--gmvip_flow_dropout", type=float, default=0.0,
-                    help="Dropout for GMVIP RealNVP coupling nets.")
-    p.add_argument("--gmvip_flow_scale_bound", type=float, default=2.0,
-                    help="Tanh bound for GMVIP RealNVP log-scales.")
-    p.add_argument("--gmvip_max_grad_norm", type=_optional_float, default=None,
-                    help="Optional GMVIP gradient clipping norm; pass none to disable.")
+    p.add_argument(
+        "--gmvip_operator_type",
+        choices=["empirical", "rbf"],
+        default="rbf",
+        help="GMVIP Matheron operator.",
+    )
+    p.add_argument(
+        "--gmvip_posterior_type",
+        choices=["gaussian", "realnvp"],
+        default="gaussian",
+        help="GMVIP latent coefficient posterior.",
+    )
+    p.add_argument(
+        "--gmvip_num_inducing", type=int, default=32, help="Number of GMVIP inducing points."
+    )
+    p.add_argument(
+        "--gmvip_inducing_method",
+        type=str,
+        default="kmeans",
+        choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+        help="Initialization rule for GMVIP inducing points.",
+    )
+    p.add_argument(
+        "--gmvip_num_operator_bank_samples",
+        type=int,
+        default=256,
+        help="Prior samples used to initialize GMVIP operator moments.",
+    )
+    p.add_argument(
+        "--gmvip_num_train_samples",
+        type=int,
+        default=16,
+        help="Posterior function samples per GMVIP training step.",
+    )
+    p.add_argument(
+        "--gmvip_num_eval_samples",
+        type=int,
+        default=200,
+        help="Posterior function samples used at GMVIP evaluation time.",
+    )
+    p.add_argument(
+        "--gmvip_antithetic_samples",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use antithetic base Gaussian pairs for Gaussian/RealNVP GMVIP coefficient samples.",
+    )
+    p.add_argument(
+        "--gmvip_beta", type=float, default=1.0, help="Weight on the GMVIP latent coefficient KL."
+    )
+    p.add_argument(
+        "--gmvip_beta_warmup_steps", type=int, default=0, help="Linear warmup steps for GMVIP beta."
+    )
+    p.add_argument(
+        "--gmvip_data_alpha",
+        type=float,
+        default=0.0,
+        help="Alpha data objective for GMVIP; 0 gives the standard ELBO data term.",
+    )
+    p.add_argument(
+        "--gmvip_weight_log_sigma_init",
+        type=float,
+        default=0.0,
+        help="Frozen BNN prior weight log sigma for GMVIP.",
+    )
+    p.add_argument(
+        "--gmvip_learn_prior",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Train the GMVIP BNN basis/prior parameters as in VIP.",
+    )
+    p.add_argument(
+        "--gmvip_detach_operator_prior_grad",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Stop GMVIP operator-statistics gradients from updating "
+        "the BNN prior parameters while preserving gradients "
+        "through residual prior samples and learnable Z.",
+    )
+    p.add_argument(
+        "--gmvip_learn_noise",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Learn GMVIP Gaussian observation noise.",
+    )
+    p.add_argument(
+        "--gmvip_init_log_noise",
+        type=float,
+        default=-2.5,
+        help="Initial GMVIP log observation noise.",
+    )
+    p.add_argument(
+        "--gmvip_min_log_noise",
+        type=_optional_float,
+        default=-5.0,
+        help="Optional minimum GMVIP log observation noise; pass none to disable.",
+    )
+    p.add_argument(
+        "--gmvip_max_log_noise",
+        type=_optional_float,
+        default=None,
+        help="Optional maximum GMVIP log observation noise; pass none to disable.",
+    )
+    p.add_argument(
+        "--gmvip_learn_Z",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Learn GMVIP inducing locations after initialization.",
+    )
+    p.add_argument(
+        "--gmvip_learn_kernel",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Learn the GMVIP RBF operator kernel hyperparameters.",
+    )
+    p.add_argument(
+        "--gmvip_ard",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use ARD lengthscales in the GMVIP RBF operator.",
+    )
+    p.add_argument(
+        "--gmvip_init_lengthscale",
+        type=_float_or_median,
+        default="median",
+        help="Initial GMVIP RBF lengthscale or 'median'.",
+    )
+    p.add_argument(
+        "--gmvip_init_outputscale",
+        type=_float_or_prior_marginal,
+        default="prior_marginal",
+        help="Initial GMVIP RBF outputscale or 'prior_marginal'.",
+    )
+    p.add_argument(
+        "--gmvip_inducing_scale",
+        type=str,
+        default="prior_cholesky",
+        choices=["prior_cholesky", "rbf_cholesky", "prior_diag", "identity"],
+        help="Map from whitened GMVIP coefficients a to inducing values u.",
+    )
+    p.add_argument(
+        "--gmvip_mean_mode",
+        type=str,
+        default="prior_sample",
+        choices=["prior_sample", "zero", "prior_api"],
+        help="Mean initialization mode for GMVIP inducing values.",
+    )
+    p.add_argument("--gmvip_jitter", type=float, default=1e-5, help="GMVIP linear algebra jitter.")
+    p.add_argument(
+        "--gmvip_shrinkage",
+        type=float,
+        default=0.02,
+        help="Empirical-operator covariance shrinkage.",
+    )
+    p.add_argument(
+        "--gmvip_posterior_init_mean",
+        type=float,
+        default=0.0,
+        help="Initial GMVIP Gaussian coefficient posterior mean.",
+    )
+    p.add_argument(
+        "--gmvip_posterior_init_log_std",
+        type=float,
+        default=0.0,
+        help="Initial GMVIP Gaussian coefficient posterior log std.",
+    )
+    p.add_argument(
+        "--gmvip_posterior_min_log_std",
+        type=_optional_float,
+        default=-8.0,
+        help="Optional minimum GMVIP posterior log std; pass none to disable.",
+    )
+    p.add_argument(
+        "--gmvip_posterior_max_log_std",
+        type=_optional_float,
+        default=None,
+        help="Optional maximum GMVIP posterior log std; pass none to disable.",
+    )
+    p.add_argument(
+        "--gmvip_flow_depth",
+        type=int,
+        default=4,
+        help="Number of affine coupling layers for GMVIP RealNVP q(a).",
+    )
+    p.add_argument(
+        "--gmvip_flow_hidden_dim",
+        type=int,
+        default=128,
+        help="Hidden width for GMVIP RealNVP coupling nets.",
+    )
+    p.add_argument(
+        "--gmvip_flow_num_layers",
+        type=int,
+        default=2,
+        help="MLP layer count for GMVIP RealNVP coupling nets.",
+    )
+    p.add_argument(
+        "--gmvip_flow_dropout",
+        type=float,
+        default=0.0,
+        help="Dropout for GMVIP RealNVP coupling nets.",
+    )
+    p.add_argument(
+        "--gmvip_flow_scale_bound",
+        type=float,
+        default=2.0,
+        help="Tanh bound for GMVIP RealNVP log-scales.",
+    )
+    p.add_argument(
+        "--gmvip_max_grad_norm",
+        type=_optional_float,
+        default=None,
+        help="Optional GMVIP gradient clipping norm; pass none to disable.",
+    )
 
     # --- MAP-specific ---
-    p.add_argument("--map_l2", type=float, default=1e-4,
-                    help="L2 weight penalty for deterministic MAP baseline.")
-    p.add_argument("--map_log_variance_init", type=float, default=-5.0,
-                    help="Initial log observation variance for MAP baseline.")
+    p.add_argument(
+        "--map_l2",
+        type=float,
+        default=1e-4,
+        help="L2 weight penalty for deterministic MAP baseline.",
+    )
+    p.add_argument(
+        "--map_log_variance_init",
+        type=float,
+        default=-5.0,
+        help="Initial log observation variance for MAP baseline.",
+    )
 
     # --- Auto warm-start (VIP -> FTIP pipeline) ---
-    p.add_argument("--auto_warm_start", action="store_true", default=True,
-                    help="Automatically train VIP first, then warm-start FTIP (FTIP only).")
-    p.add_argument("--no_auto_warm_start", action="store_true",
-                    help="Disable auto warm-start; train FTIP from scratch.")
-    p.add_argument("--vip_epochs", type=int, default=None,
-                    help="Epochs for VIP pre-training phase (auto warm-start only).")
-    p.add_argument("--vip_iterations", type=int, default=None,
-                    help="Iterations for VIP pre-training phase (auto warm-start only).")
-    p.add_argument("--vip_lr", type=float, default=1e-3,
-                    help="Learning rate for VIP pre-training phase.")
-    p.add_argument("--ftip_lr", type=float, default=1e-4,
-                    help="Learning rate for FTIP fine-tuning phase (auto warm-start only). "
-                         "1e-4 lets the flow escape the VIP warm-start init; smaller values "
-                         "(e.g. 1e-5) leave the spline coupling layers frozen at the affine "
-                         "VIP posterior.")
+    p.add_argument(
+        "--auto_warm_start",
+        action="store_true",
+        default=True,
+        help="Automatically train VIP first, then warm-start FTIP (FTIP only).",
+    )
+    p.add_argument(
+        "--no_auto_warm_start",
+        action="store_true",
+        help="Disable auto warm-start; train FTIP from scratch.",
+    )
+    p.add_argument(
+        "--vip_epochs",
+        type=int,
+        default=None,
+        help="Epochs for VIP pre-training phase (auto warm-start only).",
+    )
+    p.add_argument(
+        "--vip_iterations",
+        type=int,
+        default=None,
+        help="Iterations for VIP pre-training phase (auto warm-start only).",
+    )
+    p.add_argument(
+        "--vip_lr", type=float, default=1e-3, help="Learning rate for VIP pre-training phase."
+    )
+    p.add_argument(
+        "--ftip_lr",
+        type=float,
+        default=1e-4,
+        help="Learning rate for FTIP fine-tuning phase (auto warm-start only). "
+        "1e-4 lets the flow escape the VIP warm-start init; smaller values "
+        "(e.g. 1e-5) leave the spline coupling layers frozen at the affine "
+        "VIP posterior.",
+    )
 
     # --- Checkpointing ---
-    p.add_argument("--save_checkpoint", action="store_true", default=True,
-                    help="Save model checkpoint after training.")
-    p.add_argument("--no_save_checkpoint", action="store_true",
-                    help="Disable saving model checkpoint.")
+    p.add_argument(
+        "--save_checkpoint",
+        action="store_true",
+        default=True,
+        help="Save model checkpoint after training.",
+    )
+    p.add_argument(
+        "--no_save_checkpoint", action="store_true", help="Disable saving model checkpoint."
+    )
 
     # --- Training ---
-    p.add_argument("--batch_size", type=int, default=100,
-                    help="Training batch size.")
+    p.add_argument("--batch_size", type=int, default=100, help="Training batch size.")
     p.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
-    p.add_argument("--iterations", type=int, default=None,
-                    help="Number of training iterations (mutually exclusive with --epochs).")
-    p.add_argument("--epochs", type=int, default=None,
-                    help="Number of training epochs (mutually exclusive with --iterations).")
-    p.add_argument("--eval_every", type=int, default=1000,
-                    help="Compute light metrics on train/test every N iterations.")
-    p.add_argument("--cosine_annealing", action="store_true", default=True,
-                    help="Use cosine annealing LR schedule.")
-    p.add_argument("--no_cosine_annealing", action="store_true",
-                    help="Disable cosine annealing.")
-    p.add_argument("--compile", action="store_true", default=False,
-                    help="Use torch.compile for faster training (requires Triton).")
+    p.add_argument(
+        "--iterations",
+        type=int,
+        default=None,
+        help="Number of training iterations (mutually exclusive with --epochs).",
+    )
+    p.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Number of training epochs (mutually exclusive with --iterations).",
+    )
+    p.add_argument(
+        "--eval_every",
+        type=int,
+        default=1000,
+        help="Compute light metrics on train/test every N iterations.",
+    )
+    p.add_argument(
+        "--cosine_annealing",
+        action="store_true",
+        default=True,
+        help="Use cosine annealing LR schedule.",
+    )
+    p.add_argument("--no_cosine_annealing", action="store_true", help="Disable cosine annealing.")
+    p.add_argument(
+        "--compile",
+        action="store_true",
+        default=False,
+        help="Use torch.compile for faster training (requires Triton).",
+    )
     add_wandb_args(p)
     args = p.parse_args(argv)
 
@@ -646,9 +1042,7 @@ def parse_args(
     # main() picks per-dataset iters from DEFAULT_UCI_ITERS so the script
     # mirrors the FTIP cold-start sweep by default (30k for the small
     # group, 60k for the rest).
-    args._iters_user_supplied = (
-        args.iterations is not None or args.epochs is not None
-    )
+    args._iters_user_supplied = args.iterations is not None or args.epochs is not None
     # Detect whether the user passed --bb_alpha so wrappers can preserve an
     # explicit choice while defaulting all models to alpha=0.
     args._bb_alpha_user_supplied = args.bb_alpha is not None
@@ -659,7 +1053,6 @@ def parse_args(
     if args.vip_epochs is None and args.vip_iterations is None:
         args.vip_epochs = args.epochs
         args.vip_iterations = args.iterations
-
 
     # Default device
     if args.device is None:
@@ -682,8 +1075,7 @@ def _set_bnn_num_samples(bnn, S):
     for layer in bnn.layers:
         if hasattr(layer, "num_samples"):
             layer.num_samples = S
-        if (hasattr(layer, "fix_random_noise") and layer.fix_random_noise
-                and S != old):
+        if hasattr(layer, "fix_random_noise") and layer.fix_random_noise and old != S:
             layer.noise = layer.get_noise(first_call=True)
 
 
@@ -908,7 +1300,7 @@ def build_model(args, train_dataset, model_type=None):
 
     common = dict(
         generative_function=gen_fn,
-            num_regression_coeffs=_arg("regression_coeffs", 20),
+        num_regression_coeffs=_arg("regression_coeffs", 20),
         output_dim=train_dataset.output_dim,
         likelihood="regression",
         num_data=len(train_dataset),
@@ -1029,7 +1421,8 @@ def build_model(args, train_dataset, model_type=None):
         flow = _build_flow(
             args,
             input_dim=args.regression_coeffs,
-            device=device, dtype=dtype,
+            device=device,
+            dtype=dtype,
         )
         model = FTIP(**common, flow=flow, num_samples=args.num_samples)
 
@@ -1038,18 +1431,16 @@ def build_model(args, train_dataset, model_type=None):
 
 def _build_flow(args, input_dim, device, dtype):
     """Construct an FTIP flow based on ``args.flow_type``."""
-    common = dict(depth=args.flow_depth, input_dim=input_dim,
-                  device=device, dtype=dtype, seed=args.seed)
+    common = dict(
+        depth=args.flow_depth, input_dim=input_dim, device=device, dtype=dtype, seed=args.seed
+    )
     if args.flow_type == "affine":
         return CouplingFlow(**common)
     if args.flow_type == "spline":
-        return SplineCouplingFlow(**common, num_bins=args.flow_num_bins,
-                                  B=args.flow_domain)
+        return SplineCouplingFlow(**common, num_bins=args.flow_num_bins, B=args.flow_domain)
     if args.flow_type == "spline_1x1":
-        return SplineCoupling1x1Flow(**common, num_bins=args.flow_num_bins,
-                                     B=args.flow_domain)
+        return SplineCoupling1x1Flow(**common, num_bins=args.flow_num_bins, B=args.flow_domain)
     raise ValueError(f"Unknown flow_type: {args.flow_type!r}")
-
 
 
 def _fbnn_pred_components(model, xb, S=None):
@@ -1062,7 +1453,7 @@ def _fbnn_pred_components(model, xb, S=None):
     """
     if S is None:
         S = model.num_samples
-    F = model.predict_f_samples(xb, S=S)                   # (S, N, D)
+    F = model.predict_f_samples(xb, S=S)  # (S, N, D)
     mean = F * model.y_std + model.y_mean
     sigma = torch.sqrt(torch.exp(model.log_variance)) * model.y_std
     std = sigma.expand_as(mean)
@@ -1073,7 +1464,7 @@ def _tfsvi_pred_components(model, xb, S):
     """Same Gaussian-mixture form as FBNN: each parameter sample defines
     N(f_s(x)*y_std + y_mean, exp(log_var)*y_std^2) on the original scale.
     """
-    F = model.predict_f_samples(xb, S=S)                   # (S, N, D)
+    F = model.predict_f_samples(xb, S=S)  # (S, N, D)
     mean = F * model.y_std + model.y_mean
     sigma = torch.sqrt(torch.exp(model.log_variance)) * model.y_std
     std = sigma.expand_as(mean)
@@ -1131,26 +1522,38 @@ def evaluate(model, dataset, args, model_type=None, batch_size=None):
         # For FTIP: sample flow coefficients once (data-independent)
         a = model.sample_flow_coefficients(args.eval_samples) if model_type == "ftip" else None
         for i in range(0, x.shape[0], batch_size):
-            xb, yb = x[i:i + batch_size], y[i:i + batch_size]
+            xb, yb = x[i : i + batch_size], y[i : i + batch_size]
             if model_type == "ftip":
                 mean, std = model.forward_with_coefficients(xb, a)
                 std = std.unsqueeze(-1).expand_as(mean)
-                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
+                metrics.update(
+                    yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False
+                )
             elif model_type == "fbnn":
                 mean, std = _fbnn_pred_components(model, xb)
-                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
+                metrics.update(
+                    yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False
+                )
             elif model_type == "tfsvi":
                 mean, std = _tfsvi_pred_components(model, xb, args.tfsvi_num_eval_samples)
-                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
+                metrics.update(
+                    yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False
+                )
             elif model_type == "mfvi":
                 mean, std = _tfsvi_pred_components(model, xb, args.mfvi_num_eval_samples)
-                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
+                metrics.update(
+                    yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False
+                )
             elif model_type == "gmvip":
                 mean, std = _gmvip_pred_components(model, xb, args.gmvip_num_eval_samples)
-                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
+                metrics.update(
+                    yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False
+                )
             else:
                 mean, std = model(xb)
-                metrics.update(yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False)
+                metrics.update(
+                    yb, loss=torch.tensor(0.0), mean_pred=mean, std_pred=std, light=False
+                )
     if fbnn_old_S is not None:
         model._set_num_samples(fbnn_old_S)
         model.num_samples = fbnn_old_S
@@ -1167,7 +1570,7 @@ def evaluate_prior(model, dataset, args, num_prior_samples=200, batch_size=2048)
     all_var = []
     with torch.no_grad():
         for i in range(0, x.shape[0], batch_size):
-            xb = x[i:i + batch_size]
+            xb = x[i : i + batch_size]
             prior_samples = model.forward_prior(xb, num_prior_samples)
             all_var.append(prior_samples.var(dim=0))
     per_input_var = torch.cat(all_var, dim=0)
@@ -1195,7 +1598,7 @@ def evaluate_light(model, dataset, args, model_type=None, batch_size=2048):
         # For FTIP: sample flow coefficients once (data-independent)
         a = model.sample_flow_coefficients(args.eval_samples) if model_type == "ftip" else None
         for i in range(0, x.shape[0], batch_size):
-            xb, yb = x[i:i + batch_size], y[i:i + batch_size]
+            xb, yb = x[i : i + batch_size], y[i : i + batch_size]
             if model_type == "ftip":
                 mean, std = model.forward_with_coefficients(xb, a)
                 std = std.unsqueeze(-1).expand_as(mean)
@@ -1224,8 +1627,18 @@ def evaluate_light(model, dataset, args, model_type=None, batch_size=2048):
     return {"RMSE": d["RMSE"], "NLL": d["NLL"]}
 
 
-def train_with_metrics(model, train_loader, train_test_dataset, validation_dataset, args,
-                       lr=None, epochs=None, iterations=None, model_type=None, desc="Training"):
+def train_with_metrics(
+    model,
+    train_loader,
+    train_test_dataset,
+    validation_dataset,
+    args,
+    lr=None,
+    epochs=None,
+    iterations=None,
+    model_type=None,
+    desc="Training",
+):
     """Custom training loop that periodically evaluates light metrics.
 
     Parameters
@@ -1294,7 +1707,11 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
             loss = model._train_step(optimizer, inputs, target)
             losses.append(loss.item())
             wandb_log_train_step(
-                args, global_step, loss, optimizer=optimizer, model=model,
+                args,
+                global_step,
+                loss,
+                optimizer=optimizer,
+                model=model,
                 model_type=model_type,
             )
 
@@ -1303,9 +1720,7 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
 
             if (i + 1) % args.eval_every == 0:
                 metrics_history["iterations"].append(global_step)
-                train_eval = evaluate_light(
-                    model, train_test_dataset, args, model_type=model_type
-                )
+                train_eval = evaluate_light(model, train_test_dataset, args, model_type=model_type)
                 validation_eval = evaluate_light(
                     model, validation_dataset, args, model_type=model_type
                 )
@@ -1327,7 +1742,11 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
                 it += 1
                 global_step = step_offset + it
                 wandb_log_train_step(
-                    args, global_step, loss, optimizer=optimizer, model=model,
+                    args,
+                    global_step,
+                    loss,
+                    optimizer=optimizer,
+                    model=model,
                     model_type=model_type,
                 )
 
@@ -1350,15 +1769,34 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
     # Extract training diagnostics from model buffers (model-specific).
     diagnostics = {}
     for attr in (
-        "KLs", "bb_alphas", "prior_regularizers", "data_terms",
-        "function_terms", "raw_KLs", "kl_floors", "betas", "kinetics",
-        "score_losses", "l2_terms",
-        "kl_mins", "kl_maxs", "kl_stds", "divergence_means",
-        "score_dot_means", "vector_field_norms", "mean_abs_scores",
-        "mean_abs_vs", "mean_abs_score_dot_vs", "u0_abs_maxes",
-        "u1_abs_maxes", "ut_abs_maxes", "transport_rel_changes",
-        "sliced_flow_prior_nlls", "sliced_flow_posterior_nlls",
-        "sliced_flow_prior_update_counts", "sliced_flow_posterior_update_counts",
+        "KLs",
+        "bb_alphas",
+        "prior_regularizers",
+        "data_terms",
+        "function_terms",
+        "raw_KLs",
+        "kl_floors",
+        "betas",
+        "kinetics",
+        "score_losses",
+        "l2_terms",
+        "kl_mins",
+        "kl_maxs",
+        "kl_stds",
+        "divergence_means",
+        "score_dot_means",
+        "vector_field_norms",
+        "mean_abs_scores",
+        "mean_abs_vs",
+        "mean_abs_score_dot_vs",
+        "u0_abs_maxes",
+        "u1_abs_maxes",
+        "ut_abs_maxes",
+        "transport_rel_changes",
+        "sliced_flow_prior_nlls",
+        "sliced_flow_posterior_nlls",
+        "sliced_flow_prior_update_counts",
+        "sliced_flow_posterior_update_counts",
         "sliced_flow_kl_raws",
     ):
         if hasattr(model, attr):
@@ -1368,7 +1806,6 @@ def train_with_metrics(model, train_loader, train_test_dataset, validation_datas
         diagnostics["flow_ldj"] = [float(v) for v in model.flow_ldj]
 
     return losses, metrics_history, diagnostics
-
 
     return losses, metrics_history, diagnostics
 
@@ -1425,9 +1862,8 @@ def _variant_tag(args, model_type):
             tag = f"{tag}_learnZ"
         if not getattr(args, "gmvip_learn_kernel", True):
             tag = f"{tag}_fixedK"
-        if (
-            getattr(args, "gmvip_learn_prior", False)
-            and getattr(args, "gmvip_detach_operator_prior_grad", False)
+        if getattr(args, "gmvip_learn_prior", False) and getattr(
+            args, "gmvip_detach_operator_prior_grad", False
         ):
             tag = f"{tag}_opdetprior"
         if getattr(args, "gmvip_posterior_type", None) == "realnvp":
@@ -1437,17 +1873,9 @@ def _variant_tag(args, model_type):
             )
         return tag
     if model_type == "vip":
-        return (
-            "_learnprior"
-            if getattr(args, "vip_learn_prior", True)
-            else "_fixedprior"
-        )
+        return "_learnprior" if getattr(args, "vip_learn_prior", True) else "_fixedprior"
     if model_type == "ftip":
-        return (
-            "_learnprior"
-            if getattr(args, "ftip_learn_prior", True)
-            else "_fixedprior"
-        )
+        return "_learnprior" if getattr(args, "ftip_learn_prior", True) else "_fixedprior"
     if model_type == "sip":
         train_samples = getattr(args, "sip_num_train_samples", None)
         if train_samples is None:
@@ -1461,17 +1889,14 @@ def _variant_tag(args, model_type):
             f"_beta{_compact_float_tag(getattr(args, 'sip_beta', 1.0))}"
         )
         tag = f"{tag}_learnZ" if getattr(args, "sip_learn_inducing", False) else f"{tag}_fixedZ"
-        tag = (
-            f"{tag}_learnprior"
-            if getattr(args, "sip_learn_prior", True)
-            else f"{tag}_fixedprior"
-        )
+        tag = f"{tag}_learnprior" if getattr(args, "sip_learn_prior", True) else f"{tag}_fixedprior"
         tag = (
             f"{tag}_fixednoise"
             if getattr(args, "sip_fix_random_noise", False)
             else f"{tag}_freshnoise"
         )
         return tag
+
 
 def _ckpt_path(args, dataset_name, model_type):
     """Build a checkpoint path."""
@@ -1485,9 +1910,19 @@ def _ckpt_path(args, dataset_name, model_type):
     )
 
 
-def _build_result(dataset_name, model_type, model, args, train_loader,
-                  train_test_dataset, test_dataset, lr=None,
-                  epochs=None, iterations=None, desc="Training"):
+def _build_result(
+    dataset_name,
+    model_type,
+    model,
+    args,
+    train_loader,
+    train_test_dataset,
+    test_dataset,
+    lr=None,
+    epochs=None,
+    iterations=None,
+    desc="Training",
+):
     """Train a model, evaluate it, and return the result dict."""
     if lr is None:
         lr = args.lr
@@ -1501,9 +1936,16 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
 
     t0 = time.time()
     losses, metrics_history, diagnostics = train_with_metrics(
-        model, train_loader, train_test_dataset, test_dataset, args,
-        lr=lr, epochs=epochs, iterations=iterations,
-        model_type=model_type, desc=desc,
+        model,
+        train_loader,
+        train_test_dataset,
+        test_dataset,
+        args,
+        lr=lr,
+        epochs=epochs,
+        iterations=iterations,
+        model_type=model_type,
+        desc=desc,
     )
     train_time = time.time() - t0
 
@@ -1572,70 +2014,74 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
         hyperparameters["fbnn_lambda_kl"] = args.fbnn_lambda_kl
         hyperparameters["fbnn_num_eval_samples"] = args.fbnn_num_eval_samples
     if model_type == "sip":
-        hyperparameters.update({
-            "sip_layer_model": "BayesLinear",
-            "sip_num_inducing": args.sip_num_inducing,
-            "sip_inducing_method": args.sip_inducing_method,
-            "sip_num_prior_samples": args.sip_num_prior_samples,
-            "sip_num_train_samples": args.sip_num_train_samples,
-            "sip_num_eval_samples": args.sip_num_eval_samples,
-            "sip_beta": args.sip_beta,
-            "sip_beta_warmup_steps": args.sip_beta_warmup_steps,
-            "sip_learn_inducing": args.sip_learn_inducing,
-            "sip_learn_prior": args.sip_learn_prior,
-            "sip_detach_covariances": args.sip_detach_covariances,
-            "sip_jitter": args.sip_jitter,
-            "sip_log_variance_init": args.sip_log_variance_init,
-            "sip_min_log_variance": args.sip_min_log_variance,
-            "sip_fix_random_noise": args.sip_fix_random_noise,
-            "sip_critic_hidden_dim": args.sip_critic_hidden_dim,
-            "sip_critic_lr": args.sip_critic_lr,
-            "sip_critic_steps": args.sip_critic_steps,
-            "sip_posterior_noise_dim": args.sip_posterior_noise_dim,
-            "sip_posterior_hidden_dim": args.sip_posterior_hidden_dim,
-            "sip_posterior_depth": args.sip_posterior_depth,
-        })
+        hyperparameters.update(
+            {
+                "sip_layer_model": "BayesLinear",
+                "sip_num_inducing": args.sip_num_inducing,
+                "sip_inducing_method": args.sip_inducing_method,
+                "sip_num_prior_samples": args.sip_num_prior_samples,
+                "sip_num_train_samples": args.sip_num_train_samples,
+                "sip_num_eval_samples": args.sip_num_eval_samples,
+                "sip_beta": args.sip_beta,
+                "sip_beta_warmup_steps": args.sip_beta_warmup_steps,
+                "sip_learn_inducing": args.sip_learn_inducing,
+                "sip_learn_prior": args.sip_learn_prior,
+                "sip_detach_covariances": args.sip_detach_covariances,
+                "sip_jitter": args.sip_jitter,
+                "sip_log_variance_init": args.sip_log_variance_init,
+                "sip_min_log_variance": args.sip_min_log_variance,
+                "sip_fix_random_noise": args.sip_fix_random_noise,
+                "sip_critic_hidden_dim": args.sip_critic_hidden_dim,
+                "sip_critic_lr": args.sip_critic_lr,
+                "sip_critic_steps": args.sip_critic_steps,
+                "sip_posterior_noise_dim": args.sip_posterior_noise_dim,
+                "sip_posterior_hidden_dim": args.sip_posterior_hidden_dim,
+                "sip_posterior_depth": args.sip_posterior_depth,
+            }
+        )
     if model_type == "gmvip":
-        hyperparameters.update({
-            "gmvip_layer_model": "BayesLinear",
-            "gmvip_operator_type": args.gmvip_operator_type,
-            "gmvip_posterior_type": args.gmvip_posterior_type,
-            "gmvip_num_inducing": args.gmvip_num_inducing,
-            "gmvip_inducing_method": args.gmvip_inducing_method,
-            "gmvip_num_operator_bank_samples": args.gmvip_num_operator_bank_samples,
-            "gmvip_num_train_samples": args.gmvip_num_train_samples,
-            "gmvip_num_eval_samples": args.gmvip_num_eval_samples,
-            "gmvip_antithetic_samples": args.gmvip_antithetic_samples,
-            "gmvip_beta": args.gmvip_beta,
-            "gmvip_beta_warmup_steps": args.gmvip_beta_warmup_steps,
-            "gmvip_data_alpha": args.gmvip_data_alpha,
-            "gmvip_weight_log_sigma_init": args.gmvip_weight_log_sigma_init,
-            "gmvip_learn_prior": args.gmvip_learn_prior,
-            "gmvip_detach_operator_prior_grad": args.gmvip_detach_operator_prior_grad,
-            "gmvip_learn_noise": args.gmvip_learn_noise,
-            "gmvip_init_log_noise": args.gmvip_init_log_noise,
-            "gmvip_min_log_noise": args.gmvip_min_log_noise,
-            "gmvip_max_log_noise": args.gmvip_max_log_noise,
-            "gmvip_learn_Z": args.gmvip_learn_Z,
-            "gmvip_learn_kernel": args.gmvip_learn_kernel,
-            "gmvip_ard": args.gmvip_ard,
-            "gmvip_init_lengthscale": args.gmvip_init_lengthscale,
-            "gmvip_init_outputscale": args.gmvip_init_outputscale,
-            "gmvip_inducing_scale": args.gmvip_inducing_scale,
-            "gmvip_mean_mode": args.gmvip_mean_mode,
-            "gmvip_jitter": args.gmvip_jitter,
-            "gmvip_shrinkage": args.gmvip_shrinkage,
-            "gmvip_posterior_init_mean": args.gmvip_posterior_init_mean,
-            "gmvip_posterior_init_log_std": args.gmvip_posterior_init_log_std,
-            "gmvip_posterior_min_log_std": args.gmvip_posterior_min_log_std,
-            "gmvip_posterior_max_log_std": args.gmvip_posterior_max_log_std,
-            "gmvip_flow_depth": args.gmvip_flow_depth,
-            "gmvip_flow_hidden_dim": args.gmvip_flow_hidden_dim,
-            "gmvip_flow_num_layers": args.gmvip_flow_num_layers,
-            "gmvip_flow_dropout": args.gmvip_flow_dropout,
-            "gmvip_flow_scale_bound": args.gmvip_flow_scale_bound,
-            "gmvip_max_grad_norm": args.gmvip_max_grad_norm,
-        })
+        hyperparameters.update(
+            {
+                "gmvip_layer_model": "BayesLinear",
+                "gmvip_operator_type": args.gmvip_operator_type,
+                "gmvip_posterior_type": args.gmvip_posterior_type,
+                "gmvip_num_inducing": args.gmvip_num_inducing,
+                "gmvip_inducing_method": args.gmvip_inducing_method,
+                "gmvip_num_operator_bank_samples": args.gmvip_num_operator_bank_samples,
+                "gmvip_num_train_samples": args.gmvip_num_train_samples,
+                "gmvip_num_eval_samples": args.gmvip_num_eval_samples,
+                "gmvip_antithetic_samples": args.gmvip_antithetic_samples,
+                "gmvip_beta": args.gmvip_beta,
+                "gmvip_beta_warmup_steps": args.gmvip_beta_warmup_steps,
+                "gmvip_data_alpha": args.gmvip_data_alpha,
+                "gmvip_weight_log_sigma_init": args.gmvip_weight_log_sigma_init,
+                "gmvip_learn_prior": args.gmvip_learn_prior,
+                "gmvip_detach_operator_prior_grad": args.gmvip_detach_operator_prior_grad,
+                "gmvip_learn_noise": args.gmvip_learn_noise,
+                "gmvip_init_log_noise": args.gmvip_init_log_noise,
+                "gmvip_min_log_noise": args.gmvip_min_log_noise,
+                "gmvip_max_log_noise": args.gmvip_max_log_noise,
+                "gmvip_learn_Z": args.gmvip_learn_Z,
+                "gmvip_learn_kernel": args.gmvip_learn_kernel,
+                "gmvip_ard": args.gmvip_ard,
+                "gmvip_init_lengthscale": args.gmvip_init_lengthscale,
+                "gmvip_init_outputscale": args.gmvip_init_outputscale,
+                "gmvip_inducing_scale": args.gmvip_inducing_scale,
+                "gmvip_mean_mode": args.gmvip_mean_mode,
+                "gmvip_jitter": args.gmvip_jitter,
+                "gmvip_shrinkage": args.gmvip_shrinkage,
+                "gmvip_posterior_init_mean": args.gmvip_posterior_init_mean,
+                "gmvip_posterior_init_log_std": args.gmvip_posterior_init_log_std,
+                "gmvip_posterior_min_log_std": args.gmvip_posterior_min_log_std,
+                "gmvip_posterior_max_log_std": args.gmvip_posterior_max_log_std,
+                "gmvip_flow_depth": args.gmvip_flow_depth,
+                "gmvip_flow_hidden_dim": args.gmvip_flow_hidden_dim,
+                "gmvip_flow_num_layers": args.gmvip_flow_num_layers,
+                "gmvip_flow_dropout": args.gmvip_flow_dropout,
+                "gmvip_flow_scale_bound": args.gmvip_flow_scale_bound,
+                "gmvip_max_grad_norm": args.gmvip_max_grad_norm,
+            }
+        )
     if model_type == "map":
         hyperparameters["map_l2"] = args.map_l2
         hyperparameters["map_log_variance_init"] = args.map_log_variance_init
@@ -1657,19 +2103,25 @@ def _build_result(dataset_name, model_type, model, args, train_loader,
     }
 
     for split, m in [("Train", train_metrics), ("Test", test_metrics)]:
-        print(f"  {model_type.upper()} {split}: RMSE={m['RMSE']:.4f}  NLL={m['NLL']:.4f}"
-              f"  CRPS={m['CRPS']:.4f}  CQM={m['CQM']:.4f}")
-    print(f"  Prior: mean(Var[f])={prior_stats['var_mean']:.6f}  "
-          f"var(Var[f])={prior_stats['var_var']:.6f}")
+        print(
+            f"  {model_type.upper()} {split}: RMSE={m['RMSE']:.4f}  NLL={m['NLL']:.4f}"
+            f"  CRPS={m['CRPS']:.4f}  CQM={m['CQM']:.4f}"
+        )
+    print(
+        f"  Prior: mean(Var[f])={prior_stats['var_mean']:.6f}  "
+        f"var(Var[f])={prior_stats['var_var']:.6f}"
+    )
     print(f"  Time: {train_time:.1f}s")
 
     if args.test_ood:
         ood_metrics = evaluate_ood(model, test_dataset, args, model_type=model_type, seed=args.seed)
         result["test"].update(ood_metrics)
         result["ood"] = ood_metrics
-        print(f"  OOD: AUROC={ood_metrics['AUROC']:.4f}  "
-              f"H(in)={ood_metrics['entropy_id_mean']:.4f}+/-{ood_metrics['entropy_id_std']:.4f}  "
-              f"H(ood)={ood_metrics['entropy_ood_mean']:.4f}+/-{ood_metrics['entropy_ood_std']:.4f}")
+        print(
+            f"  OOD: AUROC={ood_metrics['AUROC']:.4f}  "
+            f"H(in)={ood_metrics['entropy_id_mean']:.4f}+/-{ood_metrics['entropy_id_std']:.4f}  "
+            f"H(ood)={ood_metrics['entropy_ood_mean']:.4f}+/-{ood_metrics['entropy_ood_std']:.4f}"
+        )
 
     wandb_log_result(result, step=final_step)
 
@@ -1700,18 +2152,21 @@ def _run_single(dataset_name, args):
     """Run benchmark on a single dataset. Returns a list of result dicts."""
     use_warm_start = args.model == "ftip" and args.auto_warm_start
 
-    header = f"FTIP (warm-start from VIP)" if use_warm_start else args.model.upper()
-    print(f"\n{'='*60}")
+    header = "FTIP (warm-start from VIP)" if use_warm_start else args.model.upper()
+    print(f"\n{'=' * 60}")
     print(f"  Dataset: {dataset_name}  |  Model: {header}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     dataset = get_dataset(dataset_name)
     train_dataset, train_test_dataset, test_dataset = dataset.get_split(args.test_size, args.seed)
 
     use_cuda = args.device and "cuda" in args.device
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True,
-        pin_memory=use_cuda, num_workers=0,
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        pin_memory=use_cuda,
+        num_workers=0,
     )
 
     results = []
@@ -1752,9 +2207,16 @@ def _run_single(dataset_name, args):
 
         vip_model = build_model(args, train_dataset, model_type="vip")
         vip_ws_result, vip_model = _build_result(
-            dataset_name, "vip", vip_model, args, train_loader,
-            train_test_dataset, test_dataset, lr=args.vip_lr,
-            epochs=vip_ep, iterations=vip_it,
+            dataset_name,
+            "vip",
+            vip_model,
+            args,
+            train_loader,
+            train_test_dataset,
+            test_dataset,
+            lr=args.vip_lr,
+            epochs=vip_ep,
+            iterations=vip_it,
             desc="VIP pre-training",
         )
 
@@ -1764,9 +2226,16 @@ def _run_single(dataset_name, args):
         # Continue training VIP for the remaining budget (= ftip budget) to get fair baseline
         print(f"\n  VIP baseline: continuing for {ftip_phase_str} (total={budget_str})")
         vip_baseline_result, _ = _build_result(
-            dataset_name, "vip", vip_model, args, train_loader,
-            train_test_dataset, test_dataset, lr=args.vip_lr,
-            epochs=ftip_ep, iterations=ftip_it,
+            dataset_name,
+            "vip",
+            vip_model,
+            args,
+            train_loader,
+            train_test_dataset,
+            test_dataset,
+            lr=args.vip_lr,
+            epochs=ftip_ep,
+            iterations=ftip_it,
             desc="VIP baseline (continued)",
         )
         # Update baseline result to reflect total training
@@ -1788,9 +2257,16 @@ def _run_single(dataset_name, args):
         del vip_model
 
         ftip_result, _ = _build_result(
-            dataset_name, "ftip", ftip_model, args, train_loader,
-            train_test_dataset, test_dataset, lr=args.ftip_lr,
-            epochs=ftip_ep, iterations=ftip_it,
+            dataset_name,
+            "ftip",
+            ftip_model,
+            args,
+            train_loader,
+            train_test_dataset,
+            test_dataset,
+            lr=args.ftip_lr,
+            epochs=ftip_ep,
+            iterations=ftip_it,
             desc="FTIP fine-tuning",
         )
         ftip_result["warm_start"] = {
@@ -1811,7 +2287,9 @@ def _run_single(dataset_name, args):
         ftip_rmse = ftip_result["test"]["RMSE"]
         vip_nll = vip_baseline_result["test"]["NLL"]
         ftip_nll = ftip_result["test"]["NLL"]
-        print(f"\n  Delta (FTIP - VIP baseline): RMSE={ftip_rmse - vip_rmse:+.4f}  NLL={ftip_nll - vip_nll:+.4f}")
+        print(
+            f"\n  Delta (FTIP - VIP baseline): RMSE={ftip_rmse - vip_rmse:+.4f}  NLL={ftip_nll - vip_nll:+.4f}"
+        )
         print(f"  FTIP total time: {ftip_result['total_time_s']:.1f}s")
 
     else:
@@ -1820,9 +2298,7 @@ def _run_single(dataset_name, args):
 
         if args.resume_from_checkpoint:
             device = torch.device(args.device)
-            state = torch.load(
-                args.resume_from_checkpoint, map_location=device, weights_only=True
-            )
+            state = torch.load(args.resume_from_checkpoint, map_location=device, weights_only=True)
             if "anchors" in state and hasattr(model, "anchors"):
                 anchors = state["anchors"].to(
                     device=device,
@@ -1835,9 +2311,7 @@ def _run_single(dataset_name, args):
                     model._user_anchors = True
             model.load_state_dict(state)
             if hasattr(model, "_step"):
-                model._step = max(
-                    int(getattr(model, "_step", 0)), args.resume_step_offset
-                )
+                model._step = max(int(getattr(model, "_step", 0)), args.resume_step_offset)
             print(
                 f"  Resumed {args.model.upper()} from {args.resume_from_checkpoint} "
                 f"(step offset={args.resume_step_offset})"
@@ -1852,12 +2326,19 @@ def _run_single(dataset_name, args):
             )
             model.warm_start_from_vip(vip_model, learnable_affine=args.learnable_affine)
             del vip_model
-            print(f"  Warm-started from {args.warm_start_from} "
-                  f"(affine learnable={args.learnable_affine})")
+            print(
+                f"  Warm-started from {args.warm_start_from} "
+                f"(affine learnable={args.learnable_affine})"
+            )
 
         result, _ = _build_result(
-            dataset_name, args.model, model, args, train_loader,
-            train_test_dataset, test_dataset,
+            dataset_name,
+            args.model,
+            model,
+            args,
+            train_loader,
+            train_test_dataset,
+            test_dataset,
         )
         if args.warm_start_from:
             result["warm_start"] = {
@@ -1915,7 +2396,9 @@ def run_from_args(args, *, dataset_names=None, default_iters=None):
                 f"{run_args.model}_{ds}{alpha_tag}{layer_tag}{flow_tag}{variant_tag}_seed{run_args.seed}.json",
             )
             if os.path.exists(out_path):
-                print(f"\n  Skipping {run_args.model}/{ds} seed={run_args.seed}: {out_path} already exists")
+                print(
+                    f"\n  Skipping {run_args.model}/{ds} seed={run_args.seed}: {out_path} already exists"
+                )
                 with open(out_path) as f:
                     loaded = json.load(f)
                 all_results.extend(loaded if isinstance(loaded, list) else [loaded])

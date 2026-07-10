@@ -78,7 +78,11 @@ def load_lotka_volterra_tasks(
         y_std = np.maximum(y_train_noisy.std(axis=0, keepdims=True), 1e-6)
         noise_std_norm = (noise_std / y_std).reshape(2)
 
-        def norm_y(values: np.ndarray) -> np.ndarray:
+        def norm_y(
+            values: np.ndarray,
+            y_mean: np.ndarray = y_mean,
+            y_std: np.ndarray = y_std,
+        ) -> np.ndarray:
             return (values - y_mean) / y_std
 
         prior = LotkaVolterraPrior(

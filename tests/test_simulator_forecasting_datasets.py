@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from experiments.simulator_forecasting.generate import generate_dataset
 from experiments.simulator_forecasting.datasets import load_damped_oscillator_tasks
+from experiments.simulator_forecasting.generate import generate_dataset
 
 
 def test_damped_oscillator_task_generation_and_splits(tmp_path):
@@ -36,8 +36,12 @@ def test_damped_oscillator_task_generation_and_splits(tmp_path):
 def test_damped_oscillator_task_reuses_same_target_for_same_seed(tmp_path):
     generate_dataset(tmp_path, n_targets=1, n_prior=8, n_test=31, t_max=30.0, seed=3)
 
-    first = load_damped_oscillator_tasks(tmp_path, seed=11, n_eval_targets=1, n_train=4, prior_bank_size=8)[0]
-    second = load_damped_oscillator_tasks(tmp_path, seed=11, n_eval_targets=1, n_train=4, prior_bank_size=8)[0]
+    first = load_damped_oscillator_tasks(
+        tmp_path, seed=11, n_eval_targets=1, n_train=4, prior_bank_size=8
+    )[0]
+    second = load_damped_oscillator_tasks(
+        tmp_path, seed=11, n_eval_targets=1, n_train=4, prior_bank_size=8
+    )[0]
 
     assert first.metadata["latent"] == second.metadata["latent"]
     assert first.metadata["train_t"] == second.metadata["train_t"]
@@ -45,8 +49,12 @@ def test_damped_oscillator_task_reuses_same_target_for_same_seed(tmp_path):
 
 
 def test_misspecified_dataset_stores_dragged_targets_but_loader_prior_has_zero_drag(tmp_path):
-    generate_dataset(tmp_path, n_targets=3, n_prior=8, n_test=31, t_max=30.0, misspecified=True, seed=5)
-    tasks = load_damped_oscillator_tasks(tmp_path, seed=0, n_eval_targets=1, n_train=4, prior_bank_size=8)
+    generate_dataset(
+        tmp_path, n_targets=3, n_prior=8, n_test=31, t_max=30.0, misspecified=True, seed=5
+    )
+    tasks = load_damped_oscillator_tasks(
+        tmp_path, seed=0, n_eval_targets=1, n_train=4, prior_bank_size=8
+    )
     task = tasks[0]
 
     target_drag = float(task.metadata["latent"][7])

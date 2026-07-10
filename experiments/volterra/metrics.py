@@ -84,7 +84,9 @@ def nearest_prior_mse(samples, prior_values, chunk_size=128):
     nearest = []
     flat_prior = prior_values.reshape(prior_values.shape[0], -1)
     for start in range(0, samples.shape[0], int(chunk_size)):
-        chunk = samples[start:start + int(chunk_size)].reshape(samples[start:start + int(chunk_size)].shape[0], -1)
+        chunk = samples[start : start + int(chunk_size)].reshape(
+            samples[start : start + int(chunk_size)].shape[0], -1
+        )
         dist = torch.cdist(chunk, flat_prior).square() / float(flat_prior.shape[1])
         values, indices = dist.min(dim=1)
         distances.append(values)

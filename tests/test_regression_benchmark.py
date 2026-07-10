@@ -3,20 +3,22 @@ from io import BytesIO
 import pytest
 
 from experiments.regression import benchmark as regression_benchmark
-from src.utils import dataset as dataset_module
+from implicit_process_zoo.utils import dataset as dataset_module
 
 
 def test_large_regression_parser_defaults():
-    args = regression_benchmark.parse_args([
-        "--model",
-        "map",
-        "--dataset",
-        "year",
-        "--iterations",
-        "1",
-        "--device",
-        "cpu",
-    ])
+    args = regression_benchmark.parse_args(
+        [
+            "--model",
+            "map",
+            "--dataset",
+            "year",
+            "--iterations",
+            "1",
+            "--device",
+            "cpu",
+        ]
+    )
 
     assert args.dataset == "year"
     assert args.output_dir == "results/regression"
@@ -26,14 +28,16 @@ def test_large_regression_parser_defaults():
 
 def test_large_regression_parser_restricts_datasets():
     with pytest.raises(SystemExit):
-        regression_benchmark.parse_args([
-            "--model",
-            "map",
-            "--dataset",
-            "boston",
-            "--iterations",
-            "1",
-        ])
+        regression_benchmark.parse_args(
+            [
+                "--model",
+                "map",
+                "--dataset",
+                "boston",
+                "--iterations",
+                "1",
+            ]
+        )
 
 
 def test_large_regression_all_dataset_order(monkeypatch):
@@ -45,16 +49,18 @@ def test_large_regression_all_dataset_order(monkeypatch):
 
     monkeypatch.setattr(regression_benchmark, "run_from_args", fake_run_from_args)
 
-    result = regression_benchmark.main([
-        "--model",
-        "map",
-        "--dataset",
-        "all",
-        "--iterations",
-        "1",
-        "--device",
-        "cpu",
-    ])
+    result = regression_benchmark.main(
+        [
+            "--model",
+            "map",
+            "--dataset",
+            "all",
+            "--iterations",
+            "1",
+            "--device",
+            "cpu",
+        ]
+    )
 
     assert result == ["ok"]
     assert calls[0][1] == ["year", "airline", "taxi"]
@@ -64,19 +70,21 @@ def test_large_regression_all_dataset_order(monkeypatch):
 
 
 def test_large_regression_parser_preserves_explicit_hidden_dims():
-    args = regression_benchmark.parse_args([
-        "--model",
-        "map",
-        "--dataset",
-        "year",
-        "--iterations",
-        "1",
-        "--hidden_dims",
-        "10",
-        "10",
-        "--device",
-        "cpu",
-    ])
+    args = regression_benchmark.parse_args(
+        [
+            "--model",
+            "map",
+            "--dataset",
+            "year",
+            "--iterations",
+            "1",
+            "--hidden_dims",
+            "10",
+            "10",
+            "--device",
+            "cpu",
+        ]
+    )
 
     assert args.hidden_dims == [10, 10]
     assert args._hidden_dims_user_supplied is True
@@ -95,14 +103,16 @@ def test_large_regression_run_applies_per_dataset_hidden_defaults(monkeypatch):
         fake_uci_run_from_args,
     )
 
-    args = regression_benchmark.parse_args([
-        "--model",
-        "map",
-        "--dataset",
-        "all",
-        "--device",
-        "cpu",
-    ])
+    args = regression_benchmark.parse_args(
+        [
+            "--model",
+            "map",
+            "--dataset",
+            "all",
+            "--device",
+            "cpu",
+        ]
+    )
     result = regression_benchmark.run_from_args(args)
 
     assert result == ["year", "airline", "taxi"]

@@ -53,8 +53,12 @@ def load_damped_oscillator_tasks(
     reference_bank_size = int(prior_bank_size or base_meta.get("n_prior", 4096))
     device = torch.device(device or "cpu")
     X_plot_np = normalize_time(t_grid, t_max=t_max).reshape(-1, 1)
-    context_observed_np = normalize_time(np.linspace(0.0, t_obs, int(context_points)), t_max=t_max).reshape(-1, 1)
-    context_full_np = normalize_time(np.linspace(0.0, t_max, int(context_points)), t_max=t_max).reshape(-1, 1)
+    context_observed_np = normalize_time(
+        np.linspace(0.0, t_obs, int(context_points)), t_max=t_max
+    ).reshape(-1, 1)
+    context_full_np = normalize_time(
+        np.linspace(0.0, t_max, int(context_points)), t_max=t_max
+    ).reshape(-1, 1)
 
     tasks: list[ForecastingTask] = []
     for target_id in range(target_count):
@@ -67,7 +71,11 @@ def load_damped_oscillator_tasks(
         y_std = np.maximum(y_train_noisy.std(axis=0, keepdims=True), 1e-6)
         noise_std_norm = (np.array([[sigma_y]], dtype=np.float64) / y_std).reshape(1)
 
-        def norm_y(values: np.ndarray) -> np.ndarray:
+        def norm_y(
+            values: np.ndarray,
+            y_mean: np.ndarray = y_mean,
+            y_std: np.ndarray = y_std,
+        ) -> np.ndarray:
             return (values - y_mean) / y_std
 
         prior = DampedOscillatorPrior(
@@ -105,12 +113,16 @@ def load_damped_oscillator_tasks(
         tasks.append(
             ForecastingTask(
                 name=f"damped_oscillator_target_{target_id}_ntrain_{int(n_train)}",
-                X_train=torch.as_tensor(normalize_time(train_t, t_max=t_max).reshape(-1, 1), dtype=dtype, device=device),
+                X_train=torch.as_tensor(
+                    normalize_time(train_t, t_max=t_max).reshape(-1, 1), dtype=dtype, device=device
+                ),
                 y_train=torch.as_tensor(norm_y(y_train_noisy), dtype=dtype, device=device),
                 X_test=torch.as_tensor(X_plot_np, dtype=dtype, device=device),
                 y_test=torch.as_tensor(norm_y(clean.reshape(-1, 1)), dtype=dtype, device=device),
                 X_plot=torch.as_tensor(X_plot_np, dtype=dtype, device=device),
-                y_plot_true=torch.as_tensor(norm_y(clean.reshape(-1, 1)), dtype=dtype, device=device),
+                y_plot_true=torch.as_tensor(
+                    norm_y(clean.reshape(-1, 1)), dtype=dtype, device=device
+                ),
                 X_context_observed=torch.as_tensor(context_observed_np, dtype=dtype, device=device),
                 X_context_full=torch.as_tensor(context_full_np, dtype=dtype, device=device),
                 noise_std=torch.as_tensor(noise_std_norm, dtype=dtype, device=device),

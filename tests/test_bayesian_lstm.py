@@ -1,15 +1,14 @@
 """Tests for BayesianLSTM generative function and its integration with VIP/FTIP."""
 
+import numpy as np
 import pytest
 import torch
-import numpy as np
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
-from src.priors.generative_functions import BayesianLSTM, SimplerBayesLinear
-from src.flows.flows import CouplingFlow
-from src.vip import VIP
-from src.ftip import FTIP
-
+from implicit_process_zoo.flows.flows import CouplingFlow
+from implicit_process_zoo.ftip import FTIP
+from implicit_process_zoo.priors.generative_functions import BayesianLSTM, SimplerBayesLinear
+from implicit_process_zoo.vip import VIP
 
 DEVICE = torch.device("cpu")
 DTYPE = torch.float64
@@ -18,8 +17,8 @@ SEED = 42
 T_OBS = 8
 FEATURE_DIM = 2
 T_PRED = 12
-INPUT_DIM = T_OBS * FEATURE_DIM   # 16
-OUTPUT_DIM = T_PRED * 2            # 24
+INPUT_DIM = T_OBS * FEATURE_DIM  # 16
+OUTPUT_DIM = T_PRED * 2  # 24
 NUM_SAMPLES = 6  # must be even for CouplingFlow
 NUM_DATA = 30
 BATCH_SIZE = 10
@@ -65,6 +64,7 @@ def traj_loader(traj_data):
 # BayesianLSTM unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestBayesianLSTM:
     def test_forward_shape(self, blstm, traj_data):
         X, _ = traj_data
@@ -91,6 +91,7 @@ class TestBayesianLSTM:
 # ---------------------------------------------------------------------------
 # VIP integration
 # ---------------------------------------------------------------------------
+
 
 class TestVIPIntegration:
     def test_construct_and_forward(self, blstm, traj_data):
@@ -146,6 +147,7 @@ class TestVIPIntegration:
 # FTIP integration + warm-start
 # ---------------------------------------------------------------------------
 
+
 class TestFTIPIntegration:
     def _make_ftip(self, blstm):
         flow = CouplingFlow(
@@ -185,10 +187,18 @@ class TestFTIPIntegration:
     def test_warm_start_from_vip(self, traj_data):
         """FTIP warm-started from VIP should produce finite predictions."""
         blstm_vip = BayesianLSTM(
-            num_samples=NUM_SAMPLES, input_dim=INPUT_DIM, output_dim=OUTPUT_DIM,
-            t_obs=T_OBS, feature_dim=FEATURE_DIM, lstm_hidden=32, lstm_layers=1,
-            head_dims=[16], layer_model=SimplerBayesLinear,
-            device=DEVICE, dtype=DTYPE, seed=SEED,
+            num_samples=NUM_SAMPLES,
+            input_dim=INPUT_DIM,
+            output_dim=OUTPUT_DIM,
+            t_obs=T_OBS,
+            feature_dim=FEATURE_DIM,
+            lstm_hidden=32,
+            lstm_layers=1,
+            head_dims=[16],
+            layer_model=SimplerBayesLinear,
+            device=DEVICE,
+            dtype=DTYPE,
+            seed=SEED,
         )
         vip = VIP(
             generative_function=blstm_vip,
@@ -196,17 +206,28 @@ class TestFTIPIntegration:
             output_dim=OUTPUT_DIM,
             likelihood="regression",
             num_data=NUM_DATA,
-            device=DEVICE, dtype=DTYPE, seed=SEED,
+            device=DEVICE,
+            dtype=DTYPE,
+            seed=SEED,
         )
 
         blstm_ftip = BayesianLSTM(
-            num_samples=NUM_SAMPLES, input_dim=INPUT_DIM, output_dim=OUTPUT_DIM,
-            t_obs=T_OBS, feature_dim=FEATURE_DIM, lstm_hidden=32, lstm_layers=1,
-            head_dims=[16], layer_model=SimplerBayesLinear,
-            device=DEVICE, dtype=DTYPE, seed=SEED,
+            num_samples=NUM_SAMPLES,
+            input_dim=INPUT_DIM,
+            output_dim=OUTPUT_DIM,
+            t_obs=T_OBS,
+            feature_dim=FEATURE_DIM,
+            lstm_hidden=32,
+            lstm_layers=1,
+            head_dims=[16],
+            layer_model=SimplerBayesLinear,
+            device=DEVICE,
+            dtype=DTYPE,
+            seed=SEED,
         )
-        flow = CouplingFlow(depth=2, input_dim=NUM_SAMPLES * OUTPUT_DIM,
-                            device=DEVICE, dtype=DTYPE, seed=SEED)
+        flow = CouplingFlow(
+            depth=2, input_dim=NUM_SAMPLES * OUTPUT_DIM, device=DEVICE, dtype=DTYPE, seed=SEED
+        )
         ftip = FTIP(
             generative_function=blstm_ftip,
             num_regression_coeffs=NUM_SAMPLES,
@@ -215,7 +236,9 @@ class TestFTIPIntegration:
             likelihood="regression",
             num_data=NUM_DATA,
             num_samples=10,
-            device=DEVICE, dtype=DTYPE, seed=SEED,
+            device=DEVICE,
+            dtype=DTYPE,
+            seed=SEED,
         )
 
         ftip.warm_start_from_vip(vip, learnable_affine=True)

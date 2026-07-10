@@ -17,37 +17,12 @@ import csv
 import json
 import os
 import random
-import sys
 import time
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-
-ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
-)
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-from src.fbnn import FBNN
-from src.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
-from src.ftip import FTIP
-from src.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
-from src.mfvi import MFVI
-from src.priors.generative_functions import (
-    BayesLinear,
-    BayesianCNN,
-    BayesianCNNFull,
-    BayesianResNet,
-)
-from src.sip import SIP
-from src.tfsvi import TFSVI
-from src.utils.dataset import get_dataset
-from src.utils.metrics import MetricsClassification
-from src.utils.utils import infinite_loader
-from src.vip import VIP
 
 from experiments.benchmark_utils import (
     add_wandb_args,
@@ -58,7 +33,23 @@ from experiments.benchmark_utils import (
     wandb_log_result,
     wandb_log_train_step,
 )
-
+from implicit_process_zoo.fbnn import FBNN
+from implicit_process_zoo.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
+from implicit_process_zoo.ftip import FTIP
+from implicit_process_zoo.gmvip import GeneralizedMatheronVIP, initialize_inducing_points
+from implicit_process_zoo.mfvi import MFVI
+from implicit_process_zoo.priors.generative_functions import (
+    BayesianCNN,
+    BayesianCNNFull,
+    BayesianResNet,
+    BayesLinear,
+)
+from implicit_process_zoo.sip import SIP
+from implicit_process_zoo.tfsvi import TFSVI
+from implicit_process_zoo.utils.dataset import get_dataset
+from implicit_process_zoo.utils.metrics import MetricsClassification
+from implicit_process_zoo.utils.utils import infinite_loader
+from implicit_process_zoo.vip import VIP
 
 CLASSIFICATION_DATASETS = ["FashionMNIST", "CIFAR10"]
 CLASSIFICATION_MODELS = [
@@ -535,9 +526,7 @@ class DeterministicCNNMAP(torch.nn.Module):
         import torchvision.models as tvm
 
         net = tvm.resnet18(weights=None)
-        net.conv1 = torch.nn.Conv2d(
-            3, net.conv1.out_channels, 3, stride=1, padding=1, bias=False
-        )
+        net.conv1 = torch.nn.Conv2d(3, net.conv1.out_channels, 3, stride=1, padding=1, bias=False)
         net.maxpool = torch.nn.Identity()
         feat_dim = net.fc.in_features
         net.fc = torch.nn.Identity()
@@ -568,9 +557,7 @@ class DeterministicCNNMAP(torch.nn.Module):
             / X.shape[0]
             * torch.nn.functional.cross_entropy(logits, y, reduction="sum")
         )
-        l2_term = 0.5 * self.l2 * sum(
-            param.square().sum() for param in self.parameters()
-        )
+        l2_term = 0.5 * self.l2 * sum(param.square().sum() for param in self.parameters())
         self.data_terms.append(data_term.detach())
         self.KLs.append(l2_term.detach())
         self.l2_terms.append(l2_term.detach())
@@ -631,11 +618,11 @@ def build_bayesian_classifier(
     device = torch.device(args.device)
     dtype = dtype_from_args(args)
     input_dim = train_dataset.input_dim
-    output_dim = train_dataset.output_dim if output_dim_override is None else int(output_dim_override)
+    output_dim = (
+        train_dataset.output_dim if output_dim_override is None else int(output_dim_override)
+    )
     weight_log_sigma_init = (
-        args.weight_log_sigma_init
-        if weight_log_sigma_init is None
-        else weight_log_sigma_init
+        args.weight_log_sigma_init if weight_log_sigma_init is None else weight_log_sigma_init
     )
 
     if args.backbone == "resnet18":
@@ -781,10 +768,7 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
             jitter=args.gmvip_jitter,
             shrinkage=args.gmvip_shrinkage,
             learn_Z=args.gmvip_learn_Z,
-            learn_kernel=bool(
-                args.gmvip_learn_kernel
-                and args.gmvip_operator_type == "rbf"
-            ),
+            learn_kernel=bool(args.gmvip_learn_kernel and args.gmvip_operator_type == "rbf"),
             ard=True,
             init_lengthscale="median",
             init_outputscale="prior_marginal",
@@ -1257,9 +1241,7 @@ def result_file_name(dataset_name, model_type, args, ap_variant):
 
 
 def checkpoint_file_name(dataset_name, model_type, args, ap_variant):
-    return result_file_name(dataset_name, model_type, args, ap_variant).replace(
-        ".json", ".pt"
-    )
+    return result_file_name(dataset_name, model_type, args, ap_variant).replace(".json", ".pt")
 
 
 def run_single(dataset_name, model_type, args, ap_variant=None):
@@ -1270,9 +1252,7 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
     train_eval_dataset = annotate_classification_split(train_eval_dataset, dataset)
     test_dataset = annotate_classification_split(test_dataset, dataset)
     train_dataset = maybe_limit_dataset(train_dataset, args.limit_train, args.seed)
-    train_eval_dataset = maybe_limit_dataset(
-        train_eval_dataset, args.limit_train, args.seed
-    )
+    train_eval_dataset = maybe_limit_dataset(train_eval_dataset, args.limit_train, args.seed)
     test_dataset = maybe_limit_dataset(test_dataset, args.limit_test, args.seed + 1)
 
     if args.backbone == "resnet18" and dataset_name != "CIFAR10":
@@ -1437,12 +1417,7 @@ def classification_variant_slug(args, model_type):
     label = classification_variant_label(args, model_type)
     if not label:
         return None
-    return (
-        label.lower()
-        .replace(",", "")
-        .replace(" ", "_")
-        .replace("/", "_")
-    )
+    return label.lower().replace(",", "").replace(" ", "_").replace("/", "_")
 
 
 def result_hyperparameters(args, model_type, ap_variant):
@@ -1645,9 +1620,7 @@ def save_comparison(results, output_dir):
         "train_Brier",
         "train_time_s",
     ]
-    columns = [c for c in preferred if c in columns] + [
-        c for c in columns if c not in preferred
-    ]
+    columns = [c for c in preferred if c in columns] + [c for c in columns if c not in preferred]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()

@@ -49,7 +49,7 @@ already provide `torch`.
 ## Repository Layout
 
 ```text
-src/
+implicit_process_zoo/
   priors/                 Bayesian neural network and GP prior samplers
   flows/                  affine, spline, and mixing layers for flow posteriors
   utils/                  datasets, metrics, likelihoods, linalg, helpers
@@ -74,8 +74,8 @@ experiments/
 tests/                    unit and smoke tests
 ```
 
-The seven probabilistic methods live under their own `src/<method>/` packages.
-`src/map_baseline.py` is kept separate because it is a deterministic reference
+The seven probabilistic methods live under their own `implicit_process_zoo/<method>/` packages.
+`implicit_process_zoo/map_baseline.py` is kept separate because it is a deterministic reference
 model rather than an implicit-process approximation.
 
 ## Methods

@@ -43,10 +43,6 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime.
     ImageDraw = None
     ImageFont = None
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from experiments.benchmark_utils import pretty_model_name
 from experiments.uci.benchmark import (
     REGRESSION_MODELS,
@@ -55,13 +51,12 @@ from experiments.uci.benchmark import (
     _gmvip_pred_components,
     _tfsvi_pred_components,
     build_model,
-    parse_args as parse_uci_args,
     train_with_metrics,
 )
-from src.utils.dataset import Test_Dataset, Training_Dataset, get_dataset
-
-import experiments.uci.benchmark as uci_benchmark
-
+from experiments.uci.benchmark import (
+    parse_args as parse_uci_args,
+)
+from implicit_process_zoo.utils.dataset import Test_Dataset, Training_Dataset, get_dataset
 
 DEFAULT_MODELS = ["map", "mfvi", "vip", "fbnn", "sip", "tfsvi", "ftip", "gmvip"]
 SYNTHETIC_WEIGHT_LOG_SIGMA_INIT = {
@@ -351,13 +346,10 @@ def parse_synthetic_args(argv=None):
     if used_forbidden:
         parser.error(
             f"synthetic_plot fixes --dataset {SYNTHETIC_DATASET_NAME} "
-            "and uses --models; remove "
-            + ", ".join(used_forbidden)
+            "and uses --models; remove " + ", ".join(used_forbidden)
         )
 
-    uci_args = parse_uci_args(
-        ["--model", "map", "--dataset", SYNTHETIC_DATASET_NAME, *forwarded]
-    )
+    uci_args = parse_uci_args(["--model", "map", "--dataset", SYNTHETIC_DATASET_NAME, *forwarded])
     if not uci_args._iters_user_supplied:
         uci_args.iterations = synthetic_args.default_iterations
         uci_args.epochs = None
@@ -430,18 +422,12 @@ def args_for_run(base_args, synthetic_args, model_type):
                 setattr(args, attr, value)
         if args.iterations is not None:
             args.epochs = None
-    if (
-        model_type in SYNTHETIC_BB_ALPHA
-        and not _flag_supplied(synthetic_args, "--bb_alpha")
-    ):
+    if model_type in SYNTHETIC_BB_ALPHA and not _flag_supplied(synthetic_args, "--bb_alpha"):
         args.bb_alpha = SYNTHETIC_BB_ALPHA[model_type]
-    if (
-        model_type in SYNTHETIC_WEIGHT_LOG_SIGMA_INIT
-        and not _flag_supplied(
-            synthetic_args,
-            "--weight_log_sigma_init",
-            f"--{model_type}_weight_log_sigma_init",
-        )
+    if model_type in SYNTHETIC_WEIGHT_LOG_SIGMA_INIT and not _flag_supplied(
+        synthetic_args,
+        "--weight_log_sigma_init",
+        f"--{model_type}_weight_log_sigma_init",
     ):
         args.weight_log_sigma_init = SYNTHETIC_WEIGHT_LOG_SIGMA_INIT[model_type]
 
@@ -684,7 +670,9 @@ def _as_component_arrays(mean, std):
         elif std.shape[0] == mean.shape[0]:
             std = std.view(mean.shape[0], 1, 1).expand_as(mean)
         else:
-            raise ValueError(f"Cannot align std shape {tuple(std.shape)} with mean {tuple(mean.shape)}")
+            raise ValueError(
+                f"Cannot align std shape {tuple(std.shape)} with mean {tuple(mean.shape)}"
+            )
     elif std.ndim == 2:
         if std.shape == mean.shape[:2]:
             std = std.unsqueeze(-1)
@@ -693,7 +681,9 @@ def _as_component_arrays(mean, std):
         elif std.shape == mean.shape[1:]:
             std = std.unsqueeze(0)
         else:
-            raise ValueError(f"Cannot align std shape {tuple(std.shape)} with mean {tuple(mean.shape)}")
+            raise ValueError(
+                f"Cannot align std shape {tuple(std.shape)} with mean {tuple(mean.shape)}"
+            )
     elif std.ndim != 3:
         raise ValueError(f"Expected std with <=3 dims, got {tuple(std.shape)}")
 
@@ -712,9 +702,7 @@ def predictive_components(model, model_type, args, x_grid):
             mean, std = model.forward_with_coefficients(x_grid, coeffs)
         elif model_type == "fbnn":
             mean, std = _fbnn_pred_components(model, x_grid, S)
-        elif model_type == "tfsvi":
-            mean, std = _tfsvi_pred_components(model, x_grid, S)
-        elif model_type == "mfvi":
+        elif model_type == "tfsvi" or model_type == "mfvi":
             mean, std = _tfsvi_pred_components(model, x_grid, S)
         elif model_type == "gmvip":
             mean, std = _gmvip_pred_components(model, x_grid, S)
@@ -755,15 +743,13 @@ def predictive_components(model, model_type, args, x_grid):
 
     means, stds = _as_component_arrays(mean, std)
     mixture_mean = means.mean(axis=0)
-    mixture_var = (stds ** 2 + means ** 2).mean(axis=0) - mixture_mean ** 2
+    mixture_var = (stds**2 + means**2).mean(axis=0) - mixture_mean**2
     mixture_std = np.sqrt(np.maximum(mixture_var, 1e-12))
     return means, stds, mixture_mean, mixture_std
 
 
 def make_predictive_grid(model, model_type, args, x_grid, result):
-    means, stds, mixture_mean, mixture_std = predictive_components(
-        model, model_type, args, x_grid
-    )
+    means, stds, mixture_mean, mixture_std = predictive_components(model, model_type, args, x_grid)
     return PredictiveGrid(
         means=means,
         stds=stds,
@@ -821,7 +807,7 @@ def mixture_density_grid(pred, y_lim, bins):
 
 def plot_sample_bands(ax, x, pred, color, max_samples):
     S = pred.means.shape[0]
-    if S > max_samples:
+    if max_samples < S:
         idx = np.linspace(0, S - 1, max_samples, dtype=int)
     else:
         idx = np.arange(S)
@@ -931,9 +917,7 @@ def _pillow_figure(
     synthetic_args,
 ):
     if Image is None or ImageDraw is None:
-        raise RuntimeError(
-            "Creating figures requires matplotlib or Pillow; neither is available."
-        )
+        raise RuntimeError("Creating figures requires matplotlib or Pillow; neither is available.")
 
     panels = figure_panels(synthetic_args, model_order)
     cols = min(max(1, synthetic_args.max_cols), len(panels))
@@ -1007,7 +991,7 @@ def _pillow_figure(
                 rgba[..., 2] = rgb[2]
                 rgba[..., 3] = alpha
                 density_img = Image.fromarray(rgba, mode="RGBA")
-                resample = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+                resample = getattr(Image, "Resampling", Image).BILINEAR
                 density_img = density_img.resize((plot_w, plot_h), resample=resample)
                 image.alpha_composite(density_img, dest=(left, top))
             elif style == "predictive_interval":
@@ -1040,7 +1024,7 @@ def _pillow_figure(
                 image.alpha_composite(overlay)
             else:
                 S = pred.means.shape[0]
-                if S > synthetic_args.plot_samples:
+                if synthetic_args.plot_samples < S:
                     sample_idx = np.linspace(0, S - 1, synthetic_args.plot_samples, dtype=int)
                 else:
                     sample_idx = np.arange(S)
@@ -1102,7 +1086,9 @@ def _pillow_figure(
         draw.line((left, top, left, bottom), fill=(35, 35, 35, 255), width=1)
         draw.text((left + plot_w // 2 - 4, bottom + 16), "x", fill=(0, 0, 0, 255), font=label_font)
         if col == 0:
-            draw.text((base_x + 16, top + plot_h // 2 - 8), "y", fill=(0, 0, 0, 255), font=label_font)
+            draw.text(
+                (base_x + 16, top + plot_h // 2 - 8), "y", fill=(0, 0, 0, 255), font=label_font
+            )
         for tick in np.linspace(x_min, x_max, num=4):
             tx = scale_x(tick, left)
             draw.line((tx, bottom, tx, bottom + 4), fill=(35, 35, 35, 255), width=1)
@@ -1232,7 +1218,9 @@ def main(argv=None):
         x_train = np.asarray(dataset.inputs, dtype=np.float64).reshape(-1)
         finite_x = x_train[np.isfinite(x_train)]
         if finite_x.size == 0:
-            raise ValueError("Cannot infer plotting x-domain from empty/non-finite training inputs.")
+            raise ValueError(
+                "Cannot infer plotting x-domain from empty/non-finite training inputs."
+            )
         xpad = float(synthetic_args.xpad)
         if xpad < 0:
             raise ValueError(f"--xpad must be non-negative, got {synthetic_args.xpad}")

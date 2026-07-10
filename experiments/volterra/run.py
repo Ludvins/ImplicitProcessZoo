@@ -31,15 +31,14 @@ from experiments.volterra.plots import (
     plot_lv_prior_vs_posterior,
 )
 from experiments.volterra.priors import LotkaVolterraPrior
-from src.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
-from src.ftip import FTIP
-from src.gmvip import GeneralizedMatheronVIP
-from src.map_baseline import DeterministicMAP
-from src.mfvi import MFVI
-from src.priors.generative_functions import BayesianNN, BayesLinear
-from src.sip import SIP
-from src.vip import VIP
-
+from implicit_process_zoo.flows import CouplingFlow, SplineCoupling1x1Flow, SplineCouplingFlow
+from implicit_process_zoo.ftip import FTIP
+from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
+from implicit_process_zoo.map_baseline import DeterministicMAP
+from implicit_process_zoo.mfvi import MFVI
+from implicit_process_zoo.priors.generative_functions import BayesianNN, BayesLinear
+from implicit_process_zoo.sip import SIP
+from implicit_process_zoo.vip import VIP
 
 METHODS = ("map", "mfvi", "vip", "ftip", "sip", "gmvip_empirical", "gmvip_rbf", "oracle_prior_bank")
 METHOD_ALIASES = {"oracle": "oracle_prior_bank"}
@@ -216,7 +215,9 @@ def _load_runner_config(args: argparse.Namespace) -> dict:
     try:
         config = copy.deepcopy(CONFIG_PRESETS[str(args.preset)])
     except KeyError as exc:
-        raise ValueError(f"Unknown preset {args.preset!r}; expected one of {tuple(CONFIG_PRESETS)}.") from exc
+        raise ValueError(
+            f"Unknown preset {args.preset!r}; expected one of {tuple(CONFIG_PRESETS)}."
+        ) from exc
     if args.config is not None:
         override = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
         if not isinstance(override, dict):
@@ -309,7 +310,9 @@ def _fixed_log_variance(noise_std_norm: torch.Tensor) -> torch.Tensor:
 def _fix_model_noise(model: torch.nn.Module, noise_std_norm: torch.Tensor) -> None:
     log_var = _fixed_log_variance(noise_std_norm).detach().clone()
     if hasattr(model, "log_variance"):
-        param = torch.nn.Parameter(log_var.to(dtype=model.log_variance.dtype, device=model.log_variance.device))
+        param = torch.nn.Parameter(
+            log_var.to(dtype=model.log_variance.dtype, device=model.log_variance.device)
+        )
         model.log_variance = param
         model.log_variance.requires_grad_(False)
 
@@ -383,17 +386,25 @@ class OraclePriorBankPosterior(torch.nn.Module):
         self.prior = task.prior
         self.seed = int(seed)
         bank_size = task.prior.num_paths if bank_size is None else int(bank_size)
-        bank_latents = task.prior.sample_latents(bank_size, seed=seed).to(device=device, dtype=dtype)
+        bank_latents = task.prior.sample_latents(bank_size, seed=seed).to(
+            device=device, dtype=dtype
+        )
         self.register_buffer("bank_latents", bank_latents)
 
         with torch.no_grad():
             X_train = task.X_train.to(device=device, dtype=dtype)
             y_train = task.y_train.to(device=device, dtype=dtype)
-            noise_var = task.noise_std.to(device=device, dtype=dtype).square().clamp_min(1e-12).reshape(1, 1, -1)
-            bank_train = self.prior.evaluate(X_train, self.bank_latents)
-            log_lik = -0.5 * ((bank_train - y_train.unsqueeze(0)).square() / noise_var + torch.log(2.0 * math.pi * noise_var)).sum(
-                dim=(1, 2)
+            noise_var = (
+                task.noise_std.to(device=device, dtype=dtype)
+                .square()
+                .clamp_min(1e-12)
+                .reshape(1, 1, -1)
             )
+            bank_train = self.prior.evaluate(X_train, self.bank_latents)
+            log_lik = -0.5 * (
+                (bank_train - y_train.unsqueeze(0)).square() / noise_var
+                + torch.log(2.0 * math.pi * noise_var)
+            ).sum(dim=(1, 2))
             if not torch.isfinite(log_lik).any():
                 weights = torch.full_like(log_lik, 1.0 / max(1, log_lik.numel()))
                 log_weights = torch.log(weights)
@@ -408,7 +419,9 @@ class OraclePriorBankPosterior(torch.nn.Module):
     def predict_f_samples(self, X: torch.Tensor, n_samples: int, *, seed: int) -> torch.Tensor:
         generator = torch.Generator(device=self.weights.device)
         generator.manual_seed(int(seed))
-        draw_idx = torch.multinomial(self.weights, int(n_samples), replacement=True, generator=generator)
+        draw_idx = torch.multinomial(
+            self.weights, int(n_samples), replacement=True, generator=generator
+        )
         return self.prior.evaluate(X, self.bank_latents[draw_idx])
 
 
@@ -428,7 +441,9 @@ class FreshLotkaVolterraSIPPrior(torch.nn.Module):
         self.num_samples = int(num_samples)
         self.seed = int(seed)
         self.fresh_prior_samples = bool(fresh_prior_samples)
-        self.register_buffer("_sample_counter", torch.zeros((), dtype=torch.long, device=base_prior.device))
+        self.register_buffer(
+            "_sample_counter", torch.zeros((), dtype=torch.long, device=base_prior.device)
+        )
 
     @property
     def input_dim(self) -> int:
@@ -452,7 +467,9 @@ class FreshLotkaVolterraSIPPrior(torch.nn.Module):
         if self.fresh_prior_samples:
             seed = self.seed + int(self._sample_counter.item())
             self._sample_counter.add_(1)
-        latents = self.base_prior.sample_latents(sample_count, seed=seed, cache=not self.fresh_prior_samples)
+        latents = self.base_prior.sample_latents(
+            sample_count, seed=seed, cache=not self.fresh_prior_samples
+        )
         return self.base_prior.evaluate(X, latents)
 
     def sample(self, X: torch.Tensor, n: int, seed: int | None = None) -> torch.Tensor:
@@ -594,12 +611,14 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
         )
         model = SIP(
             generative_function=prior_adapter,
-            inducing_inputs=_inducing_grid(int(sip_cfg.get("num_inducing", 32)), device=device, dtype=dtype),
+            inducing_inputs=_inducing_grid(
+                int(sip_cfg.get("num_inducing", 32)), device=device, dtype=dtype
+            ),
             output_dim=output_dim,
             likelihood="regression",
             num_data=int(task.X_train.shape[0]),
             num_prior_samples=num_prior_samples,
-            num_train_samples=sip_cfg.get("num_train_samples", None),
+            num_train_samples=sip_cfg.get("num_train_samples"),
             num_eval_samples=int(sip_cfg.get("num_eval_samples", train_cfg.n_mc_eval)),
             bb_alpha=0.0,
             beta=float(sip_cfg.get("beta", 1.0)),
@@ -617,7 +636,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             y_std=np.ones((1, output_dim), dtype=np.float64),
             jitter=float(sip_cfg.get("jitter", 1e-5)),
             log_variance_init=float(sip_cfg.get("log_variance_init", -5.0)),
-            min_log_variance=sip_cfg.get("min_log_variance", None),
+            min_log_variance=sip_cfg.get("min_log_variance"),
             device=device,
             dtype=dtype,
             seed=seed + 31,
@@ -703,7 +722,9 @@ def vip_pathwise_samples(model: VIP, X: torch.Tensor, samples: int) -> torch.Ten
     return torch.einsum("ind,aid->and", phi, coeffs) + m.squeeze(0)
 
 
-def predictive_function_samples(model, method: str, X: torch.Tensor, n_samples: int, seed: int) -> torch.Tensor:
+def predictive_function_samples(
+    model, method: str, X: torch.Tensor, n_samples: int, seed: int
+) -> torch.Tensor:
     method = METHOD_ALIASES.get(method, method)
     model.eval()
     with torch.no_grad():
@@ -742,7 +763,9 @@ def fit_model(model, method: str, task, config: dict, *, seed: int, device) -> d
             "steps": 0,
             "loss_start": None,
             "loss_end": None,
-            "best_val_nll_norm": _validation_loss(model, method, task, min(64, int(train_cfg.n_mc_eval)), seed + 17),
+            "best_val_nll_norm": _validation_loss(
+                model, method, task, min(64, int(train_cfg.n_mc_eval)), seed + 17
+            ),
         }
     dataset = TensorDataset(task.X_train, task.y_train)
     full_batch = train_cfg.batch_size == "full"
@@ -763,7 +786,9 @@ def fit_model(model, method: str, task, config: dict, *, seed: int, device) -> d
     start = time.time()
     stream = iter(loader)
     disable = bool(config.get("training", {}).get("disable_tqdm", False))
-    loop = tqdm(range(int(train_cfg.max_steps)), desc=f"{method} train", unit=" step", disable=disable)
+    loop = tqdm(
+        range(int(train_cfg.max_steps)), desc=f"{method} train", unit=" step", disable=disable
+    )
     for step in loop:
         if full_batch:
             xb, yb = task.X_train, task.y_train
@@ -779,7 +804,9 @@ def fit_model(model, method: str, task, config: dict, *, seed: int, device) -> d
         loss_value = float(loss.detach().cpu())
         losses.append(loss_value)
         if step % int(train_cfg.eval_interval) == 0 or step == int(train_cfg.max_steps) - 1:
-            val = _validation_loss(model, method, task, min(64, int(train_cfg.n_mc_eval)), seed + step)
+            val = _validation_loss(
+                model, method, task, min(64, int(train_cfg.n_mc_eval)), seed + step
+            )
             if val < best_val:
                 best_val = val
                 best_state = copy.deepcopy(model.state_dict())
@@ -823,27 +850,45 @@ def fit_warm_started_ftip(model: FTIP, task, config: dict, *, seed: int, device,
 
 
 def _unnormalize(task, values: torch.Tensor) -> torch.Tensor:
-    y_mean = torch.as_tensor(task.metadata["y_mean"], dtype=values.dtype, device=values.device).reshape(1, 2)
-    y_std = torch.as_tensor(task.metadata["y_std"], dtype=values.dtype, device=values.device).reshape(1, 2)
+    y_mean = torch.as_tensor(
+        task.metadata["y_mean"], dtype=values.dtype, device=values.device
+    ).reshape(1, 2)
+    y_std = torch.as_tensor(
+        task.metadata["y_std"], dtype=values.dtype, device=values.device
+    ).reshape(1, 2)
     return values * y_std + y_mean
 
 
 def evaluate_target(model, method: str, task, config: dict, *, seed: int, out_dir: Path) -> dict:
     eval_samples = int(_training_config(config).n_mc_eval)
     start = time.time()
-    samples_test_norm = predictive_function_samples(model, method, task.X_test, eval_samples, seed + 501)
-    samples_plot_norm = predictive_function_samples(model, method, task.X_plot, eval_samples, seed + 601)
+    samples_test_norm = predictive_function_samples(
+        model, method, task.X_test, eval_samples, seed + 501
+    )
+    samples_plot_norm = predictive_function_samples(
+        model, method, task.X_plot, eval_samples, seed + 601
+    )
     samples_test = _unnormalize(task, samples_test_norm)
     samples_plot = _unnormalize(task, samples_plot_norm)
     y_test = _unnormalize(task, task.y_test)
     y_plot_true = _unnormalize(task, task.y_plot_true)
-    noise_std = torch.as_tensor(task.metadata["noise_std"], dtype=samples_test.dtype, device=samples_test.device)
-    coverage = interval_coverage(samples_test, y_test, levels=tuple(config.get("metrics", {}).get("levels", [0.5, 0.8, 0.9, 0.95])))
-    widths = interval_width(samples_test, levels=tuple(config.get("metrics", {}).get("levels", [0.5, 0.8, 0.9, 0.95])))
+    noise_std = torch.as_tensor(
+        task.metadata["noise_std"], dtype=samples_test.dtype, device=samples_test.device
+    )
+    coverage = interval_coverage(
+        samples_test,
+        y_test,
+        levels=tuple(config.get("metrics", {}).get("levels", [0.5, 0.8, 0.9, 0.95])),
+    )
+    widths = interval_width(
+        samples_test, levels=tuple(config.get("metrics", {}).get("levels", [0.5, 0.8, 0.9, 0.95]))
+    )
     prior_ids = task.prior.sample_indices(min(512, task.prior.num_paths), seed=seed + 701)
     prior_plot = task.prior.evaluate_raw(task.X_plot, prior_ids).to(samples_plot.device)
     nearest = nearest_prior_mse(samples_plot[: min(eval_samples, 128)], prior_plot, chunk_size=32)
-    t_grid = torch.as_tensor(task.metadata["t_grid"], dtype=samples_plot.dtype, device=samples_plot.device)
+    t_grid = torch.as_tensor(
+        task.metadata["t_grid"], dtype=samples_plot.dtype, device=samples_plot.device
+    )
     residual = lotka_volterra_residual_score(samples_plot[: min(eval_samples, 64)], t_grid)
     mean_test = samples_test.mean(dim=0)
     row = {
@@ -852,7 +897,11 @@ def evaluate_target(model, method: str, task, config: dict, *, seed: int, out_di
         "seed": int(seed),
         "target_id": int(task.metadata["target_id"]),
         "rmse": float(rmse(mean_test, y_test).detach().cpu()),
-        "nll": float(gaussian_nll_from_samples(samples_test, y_test, noise_var=noise_std.square()).detach().cpu()),
+        "nll": float(
+            gaussian_nll_from_samples(samples_test, y_test, noise_var=noise_std.square())
+            .detach()
+            .cpu()
+        ),
         "crps": float(crps_from_samples(samples_test, y_test).detach().cpu()),
         "nearest_prior_mse": float(nearest["mean"].detach().cpu()),
         "nearest_prior_mse_median": float(nearest["median"].detach().cpu()),
@@ -934,16 +983,23 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 
 
 def _summarize(rows: list[dict]) -> dict:
-    numeric_keys = [
-        key
-        for key in rows[0]
-        if key not in {"experiment", "method"} and isinstance(rows[0].get(key), (int, float))
-    ] if rows else []
+    numeric_keys = (
+        [
+            key
+            for key in rows[0]
+            if key not in {"experiment", "method"} and isinstance(rows[0].get(key), (int, float))
+        ]
+        if rows
+        else []
+    )
     summary = {}
     for key in numeric_keys:
         values = np.array([row[key] for row in rows if row.get(key) is not None], dtype=np.float64)
         if values.size:
-            summary[key] = {"mean": float(np.nanmean(values)), "stderr": float(np.nanstd(values) / max(1, np.sqrt(values.size)))}
+            summary[key] = {
+                "mean": float(np.nanmean(values)),
+                "stderr": float(np.nanstd(values) / max(1, np.sqrt(values.size))),
+            }
     return summary
 
 
@@ -972,7 +1028,9 @@ def run_method(method: str, config: dict, cli_args) -> dict:
         dtype=dtype,
     )
     ids = _target_ids(config, cli_args, len(tasks))
-    out_dir = Path(cli_args.output_dir or "results/simprior") / "lotka_volterra" / method / f"seed_{seed}"
+    out_dir = (
+        Path(cli_args.output_dir or "results/simprior") / "lotka_volterra" / method / f"seed_{seed}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
@@ -1001,8 +1059,12 @@ def run_method(method: str, config: dict, cli_args) -> dict:
         runtimes.append(train_info)
 
     metrics = {"method": method, "seed": seed, "targets": ids, "summary": _summarize(rows)}
-    (out_dir / "metrics.json").write_text(json.dumps(_tensor_to_json(metrics), indent=2), encoding="utf-8")
-    (out_dir / "runtime.json").write_text(json.dumps(_tensor_to_json(runtimes), indent=2), encoding="utf-8")
+    (out_dir / "metrics.json").write_text(
+        json.dumps(_tensor_to_json(metrics), indent=2), encoding="utf-8"
+    )
+    (out_dir / "runtime.json").write_text(
+        json.dumps(_tensor_to_json(runtimes), indent=2), encoding="utf-8"
+    )
     _write_csv(out_dir / "metrics_per_target.csv", rows)
     return metrics
 
@@ -1010,7 +1072,11 @@ def run_method(method: str, config: dict, cli_args) -> dict:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run simulator-prior regression experiments.")
     parser.add_argument("--preset", choices=tuple(CONFIG_PRESETS), default="lotka_volterra")
-    parser.add_argument("--config", default=None, help="Optional YAML override. Built-in presets are used by default.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional YAML override. Built-in presets are used by default.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--method", default=None)
     parser.add_argument("--num-inducing", type=int, default=None)

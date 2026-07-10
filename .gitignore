@@ -2,8 +2,13 @@
 *.pyc
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
 *.log
-.venv
+.venv/
 data
 *.pdf
 /checkpoints
@@ -14,5 +19,9 @@ data
 /slides
 /archive
 /logs
+/wandb/
 /local_scripts/
 /CLUSTER_EXPERIMENTS_120K_HANDOFF.md
+/build/
+/dist/
+*.egg-info/

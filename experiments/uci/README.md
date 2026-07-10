@@ -1,8 +1,8 @@
 # UCI Regression
 
 `experiments.uci.benchmark` is the scalar regression benchmark for the shared
-method suite. It builds models from `src/`, loads datasets through
-`src.utils.dataset`, trains one or more methods, and writes JSON metrics plus
+method suite. It builds models from `implicit_process_zoo/`, loads datasets through
+`implicit_process_zoo.utils.dataset`, trains one or more methods, and writes JSON metrics plus
 optional checkpoints.
 
 ## Datasets

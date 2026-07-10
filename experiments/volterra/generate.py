@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 from scipy.integrate import solve_ivp
 
-
 DEFAULT_THETA_NAMES = ("alpha", "beta", "delta", "gamma", "x0", "y0")
 
 
@@ -101,9 +100,13 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
     args = parse_args(argv)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    t_grid = np.arange(0.0, float(args.t_max) + 0.5 * float(args.dt), float(args.dt), dtype=np.float64)
+    t_grid = np.arange(
+        0.0, float(args.t_max) + 0.5 * float(args.dt), float(args.dt), dtype=np.float64
+    )
 
-    target_y, target_theta = generate_bank(args.n_targets, t_grid=t_grid, seed=args.seed + 1_000_003)
+    target_y, target_theta = generate_bank(
+        args.n_targets, t_grid=t_grid, seed=args.seed + 1_000_003
+    )
 
     target_path = out / "target_paths.npz"
     metadata_path = out / "metadata.json"

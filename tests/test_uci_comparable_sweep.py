@@ -41,14 +41,16 @@ def _args(extra):
 
 
 def test_wandb_names_and_groups_are_launcher_controlled():
-    args = _args([
-        "--model",
-        "gmvip",
-        "--wandb_name",
-        "Boston | GMVIP Tunable Prior | seed 0",
-        "--wandb_group",
-        "Boston | GMVIP Tunable Prior",
-    ])
+    args = _args(
+        [
+            "--model",
+            "gmvip",
+            "--wandb_name",
+            "Boston | GMVIP Tunable Prior | seed 0",
+            "--wandb_group",
+            "Boston | GMVIP Tunable Prior",
+        ]
+    )
 
     assert args.wandb_name == "Boston | GMVIP Tunable Prior | seed 0"
     assert args.wandb_group == "Boston | GMVIP Tunable Prior"
@@ -76,26 +78,30 @@ def test_variant_tags_distinguish_prior_and_inducing_states():
     assert _variant_tag(ftip_learn, "ftip") == "_learnprior"
     assert _variant_tag(ftip_fixed, "ftip") == "_fixedprior"
 
-    sip_learn = _args([
-        "--model",
-        "sip",
-        "--sip_num_inducing",
-        "100",
-        "--sip_inducing_method",
-        "kmeans",
-        "--sip_learn_inducing",
-        "--sip_learn_prior",
-    ])
-    sip_fixed = _args([
-        "--model",
-        "sip",
-        "--sip_num_inducing",
-        "100",
-        "--sip_inducing_method",
-        "kmeans",
-        "--sip_learn_inducing",
-        "--no-sip_learn_prior",
-    ])
+    sip_learn = _args(
+        [
+            "--model",
+            "sip",
+            "--sip_num_inducing",
+            "100",
+            "--sip_inducing_method",
+            "kmeans",
+            "--sip_learn_inducing",
+            "--sip_learn_prior",
+        ]
+    )
+    sip_fixed = _args(
+        [
+            "--model",
+            "sip",
+            "--sip_num_inducing",
+            "100",
+            "--sip_inducing_method",
+            "kmeans",
+            "--sip_learn_inducing",
+            "--no-sip_learn_prior",
+        ]
+    )
     assert _variant_tag(sip_learn, "sip") != _variant_tag(sip_fixed, "sip")
     assert "learnZ" in _variant_tag(sip_learn, "sip")
     assert "learnprior" in _variant_tag(sip_learn, "sip")
@@ -165,7 +171,10 @@ def test_gmvip_and_sip_build_with_learn_z_and_both_prior_states():
         "8",
     ]
 
-    for prior_flag, should_train in [("--gmvip_learn_prior", True), ("--no-gmvip_learn_prior", False)]:
+    for prior_flag, should_train in [
+        ("--gmvip_learn_prior", True),
+        ("--no-gmvip_learn_prior", False),
+    ]:
         model = build_model(parse_args([*gmvip_common, prior_flag]), dataset)
         assert model.Z.requires_grad
         assert any(p.requires_grad for p in model.base_prior.parameters()) is should_train

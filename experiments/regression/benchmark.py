@@ -7,17 +7,11 @@ Example:
     python -m experiments.regression.benchmark --model gmvip --dataset year
 """
 
-from pathlib import Path
 import copy
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from experiments.uci.benchmark import parse_args as parse_uci_args
 from experiments.uci.benchmark import run_from_args as run_uci_from_args
-
 
 REGRESSION_DATASETS = ["year", "airline", "taxi"]
 
@@ -59,9 +53,7 @@ def run_from_args(
     dataset_names = list(REGRESSION_DATASETS if dataset_names is None else dataset_names)
     default_iters = DEFAULT_REGRESSION_ITERS if default_iters is None else default_iters
     default_hidden_dims = (
-        DEFAULT_REGRESSION_HIDDEN_DIMS
-        if default_hidden_dims is None
-        else default_hidden_dims
+        DEFAULT_REGRESSION_HIDDEN_DIMS if default_hidden_dims is None else default_hidden_dims
     )
 
     if getattr(args, "_hidden_dims_user_supplied", False):

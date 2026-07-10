@@ -66,7 +66,9 @@ class DampedOscillatorPrior(nn.Module):
         self.sample_drag = bool(sample_drag)
         self.forcing_count = int(math.ceil(self.t_max / self.forcing_delta)) + 1
         diffs = t_tensor[1:] - t_tensor[:-1]
-        self.integration_dt = float(integration_dt or min(float(diffs.min().detach().cpu()), self.forcing_delta))
+        self.integration_dt = float(
+            integration_dt or min(float(diffs.min().detach().cpu()), self.forcing_delta)
+        )
         if self.integration_dt <= 0.0:
             raise ValueError("integration_dt must be positive.")
 
@@ -99,7 +101,7 @@ class DampedOscillatorPrior(nn.Module):
         num_samples: int | None = None,
         seed: int | None = None,
         sample_drag: bool | None = None,
-    ) -> "DampedOscillatorPrior":
+    ) -> DampedOscillatorPrior:
         return DampedOscillatorPrior(
             self.t.detach(),
             y_mean=y_mean,
@@ -141,24 +143,45 @@ class DampedOscillatorPrior(nn.Module):
         generator = self._generator(seed)
         omega = torch.exp(
             torch.full((num_samples, 1), math.log(1.0), dtype=self.dtype, device=self.device)
-            + 0.25 * torch.randn(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
+            + 0.25
+            * torch.randn(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
         )
-        zeta = 0.03 + 0.12 * torch.rand(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
-        amp = 0.2 + 0.8 * torch.rand(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
-        drive_omega = 0.6 + 0.8 * torch.rand(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
-        phi = 2.0 * math.pi * torch.rand(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
-        x0 = 0.2 * torch.randn(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
-        v0 = 0.2 * torch.randn(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
+        zeta = 0.03 + 0.12 * torch.rand(
+            num_samples, 1, generator=generator, dtype=self.dtype, device=self.device
+        )
+        amp = 0.2 + 0.8 * torch.rand(
+            num_samples, 1, generator=generator, dtype=self.dtype, device=self.device
+        )
+        drive_omega = 0.6 + 0.8 * torch.rand(
+            num_samples, 1, generator=generator, dtype=self.dtype, device=self.device
+        )
+        phi = (
+            2.0
+            * math.pi
+            * torch.rand(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
+        )
+        x0 = 0.2 * torch.randn(
+            num_samples, 1, generator=generator, dtype=self.dtype, device=self.device
+        )
+        v0 = 0.2 * torch.randn(
+            num_samples, 1, generator=generator, dtype=self.dtype, device=self.device
+        )
         if use_drag:
-            drag = 0.02 + 0.06 * torch.rand(num_samples, 1, generator=generator, dtype=self.dtype, device=self.device)
+            drag = 0.02 + 0.06 * torch.rand(
+                num_samples, 1, generator=generator, dtype=self.dtype, device=self.device
+            )
         else:
             drag = torch.zeros(num_samples, 1, dtype=self.dtype, device=self.device)
 
         stationary_std = self.sigma_u / math.sqrt(max(1.0 - self.rho**2, 1e-12))
         forcing = torch.empty(num_samples, self.forcing_count, dtype=self.dtype, device=self.device)
-        forcing[:, 0] = stationary_std * torch.randn(num_samples, generator=generator, dtype=self.dtype, device=self.device)
+        forcing[:, 0] = stationary_std * torch.randn(
+            num_samples, generator=generator, dtype=self.dtype, device=self.device
+        )
         for index in range(1, self.forcing_count):
-            eps = torch.randn(num_samples, generator=generator, dtype=self.dtype, device=self.device)
+            eps = torch.randn(
+                num_samples, generator=generator, dtype=self.dtype, device=self.device
+            )
             forcing[:, index] = self.rho * forcing[:, index - 1] + self.sigma_u * eps
 
         latents = torch.cat([omega, zeta, amp, drive_omega, phi, x0, v0, drag, forcing], dim=-1)
@@ -203,7 +226,9 @@ class DampedOscillatorPrior(nn.Module):
         )
         return torch.stack([dx, dv], dim=-1)
 
-    def _rk4_step(self, state: torch.Tensor, theta: torch.Tensor, t_value: float, dt: float) -> torch.Tensor:
+    def _rk4_step(
+        self, state: torch.Tensor, theta: torch.Tensor, t_value: float, dt: float
+    ) -> torch.Tensor:
         h = float(dt)
         k1 = self._rhs(state, theta, t_value)
         k2 = self._rhs(state + 0.5 * h * k1, theta, t_value + 0.5 * h)
@@ -215,7 +240,9 @@ class DampedOscillatorPrior(nn.Module):
     def _integrate_sorted(self, theta: torch.Tensor, t_sorted: torch.Tensor) -> torch.Tensor:
         if t_sorted.numel() == 0:
             return torch.empty(theta.shape[0], 0, 1, dtype=self.dtype, device=self.device)
-        state = torch.stack([theta[:, 5], theta[:, 6]], dim=-1).to(dtype=self.dtype, device=self.device)
+        state = torch.stack([theta[:, 5], theta[:, 6]], dim=-1).to(
+            dtype=self.dtype, device=self.device
+        )
         outputs = []
         current_t = 0.0
         max_dt = float(self.integration_dt)
@@ -280,7 +307,9 @@ class DampedOscillatorPrior(nn.Module):
         return self.evaluate(X, self.sample_latents(int(n), seed=seed))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        if self._fixed_latents is None or int(self._fixed_latents.shape[0]) != int(self.num_samples):
+        if self._fixed_latents is None or int(self._fixed_latents.shape[0]) != int(
+            self.num_samples
+        ):
             self._fixed_latents = self.sample_latents(self.num_samples, seed=self.seed)
         return self.evaluate(X, self._fixed_latents)
 

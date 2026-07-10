@@ -15,9 +15,36 @@ def test_region_masks_partition_forecasting_horizon():
     masks = region_masks(t)
 
     assert masks["interpolation"].tolist() == [True, True, False, False, False, False, False, False]
-    assert masks["near_extrapolation"].tolist() == [False, False, True, True, False, False, False, False]
-    assert masks["medium_extrapolation"].tolist() == [False, False, False, False, True, True, False, False]
-    assert masks["far_extrapolation"].tolist() == [False, False, False, False, False, False, True, True]
+    assert masks["near_extrapolation"].tolist() == [
+        False,
+        False,
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+    ]
+    assert masks["medium_extrapolation"].tolist() == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert masks["far_extrapolation"].tolist() == [
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+    ]
 
 
 def test_mixture_nlpd_and_crps_are_finite_for_degenerate_samples():
@@ -55,8 +82,15 @@ def test_metrics_by_region_outputs_expected_keys():
 
     rows = metrics_by_region(samples, y, t, noise_std=torch.tensor([0.1]))
 
-    assert set(rows) == {"interpolation", "near_extrapolation", "medium_extrapolation", "far_extrapolation"}
-    assert {"rmse", "nlpd", "crps", "cov90", "cov95", "width90", "width95"} <= set(rows["far_extrapolation"])
+    assert set(rows) == {
+        "interpolation",
+        "near_extrapolation",
+        "medium_extrapolation",
+        "far_extrapolation",
+    }
+    assert {"rmse", "nlpd", "crps", "cov90", "cov95", "width90", "width95"} <= set(
+        rows["far_extrapolation"]
+    )
 
 
 def test_metrics_by_region_accepts_configurable_t_obs_regions():

@@ -5,14 +5,19 @@ Provides small-scale BayesianNN, GP, data loaders, and common
 parameters so that each test module can focus on model-specific logic.
 """
 
+import numpy as np
 import pytest
 import torch
-import numpy as np
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
-from src.priors.generative_functions import BayesianNN, BayesianCNN, BayesLinear, SimplerBayesLinear, GP
-from src.flows.flows import CouplingFlow
-
+from implicit_process_zoo.flows.flows import CouplingFlow
+from implicit_process_zoo.priors.generative_functions import (
+    GP,
+    BayesianCNN,
+    BayesianNN,
+    BayesLinear,
+    SimplerBayesLinear,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -24,15 +29,16 @@ SEED = 42
 
 INPUT_DIM = 2
 OUTPUT_DIM = 1
-NUM_SAMPLES = 6        # prior function samples (S); must be even for CouplingFlow
-HIDDEN = [16]           # small hidden layer for speed
-NUM_DATA = 30           # tiny dataset
+NUM_SAMPLES = 6  # prior function samples (S); must be even for CouplingFlow
+HIDDEN = [16]  # small hidden layer for speed
+NUM_DATA = 30  # tiny dataset
 BATCH_SIZE = 10
 
 
 # ---------------------------------------------------------------------------
 # Generative functions (priors)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def bnn():
@@ -121,6 +127,7 @@ def gp():
 # Flows
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def coupling_flow():
     """CouplingFlow for FTIP."""
@@ -141,6 +148,7 @@ def nfvi_flow_factory():
     depends on ``input_dim``/``output_dim``/``structure``. Tests should call
     this factory with the MLP's total parameter count to avoid drift.
     """
+
     def _build(total_params):
         return CouplingFlow(
             depth=2,
@@ -149,6 +157,7 @@ def nfvi_flow_factory():
             dtype=DTYPE,
             seed=SEED,
         )
+
     return _build
 
 
@@ -156,12 +165,15 @@ def nfvi_flow_factory():
 # Datasets & data loaders
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def regression_data():
     """(X, y) tensors for regression, normalised to ~N(0,1)."""
     rng = np.random.RandomState(SEED)
     X = rng.randn(NUM_DATA, INPUT_DIM).astype(np.float64)
-    y = (X @ rng.randn(INPUT_DIM, OUTPUT_DIM) + 0.1 * rng.randn(NUM_DATA, OUTPUT_DIM)).astype(np.float64)
+    y = (X @ rng.randn(INPUT_DIM, OUTPUT_DIM) + 0.1 * rng.randn(NUM_DATA, OUTPUT_DIM)).astype(
+        np.float64
+    )
     X_t = torch.tensor(X, dtype=DTYPE, device=DEVICE)
     y_t = torch.tensor(y, dtype=DTYPE, device=DEVICE)
     return X_t, y_t
@@ -198,7 +210,7 @@ def multiclass_data():
     """(X, y) tensors for 3-class classification.
 
     ``y`` is class indices of shape ``(N, 1)`` — the format expected by
-    :func:`src.utils.likelihood.multiclass_logp` and the ``nelbo`` paths
+    :func:`implicit_process_zoo.utils.likelihood.multiclass_logp` and the ``nelbo`` paths
     of all multiclass models in this repo (matches ``mnist_multiclass_data``).
     """
     rng = np.random.RandomState(SEED)
@@ -219,6 +231,7 @@ def multiclass_loader(multiclass_data):
 # ---------------------------------------------------------------------------
 # Multi-output versions (OUTPUT_DIM=3 for multiclass models)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def bnn_multiclass():

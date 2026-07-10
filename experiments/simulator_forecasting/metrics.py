@@ -4,7 +4,6 @@ import math
 
 import torch
 
-
 DEFAULT_REGIONS = {
     "interpolation": (0.0, 8.0, True),
     "near_extrapolation": (8.0, 12.0, False),
@@ -94,7 +93,9 @@ def interval_width(samples, levels=(0.9, 0.95)):
     return result
 
 
-def region_masks(t, regions: dict[str, tuple[float, float, bool]] | None = None) -> dict[str, torch.Tensor]:
+def region_masks(
+    t, regions: dict[str, tuple[float, float, bool]] | None = None
+) -> dict[str, torch.Tensor]:
     t = _as_tensor(t).reshape(-1)
     regions = coerce_regions(regions)
     masks = {}
@@ -107,7 +108,9 @@ def region_masks(t, regions: dict[str, tuple[float, float, bool]] | None = None)
     return masks
 
 
-def metrics_by_region(samples, y_true, t, noise_std, levels=(0.9, 0.95), regions: dict | None = None):
+def metrics_by_region(
+    samples, y_true, t, noise_std, levels=(0.9, 0.95), regions: dict | None = None
+):
     samples = _as_tensor(samples)
     if samples.ndim == 2:
         samples = samples.unsqueeze(-1)
@@ -126,7 +129,9 @@ def metrics_by_region(samples, y_true, t, noise_std, levels=(0.9, 0.95), regions
         widths = interval_width(region_samples, levels=levels)
         row = {
             "rmse": float(rmse(region_samples.mean(dim=0), region_y).detach().cpu()),
-            "nlpd": float(mixture_gaussian_nlpd(region_samples, region_y, noise_var).detach().cpu()),
+            "nlpd": float(
+                mixture_gaussian_nlpd(region_samples, region_y, noise_var).detach().cpu()
+            ),
             "crps": float(crps_from_samples(region_samples, region_y).detach().cpu()),
         }
         for level, value in coverage.items():

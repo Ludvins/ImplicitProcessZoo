@@ -7,8 +7,8 @@ from experiments.volterra.datasets import load_lotka_volterra_tasks
 from experiments.volterra.generate import generate_bank
 from experiments.volterra.priors import LotkaVolterraPrior
 from experiments.volterra.run import (
-    FreshLotkaVolterraSIPPrior,
     SMOKE_LOTKA_VOLTERRA_CONFIG,
+    FreshLotkaVolterraSIPPrior,
     build_model,
     predictive_function_samples,
 )
@@ -22,7 +22,9 @@ def _write_small_lv_dataset(root):
 
 def test_sip_prior_adapter_fresh_draws_change_between_calls():
     t = np.linspace(0.0, 1.0, 5)
-    base = LotkaVolterraPrior(t, y_mean=np.zeros((1, 2)), y_std=np.ones((1, 2)), num_samples=3, seed=11)
+    base = LotkaVolterraPrior(
+        t, y_mean=np.zeros((1, 2)), y_std=np.ones((1, 2)), num_samples=3, seed=11
+    )
     X = torch.tensor([[-1.0], [0.0], [1.0]], dtype=torch.float64)
 
     fresh = FreshLotkaVolterraSIPPrior(base, num_samples=3, seed=5, fresh_prior_samples=True)
@@ -53,7 +55,9 @@ def test_volterra_sip_builds_trains_and_predicts(tmp_path):
         dtype=torch.float64,
     )
     task = tasks[0]
-    model = build_model("sip", task, config, seed=0, device=torch.device("cpu"), dtype=torch.float64)
+    model = build_model(
+        "sip", task, config, seed=0, device=torch.device("cpu"), dtype=torch.float64
+    )
     optimizer = torch.optim.Adam(model.vi_parameters(), lr=1.0e-3)
 
     loss = model._train_step(optimizer, task.X_train, task.y_train)

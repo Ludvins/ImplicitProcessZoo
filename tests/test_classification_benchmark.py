@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from experiments.classification import benchmark as classification_benchmark
-from src.gmvip import GeneralizedMatheronVIP
+from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
 
 
 class TinyClassificationDataset:

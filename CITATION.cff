@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Implicit Process Zoo"
+type: software
+version: 0.1.0
+authors:
+  - family-names: Ortega
+    given-names: Luis A.
+repository-code: "https://github.com/Ludvins/ImplicitProcessZoo"
+license: MIT
