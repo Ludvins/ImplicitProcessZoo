@@ -882,16 +882,12 @@ def test_train_step_accepts_alpha_objective():
     assert torch.allclose(model.last_train_metrics["data_alpha"], torch.tensor(1.0, dtype=DTYPE))
 
 
-def test_runner_batched_full_train_eval_matches_direct_gaussian_objective():
-    pytest.skip("legacy GMVIP gap runner is not part of the experiments package")
-
-
 def test_predict_shapes_and_finite_values():
     torch.manual_seed(11)
     model = _make_model(operator_type="rbf", posterior_type="gaussian", seed=11)
     X, _ = _toy_data(num_points=11)
 
-    pred = model.predict(X, num_samples=16)
+    pred = model.predict_summary(X, num_samples=16)
 
     assert pred["f_mean"].shape == (11,)
     assert pred["f_var"].shape == (11,)

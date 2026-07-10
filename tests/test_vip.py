@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from implicit_process_zoo.utils import batched_predict_samples
 from implicit_process_zoo.vip import VIP
 from tests.conftest import (
     BATCH_SIZE,
@@ -268,10 +269,10 @@ class TestVIPPrediction:
             seed=SEED,
         )
         model.eval()
-        means, stds = model.predict(regression_loader)
-        # predict concatenates forward() outputs along dim=0
-        total_points = means.shape[-2] * means.shape[0] if means.dim() == 3 else means.shape[0]
-        assert total_points == NUM_DATA
+        samples = batched_predict_samples(
+            model, regression_loader, num_samples=5, kind="f", seed=SEED
+        )
+        assert samples.shape == (5, NUM_DATA, OUTPUT_DIM)
 
     def test_predict_no_grad(self, bnn, regression_data):
         model = VIP(

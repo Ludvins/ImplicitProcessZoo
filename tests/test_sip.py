@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from implicit_process_zoo.sip import SIP
+from implicit_process_zoo.utils import batched_predict_samples
 from tests.conftest import (
     BATCH_SIZE,
     DEVICE,
@@ -307,9 +308,10 @@ class TestSIPPrediction:
             seed=SEED,
         )
         model.eval()
-        means, stds = model.predict(regression_loader)
-        assert means.shape[-2:] == (NUM_DATA, OUTPUT_DIM)
-        assert stds.shape == means.shape
+        samples = batched_predict_samples(
+            model, regression_loader, num_samples=5, kind="f", seed=SEED
+        )
+        assert samples.shape == (5, NUM_DATA, OUTPUT_DIM)
 
     def test_predict_no_grad(self, bnn, regression_data):
         Z = _make_inducing()

@@ -1,8 +1,6 @@
 import math
 
-import numpy as np
 import torch
-from tqdm import tqdm
 
 from ..utils.likelihood import (
     bernoulli_logp,
@@ -10,9 +8,12 @@ from ..utils.likelihood import (
     inv_probit,
     multiclass_logp,
 )
-from ..utils.utils import infinite_loader
+from ..utils.model_info import print_trainable_parameters
+from ..utils.random import fork_torch_rng, preserve_constructor_rng, temporary_generator_seed
+from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 
+@preserve_constructor_rng
 class MFVI(torch.nn.Module):
     def __init__(
         self,
@@ -109,7 +110,7 @@ class MFVI(torch.nn.Module):
             ):
                 module.noise = module.get_noise(first_call=True)
 
-    def predict_f_samples(self, X, S):
+    def predict_f_samples(self, X, num_samples, *, seed=None):
         """
         Sample latent function values from the BNN posterior.
 
@@ -117,10 +118,11 @@ class MFVI(torch.nn.Module):
         -------
         F : [S, N, D]
         """
-        self._set_num_samples(S)
-        return self.generative_function(X)
+        self._set_num_samples(num_samples)
+        with temporary_generator_seed(self, seed), fork_torch_rng(seed):
+            return self.generative_function(X)
 
-    def predict_y_samples(self, X, S):
+    def predict_y_samples(self, X, num_samples, *, seed=None):
         """
         Sample from the predictive distribution p(y | x).
 
@@ -132,14 +134,15 @@ class MFVI(torch.nn.Module):
         -------
         Y : [S, N, D]
         """
-        F = self.predict_f_samples(X, S)
-        if self.likelihood_type == "regression":
-            std = torch.sqrt(torch.exp(self.log_variance))
-            return F + std * torch.randn_like(F)
-        elif self.likelihood_type == "binary":
-            return inv_probit(F)
-        else:  # multiclass
-            return F
+        with temporary_generator_seed(self, seed), fork_torch_rng(seed):
+            F = self.predict_f_samples(X, num_samples)
+            if self.likelihood_type == "regression":
+                std = torch.sqrt(torch.exp(self.log_variance))
+                return F + std * torch.randn_like(F)
+            elif self.likelihood_type == "binary":
+                return inv_probit(F)
+            else:  # multiclass
+                return F
 
     def _logp(self, F, Y):
         """Dispatch to the correct logp function."""
@@ -184,7 +187,7 @@ class MFVI(torch.nn.Module):
             return Y * self.y_std + self.y_mean
         return Y
 
-    def predict(self, X, S):
+    def predict(self, X, num_samples, *, seed=None):
         """
         Predict y_samples for evaluation.
 
@@ -202,7 +205,7 @@ class MFVI(torch.nn.Module):
         with torch.no_grad():
             if self.dtype != X.dtype:
                 X = X.to(self.dtype)
-            Y = self.predict_y_samples(X, S)
+            Y = self.predict_y_samples(X, num_samples, seed=seed)
             if self.likelihood_type == "regression":
                 return Y * self.y_std + self.y_mean
             return Y
@@ -247,60 +250,24 @@ class MFVI(torch.nn.Module):
         -------
         losses : list of float (if return_loss=True)
         """
+        validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-
-        if epochs is None and iterations is None:
-            raise ValueError("Either epochs or iterations must be set.")
-
-        scheduler = None
-        if cosine_annealing:
-            T_max = epochs if epochs is not None else iterations // len(train_loader)
-            eta_min = optimizer.param_groups[0]["lr"] / 100
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=T_max, eta_min=eta_min
-            )
-
-        self.train()
-        losses = []
-
-        if epochs is not None:
-            loop = (
-                tqdm(range(epochs), unit=" epoch", desc="Training") if use_tqdm else range(epochs)
-            )
-            for _ in loop:
-                for inputs, target in train_loader:
-                    inputs = inputs.to(self.device)
-                    target = target.to(self.device)
-                    loss = self._train_step(optimizer, inputs, target)
-                    if return_loss:
-                        losses.append(loss.detach().cpu().numpy())
-                if scheduler is not None:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        if iterations is not None:
-            loop = (
-                tqdm(range(iterations), unit=" iter", desc="Training")
-                if use_tqdm
-                else range(iterations)
-            )
-            data_stream = infinite_loader(train_loader)
-            iters_per_epoch = len(train_loader)
-            for i in loop:
-                inputs, target = next(data_stream)
-                inputs = inputs.to(self.device)
-                target = target.to(self.device)
-                loss = self._train_step(optimizer, inputs, target)
-                if return_loss:
-                    losses.append(loss.detach().cpu().numpy())
-                if scheduler is not None and (i + 1) % iters_per_epoch == 0:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        return losses
+        scheduler = (
+            make_cosine_scheduler(optimizer, train_loader, epochs=epochs, iterations=iterations)
+            if cosine_annealing
+            else None
+        )
+        return fit_loop(
+            self,
+            train_loader,
+            optimizer,
+            epochs=epochs,
+            iterations=iterations,
+            use_tqdm=use_tqdm,
+            return_loss=return_loss,
+            scheduler=scheduler,
+        )
 
     def _train_step(self, optimizer, X, y):
         """Single gradient step."""
@@ -331,27 +298,5 @@ class MFVI(torch.nn.Module):
     # ------------------------------------------------------------------
 
     def print_variables(self):
-        """Prints the model parameters in a formatted manner."""
-        print("\n---- MODEL PARAMETERS ----")
-        np.set_printoptions(threshold=3, edgeitems=2)
-        sections = []
-        pad = "  "
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            name = name.split(".")
-            for i in range(len(name) - 1):
-                if name[i] not in sections:
-                    print(pad * i, name[i].upper())
-                    sections = name[: i + 1]
-
-            padding = pad * (len(name) - 1)
-            print(
-                padding,
-                f"{name[-1]}: ({str(list(param.data.size()))[1:-1]})",
-            )
-            print(
-                padding + " " * (len(name[-1]) + 2),
-                param.data.detach().cpu().numpy().flatten(),
-            )
-        print("\n---------------------------\n\n")
+        """Print trainable parameters using the shared formatter."""
+        print_trainable_parameters(self)

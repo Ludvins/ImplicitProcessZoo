@@ -209,7 +209,8 @@ def prob_is_largest(Y, Fmu, Fvar, num_classes, num_gh_points, dtype, device):
 
     X = mu_selected + gh_x * sqrt_selected
 
-    dist = (X.unsqueeze(1) - Fmu.unsqueeze(2)) / Fvar.unsqueeze(2)
+    std = torch.sqrt(torch.clamp(Fvar, min=1e-10))
+    dist = (X.unsqueeze(1) - Fmu.unsqueeze(2)) / std.unsqueeze(2)
     cdfs = 0.5 * (1.0 + torch.erf(dist * _SQRT2_INV))
     cdfs = cdfs * (1 - 2e-6) + 1e-6
 

@@ -1,7 +1,5 @@
-import numpy as np
 import torch
 import torch.nn as nn
-from tqdm import tqdm
 
 from ..utils.flat_mlp import (
     FlatMLP as _BaseMLP,
@@ -17,13 +15,16 @@ from ..utils.likelihood import (
     gaussian_logp,
     multiclass_logp,
 )
-from ..utils.utils import infinite_loader
+from ..utils.model_info import print_trainable_parameters
+from ..utils.random import fork_torch_rng, preserve_constructor_rng, temporary_generator_seed
+from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 # ------------------------------------------------------------------
 # Tractable Function-Space Variational Inference
 # ------------------------------------------------------------------
 
 
+@preserve_constructor_rng
 class TFSVI(nn.Module):
     """
     Tractable Function-Space Variational Inference.
@@ -127,8 +128,8 @@ class TFSVI(nn.Module):
         # Match log_variance / parameter dtype so std_scalar = sqrt(exp(
         # log_variance)) * y_std doesn't get silently downcast to float32
         # and underflow when log_variance dips below ~-88.
-        self.y_mean = torch.as_tensor(y_mean, dtype=dtype, device=device)
-        self.y_std = torch.as_tensor(y_std, dtype=dtype, device=device)
+        self.register_buffer("y_mean", torch.as_tensor(y_mean, dtype=dtype, device=device))
+        self.register_buffer("y_std", torch.as_tensor(y_std, dtype=dtype, device=device))
         self.device = device
         self.dtype = dtype
         self.output_dim = output_dim
@@ -244,7 +245,7 @@ class TFSVI(nn.Module):
     # Prediction methods
     # ------------------------------------------------------------------
 
-    def predict_f_samples(self, X, S):
+    def predict_f_samples(self, X, num_samples, *, seed=None):
         """
         Sample latent function values from the variational posterior.
 
@@ -263,22 +264,21 @@ class TFSVI(nn.Module):
         -------
         F : [S, N, D]
         """
-        eps = torch.randn(S, self._total_params, dtype=self.dtype, device=self.device)
-        sigma = torch.exp(self.log_sigma)
-        theta = self.mu.unsqueeze(0) + sigma.unsqueeze(0) * eps  # [S, P]
+        with temporary_generator_seed(self, seed), fork_torch_rng(seed):
+            eps = torch.randn(
+                num_samples, self._total_params, dtype=self.mu.dtype, device=self.mu.device
+            )
+            sigma = torch.exp(self.log_sigma)
+            theta = self.mu.unsqueeze(0) + sigma.unsqueeze(0) * eps
 
-        if self._vmap_compatible:
-            return torch.vmap(lambda flat: self._forward_with_flat_params(flat, X))(
-                theta
-            )  # [S, N, D]
-        # Recurrent base_net: vmap has no batching rule for aten::lstm,
-        # so loop over the S parameter samples.
-        return torch.stack(
-            [self._forward_with_flat_params(theta[s], X) for s in range(S)],
-            dim=0,
-        )
+            if self._vmap_compatible:
+                return torch.vmap(lambda flat: self._forward_with_flat_params(flat, X))(theta)
+            return torch.stack(
+                [self._forward_with_flat_params(theta[s], X) for s in range(num_samples)],
+                dim=0,
+            )
 
-    def predict_y_samples(self, X, S):
+    def predict_y_samples(self, X, num_samples, *, seed=None):
         """
         Predictive samples in y-space.
 
@@ -289,11 +289,12 @@ class TFSVI(nn.Module):
         -------
         Y : [S, N, D]
         """
-        F = self.predict_f_samples(X, S)
-        if self.likelihood_type == "regression":
-            std = torch.sqrt(torch.exp(self.log_variance))
-            return F + std * torch.randn_like(F)
-        return F  # logits for classification
+        with temporary_generator_seed(self, seed), fork_torch_rng(seed):
+            F = self.predict_f_samples(X, num_samples)
+            if self.likelihood_type == "regression":
+                std = torch.sqrt(torch.exp(self.log_variance))
+                return F + std * torch.randn_like(F)
+            return F
 
     def _logp(self, F, Y):
         """Dispatch to the correct logp function."""
@@ -507,7 +508,7 @@ class TFSVI(nn.Module):
             return Y * self.y_std + self.y_mean
         return Y
 
-    def predict(self, X, S):
+    def predict(self, X, num_samples, *, seed=None):
         """
         Predict y_samples for evaluation.
 
@@ -524,7 +525,7 @@ class TFSVI(nn.Module):
         with torch.no_grad():
             if self.dtype != X.dtype:
                 X = X.to(self.dtype)
-            Y = self.predict_y_samples(X, S)
+            Y = self.predict_y_samples(X, num_samples, seed=seed)
             if self.likelihood_type == "regression":
                 return Y * self.y_std + self.y_mean
             return Y
@@ -558,66 +559,28 @@ class TFSVI(nn.Module):
         return_loss : bool
         cosine_annealing : bool
         """
-        # Store training inputs for context sampling
-        all_X = []
-        for inputs, _ in train_loader:
-            all_X.append(inputs)
-        self._train_inputs = torch.cat(all_X, dim=0)
-
+        validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam([p for p in self.parameters() if p.requires_grad], lr=lr)
+        scheduler = (
+            make_cosine_scheduler(optimizer, train_loader, epochs=epochs, iterations=iterations)
+            if cosine_annealing
+            else None
+        )
+        return fit_loop(
+            self,
+            train_loader,
+            optimizer,
+            epochs=epochs,
+            iterations=iterations,
+            use_tqdm=use_tqdm,
+            return_loss=return_loss,
+            scheduler=scheduler,
+        )
 
-        if epochs is None and iterations is None:
-            raise ValueError("Either epochs or iterations must be set.")
-
-        scheduler = None
-        if cosine_annealing:
-            T_max = epochs if epochs is not None else max(1, iterations // len(train_loader))
-            eta_min = optimizer.param_groups[0]["lr"] / 100
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=T_max, eta_min=eta_min
-            )
-
-        self.train()
-        losses = []
-
-        if epochs is not None:
-            loop = (
-                tqdm(range(epochs), unit=" epoch", desc="Training") if use_tqdm else range(epochs)
-            )
-            for _ in loop:
-                for inputs, target in train_loader:
-                    inputs = inputs.to(self.device)
-                    target = target.to(self.device)
-                    loss = self._train_step(optimizer, inputs, target)
-                    if return_loss:
-                        losses.append(loss.detach().cpu().numpy())
-                if scheduler is not None:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        if iterations is not None:
-            loop = (
-                tqdm(range(iterations), unit=" iter", desc="Training")
-                if use_tqdm
-                else range(iterations)
-            )
-            data_stream = infinite_loader(train_loader)
-            iters_per_epoch = len(train_loader)
-            for i in loop:
-                inputs, target = next(data_stream)
-                inputs = inputs.to(self.device)
-                target = target.to(self.device)
-                loss = self._train_step(optimizer, inputs, target)
-                if return_loss:
-                    losses.append(loss.detach().cpu().numpy())
-                if scheduler is not None and (i + 1) % iters_per_epoch == 0:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        return losses
+    def _prepare_fit(self, train_loader):
+        """Cache context inputs before the shared fit loop starts."""
+        self._train_inputs = torch.cat([inputs for inputs, _ in train_loader], dim=0)
 
     def _train_step(self, optimizer, X, y):
         """Single gradient step."""
@@ -639,27 +602,5 @@ class TFSVI(nn.Module):
     # ------------------------------------------------------------------
 
     def print_variables(self):
-        """Prints the model parameters in a formatted manner."""
-        print("\n---- MODEL PARAMETERS ----")
-        np.set_printoptions(threshold=3, edgeitems=2)
-        sections = []
-        pad = "  "
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            name = name.split(".")
-            for i in range(len(name) - 1):
-                if name[i] not in sections:
-                    print(pad * i, name[i].upper())
-                    sections = name[: i + 1]
-
-            padding = pad * (len(name) - 1)
-            print(
-                padding,
-                f"{name[-1]}: ({str(list(param.data.size()))[1:-1]})",
-            )
-            print(
-                padding + " " * (len(name[-1]) + 2),
-                param.data.detach().cpu().numpy().flatten(),
-            )
-        print("\n---------------------------\n\n")
+        """Print trainable parameters using the shared formatter."""
+        print_trainable_parameters(self)

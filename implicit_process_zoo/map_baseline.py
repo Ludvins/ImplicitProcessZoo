@@ -1,9 +1,11 @@
 import torch
 
 from .utils.likelihood import gaussian_logp
-from .utils.utils import infinite_loader
+from .utils.random import fork_torch_rng, preserve_constructor_rng
+from .utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 
+@preserve_constructor_rng
 class DeterministicMAP(torch.nn.Module):
     """Deterministic MLP MAP baseline with learned isotropic Gaussian noise."""
 
@@ -23,8 +25,6 @@ class DeterministicMAP(torch.nn.Module):
         seed=2147483647,
     ):
         super().__init__()
-        if seed is not None:
-            torch.manual_seed(seed)
         if l2 < 0:
             raise ValueError("l2 must be non-negative.")
 
@@ -37,12 +37,13 @@ class DeterministicMAP(torch.nn.Module):
         self.dtype = dtype
 
         dims = [input_dim] + list(structure) + [output_dim]
-        self.layers = torch.nn.ModuleList(
-            [
-                torch.nn.Linear(in_dim, out_dim, dtype=dtype, device=device)
-                for in_dim, out_dim in zip(dims, dims[1:])
-            ]
-        )
+        with fork_torch_rng(seed):
+            self.layers = torch.nn.ModuleList(
+                [
+                    torch.nn.Linear(in_dim, out_dim, dtype=dtype, device=device)
+                    for in_dim, out_dim in zip(dims, dims[1:])
+                ]
+            )
         log_variance_value = torch.as_tensor(log_variance_init, dtype=dtype, device=device)
         if log_variance_value.ndim > 1:
             raise ValueError("log_variance_init must be scalar or one-dimensional.")
@@ -62,9 +63,9 @@ class DeterministicMAP(torch.nn.Module):
             x = self.activation(layer(x))
         return self.layers[-1](x)
 
-    def predict_f_samples(self, X, S=1):
+    def predict_f_samples(self, X, num_samples, *, seed=None):
         F = self.predict_f(X)
-        return F.unsqueeze(0).expand(S, *F.shape)
+        return F.unsqueeze(0).expand(num_samples, *F.shape)
 
     def forward(self, X):
         F = self.predict_f(X).unsqueeze(0)
@@ -77,15 +78,18 @@ class DeterministicMAP(torch.nn.Module):
         sigma = sigma * self.y_std
         return mean, sigma.expand_as(mean)
 
-    def predict(self, X, S=1):
+    def predict(self, X, num_samples, *, seed=None):
         self.eval()
         with torch.no_grad():
             mean, std = self(X)
-            return mean.expand(S, *mean.shape[1:]), std.expand(S, *std.shape[1:])
+            return mean.expand(num_samples, *mean.shape[1:]), std.expand(
+                num_samples, *std.shape[1:]
+            )
 
-    def predict_y_samples(self, X, S=1):
-        mean, std = self.predict(X, S)
-        return mean + std * torch.randn_like(mean)
+    def predict_y_samples(self, X, num_samples, *, seed=None):
+        with fork_torch_rng(seed):
+            mean, std = self.predict(X, num_samples)
+            return mean + std * torch.randn_like(mean)
 
     def regularizer(self):
         l2 = torch.zeros((), dtype=self.dtype, device=self.log_variance.device)
@@ -130,35 +134,21 @@ class DeterministicMAP(torch.nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
+        validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        if epochs is None and iterations is None:
-            raise ValueError("Either epochs or iterations must be set.")
-
-        scheduler = None
-        if cosine_annealing:
-            total = epochs if epochs is not None else max(1, iterations // len(train_loader))
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=total, eta_min=lr / 100
-            )
-
-        losses = []
-        if iterations is not None:
-            stream = infinite_loader(train_loader)
-            for i in range(iterations):
-                X, y = next(stream)
-                loss = self._train_step(optimizer, X, y)
-                if return_loss:
-                    losses.append(loss.detach().cpu().numpy())
-                if scheduler is not None and (i + 1) % len(train_loader) == 0:
-                    scheduler.step()
-            return losses
-
-        for _ in range(epochs):
-            for X, y in train_loader:
-                loss = self._train_step(optimizer, X, y)
-                if return_loss:
-                    losses.append(loss.detach().cpu().numpy())
-            if scheduler is not None:
-                scheduler.step()
-        return losses
+        scheduler = (
+            make_cosine_scheduler(optimizer, train_loader, epochs=epochs, iterations=iterations)
+            if cosine_annealing
+            else None
+        )
+        return fit_loop(
+            self,
+            train_loader,
+            optimizer,
+            epochs=epochs,
+            iterations=iterations,
+            use_tqdm=use_tqdm,
+            return_loss=return_loss,
+            scheduler=scheduler,
+        )

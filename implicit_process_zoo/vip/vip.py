@@ -2,7 +2,6 @@ import math
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 from ..utils.likelihood import (
     bernoulli_logp,
@@ -14,9 +13,17 @@ from ..utils.likelihood import (
     predict_mean_and_var_binary,
     predict_mean_and_var_regression,
 )
-from ..utils.utils import infinite_loader
+from ..utils.model_info import print_trainable_parameters
+from ..utils.random import (
+    ensure_generator_device,
+    preserve_constructor_rng,
+    standard_normal_samples,
+    temporary_generator_seed,
+)
+from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 
+@preserve_constructor_rng
 class VIP(torch.nn.Module):
     def __init__(
         self,
@@ -81,8 +88,8 @@ class VIP(torch.nn.Module):
         self.prior_regularizer_scaler = prior_regularizer_scaler
         self.regularizer_mode = regularizer_mode
         self.use_full_cov_elbo = use_full_cov_elbo
-        self.y_mean = torch.tensor(y_mean, device=device)
-        self.y_std = torch.tensor(y_std, device=device)
+        self.register_buffer("y_mean", torch.as_tensor(y_mean, dtype=dtype, device=device))
+        self.register_buffer("y_std", torch.as_tensor(y_std, dtype=dtype, device=device))
         self.device = device
         self.dtype = dtype
 
@@ -208,12 +215,13 @@ class VIP(torch.nn.Module):
         -------
         samples : (S, N, output_dim)
         """
-        eps = torch.randn(
+        generator = ensure_generator_device(self, Fmean.device)
+        eps = standard_normal_samples(
             S,
             *Fmean.shape,
-            generator=self.generator,
-            dtype=self.dtype,
-            device=self.device,
+            generator=generator,
+            dtype=Fmean.dtype,
+            device=Fmean.device,
         )
         if Fcov is not None:
             # Correlated samples via Cholesky: mean + L @ eps
@@ -225,6 +233,45 @@ class VIP(torch.nn.Module):
         else:
             std = torch.sqrt(Fvar).unsqueeze(0)  # (1, N, D)
             return Fmean.unsqueeze(0) + eps * std  # (S, N, D)
+
+    def predict_f_samples(self, X, num_samples, *, seed=None):
+        """Draw coherent posterior paths with shape ``[S, N, D]``."""
+        if self.dtype != X.dtype:
+            X = X.to(self.dtype)
+        with temporary_generator_seed(self, seed):
+            f = self.generative_function(X)
+            mean = f.mean(dim=0, keepdim=True)
+            phi = (f - mean) / self._sqrt_coeffs_m1
+            q_sqrt = torch.zeros_like(self._q_sqrt_buf)
+            q_sqrt[self._tril_row, self._tril_col] = self.q_sqrt_tri
+            generator = ensure_generator_device(self, f.device)
+            eps = standard_normal_samples(
+                int(num_samples),
+                self.num_coeffs,
+                self.output_dim,
+                generator=generator,
+                dtype=f.dtype,
+                device=f.device,
+            )
+            coefficients = self.q_mu.unsqueeze(0) + torch.einsum("sid,asd->aid", q_sqrt, eps)
+            return torch.einsum("ind,aid->and", phi, coefficients) + mean.squeeze(0)
+
+    def predict_y_samples(self, X, num_samples, *, seed=None):
+        """Draw likelihood samples with shape ``[S, N, D]``."""
+        with temporary_generator_seed(self, seed):
+            values = self.predict_f_samples(X, int(num_samples))
+            if self.likelihood_type == "regression":
+                generator = ensure_generator_device(self, values.device)
+                noise = standard_normal_samples(
+                    int(num_samples),
+                    values.shape[1],
+                    values.shape[2],
+                    generator=generator,
+                    dtype=values.dtype,
+                    device=values.device,
+                )
+                return values + torch.exp(0.5 * self.log_variance) * noise
+            return values
 
     def _logp(self, F, Y):
         """Log-likelihood for classification (same interface as FTIP)."""
@@ -387,60 +434,24 @@ class VIP(torch.nn.Module):
         -------
         losses : list of float (if return_loss=True)
         """
+        validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-
-        if epochs is None and iterations is None:
-            raise ValueError("Either epochs or iterations must be set.")
-
-        scheduler = None
-        if cosine_annealing:
-            T_max = epochs if epochs is not None else iterations // len(train_loader)
-            eta_min = optimizer.param_groups[0]["lr"] / 100
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=T_max, eta_min=eta_min
-            )
-
-        self.train()
-        losses = []
-
-        if epochs is not None:
-            loop = (
-                tqdm(range(epochs), unit=" epoch", desc="Training") if use_tqdm else range(epochs)
-            )
-            for _ in loop:
-                for inputs, target in train_loader:
-                    inputs = inputs.to(self.device)
-                    target = target.to(self.device)
-                    loss = self._train_step(optimizer, inputs, target)
-                    if return_loss:
-                        losses.append(loss.item())
-                if scheduler is not None:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        if iterations is not None:
-            loop = (
-                tqdm(range(iterations), unit=" iter", desc="Training")
-                if use_tqdm
-                else range(iterations)
-            )
-            data_stream = infinite_loader(train_loader)
-            iters_per_epoch = len(train_loader)
-            for i in loop:
-                inputs, target = next(data_stream)
-                inputs = inputs.to(self.device)
-                target = target.to(self.device)
-                loss = self._train_step(optimizer, inputs, target)
-                if return_loss:
-                    losses.append(loss.item())
-                if scheduler is not None and (i + 1) % iters_per_epoch == 0:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        return losses
+        scheduler = (
+            make_cosine_scheduler(optimizer, train_loader, epochs=epochs, iterations=iterations)
+            if cosine_annealing
+            else None
+        )
+        return fit_loop(
+            self,
+            train_loader,
+            optimizer,
+            epochs=epochs,
+            iterations=iterations,
+            use_tqdm=use_tqdm,
+            return_loss=return_loss,
+            scheduler=scheduler,
+        )
 
     def _train_step(self, optimizer, X, y):
         """Single gradient step."""
@@ -481,57 +492,19 @@ class VIP(torch.nn.Module):
         log_q = compute_gp_log_marginal(self._cached_m, self._cached_phi, y, sigma2 + 1e-3)
         return self.prior_regularizer_scaler / X.shape[0] * log_q
 
-    def predict(self, data_loader, device=None):
-        """
-        Run predictions over a DataLoader.
-
-        Returns
-        -------
-        all_means : torch.Tensor
-        all_stds : torch.Tensor
-        """
-        if device is None:
-            device = self.device
-
+    def predict(self, X, num_samples, *, seed=None):
+        """Return tensor predictions; batching is handled by the shared utility."""
         self.eval()
-        all_means = []
-        all_stds = []
-
         with torch.no_grad():
-            for inputs, _ in data_loader:
-                inputs = inputs.to(device)
-                mean, std = self(inputs)
-                all_means.append(mean.cpu())
-                all_stds.append(std.cpu())
-
-        return torch.cat(all_means, dim=0), torch.cat(all_stds, dim=0)
+            values = self.predict_y_samples(X, num_samples, seed=seed)
+            if self.likelihood_type == "regression":
+                values = values * self.y_std + self.y_mean
+            return values
 
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
 
     def print_variables(self):
-        """Prints the model parameters in a formatted manner."""
-        print("\n---- MODEL PARAMETERS ----")
-        np.set_printoptions(threshold=3, edgeitems=2)
-        sections = []
-        pad = "  "
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            name = name.split(".")
-            for i in range(len(name) - 1):
-                if name[i] not in sections:
-                    print(pad * i, name[i].upper())
-                    sections = name[: i + 1]
-
-            padding = pad * (len(name) - 1)
-            print(
-                padding,
-                f"{name[-1]}: ({str(list(param.data.size()))[1:-1]})",
-            )
-            print(
-                padding + " " * (len(name[-1]) + 2),
-                param.data.detach().cpu().numpy().flatten(),
-            )
-        print("\n---------------------------\n\n")
+        """Print trainable parameters using the shared formatter."""
+        print_trainable_parameters(self)

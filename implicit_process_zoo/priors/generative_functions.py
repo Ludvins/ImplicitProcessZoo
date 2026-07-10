@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+from ..utils.random import preserve_constructor_rng
 from .noise_samplers import GaussianSampler, UniformSampler
 
 
@@ -64,6 +65,7 @@ class GenerativeFunction(torch.nn.Module):
         raise NotImplementedError
 
 
+@preserve_constructor_rng
 class BayesLinear(GenerativeFunction):
     def __init__(
         self,
@@ -216,6 +218,7 @@ class BayesLinear(GenerativeFunction):
         return self.KL()
 
 
+@preserve_constructor_rng
 class SimplerBayesLinear(BayesLinear):
     """Bayesian linear layer with scalar (shared) mean and log-sigma per layer.
 
@@ -277,6 +280,7 @@ class SimplerBayesLinear(BayesLinear):
         return KL / 2
 
 
+@preserve_constructor_rng
 class BayesianNN(GenerativeFunction):
     def __init__(
         self,
@@ -410,6 +414,7 @@ class BayesianNN(GenerativeFunction):
         return self.KL()
 
 
+@preserve_constructor_rng
 class BayesianCNN(GenerativeFunction):
     """LeNet-style CNN feature extractor (deterministic) + Bayesian linear head.
 
@@ -533,6 +538,7 @@ class BayesianCNN(GenerativeFunction):
         return self.KL()
 
 
+@preserve_constructor_rng
 class BayesConv2d(GenerativeFunction):
     """Bayesian 2-D convolution with mean-field Gaussian weight posterior.
 
@@ -660,6 +666,7 @@ class BayesConv2d(GenerativeFunction):
         return KL / 2
 
 
+@preserve_constructor_rng
 class BayesianCNNFull(GenerativeFunction):
     """Fully Bayesian LeNet-5 variant: Bayesian conv stack AND Bayesian head.
 
@@ -830,6 +837,7 @@ class BayesianCNNFull(GenerativeFunction):
         return self.KL()
 
 
+@preserve_constructor_rng
 class BayesianResNet(GenerativeFunction):
     """torchvision ResNet feature extractor (deterministic) + Bayesian linear head.
 
@@ -937,6 +945,7 @@ class BayesianResNet(GenerativeFunction):
         return self.KL()
 
 
+@preserve_constructor_rng
 class BayesianLSTM(GenerativeFunction):
     """LSTM encoder (deterministic) + Bayesian MLP head.
 
@@ -1054,6 +1063,7 @@ class BayesianLSTM(GenerativeFunction):
         return self.head
 
 
+@preserve_constructor_rng
 class GP(GenerativeFunction):
     def __init__(
         self,
@@ -1216,6 +1226,7 @@ class GP(GenerativeFunction):
         return torch.cat([torch.log(z.flatten()), torch.log(b.flatten()), torch.log(w.flatten())])
 
 
+@preserve_constructor_rng
 class ExactGP(GenerativeFunction):
     """Exact zero-mean Gaussian-process prior with RBF kernel.
 

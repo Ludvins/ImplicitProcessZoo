@@ -37,6 +37,13 @@ from implicit_process_zoo.mfvi import MFVI
 from implicit_process_zoo.priors.generative_functions import GP, BayesianNN, BayesLinear
 from implicit_process_zoo.sip import SIP
 from implicit_process_zoo.tfsvi import TFSVI
+from implicit_process_zoo.utils import (
+    build_training_checkpoint,
+    load_training_checkpoint,
+    load_warm_start_state,
+    restore_training_checkpoint,
+    save_training_checkpoint,
+)
 from implicit_process_zoo.utils.dataset import get_dataset
 from implicit_process_zoo.utils.metrics import MetricsRegression
 from implicit_process_zoo.utils.utils import infinite_loader
@@ -440,19 +447,19 @@ def parse_args(
         "--warm_start_from",
         type=str,
         default=None,
-        help="Path to a VIP checkpoint (.pt) for warm-starting FTIP.",
+        help="Legacy model state or versioned checkpoint used to initialize FTIP.",
     )
     p.add_argument(
         "--resume_from_checkpoint",
         type=str,
         default=None,
-        help="Path to a model checkpoint (.pt) to load before training.",
+        help="Path to a full schema-v1 training checkpoint.",
     )
     p.add_argument(
         "--resume_step_offset",
         type=int,
         default=0,
-        help="Iteration offset for resumed runs, used for W&B/eval step numbers.",
+        help="Deprecated; full checkpoints restore their own global step.",
     )
     p.add_argument(
         "--learnable_affine",
@@ -1453,7 +1460,7 @@ def _fbnn_pred_components(model, xb, S=None):
     """
     if S is None:
         S = model.num_samples
-    F = model.predict_f_samples(xb, S=S)  # (S, N, D)
+    F = model.predict_f_samples(xb, num_samples=S)  # (S, N, D)
     mean = F * model.y_std + model.y_mean
     sigma = torch.sqrt(torch.exp(model.log_variance)) * model.y_std
     std = sigma.expand_as(mean)
@@ -1464,7 +1471,7 @@ def _tfsvi_pred_components(model, xb, S):
     """Same Gaussian-mixture form as FBNN: each parameter sample defines
     N(f_s(x)*y_std + y_mean, exp(log_var)*y_std^2) on the original scale.
     """
-    F = model.predict_f_samples(xb, S=S)  # (S, N, D)
+    F = model.predict_f_samples(xb, num_samples=S)  # (S, N, D)
     mean = F * model.y_std + model.y_mean
     sigma = torch.sqrt(torch.exp(model.log_variance)) * model.y_std
     std = sigma.expand_as(mean)
@@ -1676,6 +1683,14 @@ def train_with_metrics(
     losses = []
     metrics_history = {"iterations": [], "train": [], "validation": []}
     step_offset = int(getattr(args, "resume_step_offset", 0) or 0)
+    resume_checkpoint = getattr(model, "_resume_checkpoint", None)
+    if resume_checkpoint is not None:
+        step_offset = restore_training_checkpoint(
+            resume_checkpoint,
+            model,
+            optimizer,
+            scheduler,
+        )
 
     # TFSVI samples its KL context set from `model._train_inputs`; populate
     # it here since we bypass `model.fit()` and call `_train_step` directly.
@@ -1697,6 +1712,8 @@ def train_with_metrics(
         total = iterations
         data_stream = infinite_loader(train_loader)
         iters_per_epoch = len(train_loader)
+        for _ in range(step_offset % iters_per_epoch):
+            next(data_stream)
         loop = tqdm(range(total), unit=" iter", desc=desc, disable=disable_tqdm)
 
         for i in loop:
@@ -1805,9 +1822,7 @@ def train_with_metrics(
         diagnostics["base_KLs"] = [float(v) for v in model.base_KLs]
         diagnostics["flow_ldj"] = [float(v) for v in model.flow_ldj]
 
-    return losses, metrics_history, diagnostics
-
-    return losses, metrics_history, diagnostics
+    return losses, metrics_history, diagnostics, optimizer, scheduler
 
 
 def _flow_tag(args, model_type):
@@ -1935,7 +1950,7 @@ def _build_result(
             print("  [warn] torch.compile unavailable, running without it")
 
     t0 = time.time()
-    losses, metrics_history, diagnostics = train_with_metrics(
+    losses, metrics_history, diagnostics, optimizer, scheduler = train_with_metrics(
         model,
         train_loader,
         train_test_dataset,
@@ -2086,7 +2101,12 @@ def _build_result(
         hyperparameters["map_l2"] = args.map_l2
         hyperparameters["map_log_variance_init"] = args.map_log_variance_init
 
-    final_step = int(getattr(args, "resume_step_offset", 0) or 0) + len(losses)
+    restored_step = int(
+        getattr(model, "_resume_checkpoint", {}).get(
+            "global_step", getattr(args, "resume_step_offset", 0) or 0
+        )
+    )
+    final_step = restored_step + len(losses)
 
     result = {
         "dataset": dataset_name,
@@ -2129,7 +2149,14 @@ def _build_result(
     if args.save_checkpoint:
         os.makedirs(args.output_dir, exist_ok=True)
         ckpt = _ckpt_path(args, dataset_name, model_type)
-        torch.save(model.state_dict(), ckpt)
+        checkpoint = build_training_checkpoint(
+            model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            global_step=final_step,
+            arguments=vars(args),
+        )
+        save_training_checkpoint(ckpt, checkpoint)
         print(f"  Checkpoint: {ckpt}")
 
     return result, model
@@ -2298,7 +2325,11 @@ def _run_single(dataset_name, args):
 
         if args.resume_from_checkpoint:
             device = torch.device(args.device)
-            state = torch.load(args.resume_from_checkpoint, map_location=device, weights_only=True)
+            checkpoint = load_training_checkpoint(
+                args.resume_from_checkpoint,
+                map_location=device,
+            )
+            state = checkpoint["model"]
             if "anchors" in state and hasattr(model, "anchors"):
                 anchors = state["anchors"].to(
                     device=device,
@@ -2309,12 +2340,10 @@ def _run_single(dataset_name, args):
                     model.n_anchors = int(anchors.shape[0])
                 if hasattr(model, "_user_anchors"):
                     model._user_anchors = True
-            model.load_state_dict(state)
-            if hasattr(model, "_step"):
-                model._step = max(int(getattr(model, "_step", 0)), args.resume_step_offset)
+            model._resume_checkpoint = checkpoint
             print(
                 f"  Resumed {args.model.upper()} from {args.resume_from_checkpoint} "
-                f"(step offset={args.resume_step_offset})"
+                f"(global step={checkpoint['global_step']})"
             )
 
         # Manual warm-start from external checkpoint
@@ -2322,7 +2351,7 @@ def _run_single(dataset_name, args):
             device = torch.device(args.device)
             vip_model = build_model(args, train_dataset, model_type="vip")
             vip_model.load_state_dict(
-                torch.load(args.warm_start_from, map_location=device, weights_only=True)
+                load_warm_start_state(args.warm_start_from, map_location=device)
             )
             model.warm_start_from_vip(vip_model, learnable_affine=args.learnable_affine)
             del vip_model
@@ -2350,7 +2379,7 @@ def _run_single(dataset_name, args):
             result["resume"] = {
                 "enabled": True,
                 "resume_from_checkpoint": args.resume_from_checkpoint,
-                "resume_step_offset": args.resume_step_offset,
+                "resume_step_offset": result["final_step"] - len(result["losses"]),
             }
         results.append(result)
 

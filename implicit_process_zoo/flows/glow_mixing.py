@@ -13,6 +13,7 @@ flows in this module, so FTIP can consume it interchangeably.
 import torch
 import torch.nn as nn
 
+from ..utils.random import fork_torch_rng, preserve_constructor_rng
 from .flows import AffineLayer
 from .spline_coupling import SplineCouplingLayer
 
@@ -31,12 +32,25 @@ class InvertibleConv1x1LU(nn.Module):
     log|det W| = sum(log_s), independent of batch.
     """
 
-    def __init__(self, input_dim, device=None, dtype=None):
+    def __init__(self, input_dim, device=None, dtype=None, seed=None):
         super().__init__()
         self.input_dim = input_dim
 
         # Random rotation → decompose as P L U.
-        W_init = torch.linalg.qr(torch.randn(input_dim, input_dim, dtype=dtype, device=device))[0]
+        generator = torch.Generator(device=device)
+        if seed is not None:
+            generator.manual_seed(int(seed))
+        else:
+            generator.seed()
+        W_init = torch.linalg.qr(
+            torch.randn(
+                input_dim,
+                input_dim,
+                dtype=dtype,
+                device=device,
+                generator=generator,
+            )
+        )[0]
         LU, pivots = torch.linalg.lu_factor(W_init)
         P, L, U = torch.lu_unpack(LU, pivots)
         s = torch.diagonal(U).clone()
@@ -69,6 +83,7 @@ class InvertibleConv1x1LU(nn.Module):
         return out, ldj
 
 
+@preserve_constructor_rng
 class SplineCoupling1x1Flow(nn.Module):
     """Spline coupling interleaved with invertible 1x1 LU mixing.
 
@@ -88,25 +103,31 @@ class SplineCoupling1x1Flow(nn.Module):
         self.generator = torch.Generator(device)
         self.generator.manual_seed(seed)
 
-        # Fix RNG for 1x1 init determinism.
-        torch.manual_seed(seed)
-
-        self.biyections = nn.ModuleList(
-            [
-                SplineCouplingLayer(
-                    input_dim=input_dim,
-                    num_bins=num_bins,
-                    B=B,
-                    device=device,
-                    dtype=dtype,
-                    init_scale=init_scale,
-                )
-                for _ in range(depth)
-            ]
-        )
-        self.conv1x1s = nn.ModuleList(
-            [InvertibleConv1x1LU(input_dim, device=device, dtype=dtype) for _ in range(depth)]
-        )
+        with fork_torch_rng(seed):
+            self.biyections = nn.ModuleList(
+                [
+                    SplineCouplingLayer(
+                        input_dim=input_dim,
+                        num_bins=num_bins,
+                        B=B,
+                        device=device,
+                        dtype=dtype,
+                        init_scale=init_scale,
+                    )
+                    for _ in range(depth)
+                ]
+            )
+            self.conv1x1s = nn.ModuleList(
+                [
+                    InvertibleConv1x1LU(
+                        input_dim,
+                        device=device,
+                        dtype=dtype,
+                        seed=int(seed) + index,
+                    )
+                    for index in range(depth)
+                ]
+            )
         self._modules["affine"] = None
 
     def set_affine(self, shift, L_flat, learnable=False):

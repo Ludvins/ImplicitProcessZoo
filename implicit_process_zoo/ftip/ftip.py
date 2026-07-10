@@ -13,9 +13,17 @@ from ..utils.likelihood import (
     predict_mean_and_var_multiclass,
     predict_mean_and_var_regression,
 )
-from ..utils.utils import infinite_loader
+from ..utils.model_info import print_trainable_parameters
+from ..utils.random import (
+    ensure_generator_device,
+    preserve_constructor_rng,
+    standard_normal_samples,
+    temporary_generator_seed,
+)
+from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 
+@preserve_constructor_rng
 class FTIP(torch.nn.Module):
     def __init__(
         self,
@@ -153,17 +161,16 @@ class FTIP(torch.nn.Module):
         """
         f = self.generative_function(x)
 
-        # Antithetic sampling: draw S/2 samples and mirror them.
-        # Reduces MC gradient variance by exploiting negative correlation
-        # between f(eps) and f(-eps) for symmetric base distributions.
-        S_half = S // 2
-        eps_half = torch.randn(
-            [S_half, self.num_coeffs, self.output_dim],
-            generator=self.generator,
-            dtype=self.dtype,
-            device=self.device,
+        generator = ensure_generator_device(self, f.device)
+        eps = standard_normal_samples(
+            S,
+            self.num_coeffs,
+            self.output_dim,
+            generator=generator,
+            dtype=f.dtype,
+            device=f.device,
+            antithetic=True,
         )
-        eps = torch.cat([eps_half, -eps_half], dim=0)
 
         eps_flat = eps.reshape(S, -1)
         a_flat, ldj = self.flow(eps_flat)
@@ -185,6 +192,11 @@ class FTIP(torch.nn.Module):
         posterior_samples = torch.einsum("snd, asd->and", phi, a) + m.squeeze(0)
 
         return posterior_samples, f
+
+    def predict_f_samples(self, x, num_samples, *, seed=None):
+        """Return latent samples with shape ``[samples, observations, outputs]``."""
+        with temporary_generator_seed(self, seed):
+            return self.predict_f(x, int(num_samples))[0]
 
     def _logp(self, F, Y):
         """Dispatch to the correct logp function."""
@@ -293,14 +305,17 @@ class FTIP(torch.nn.Module):
         Returns a tensor of shape (S, num_coeffs, output_dim) that can be
         reused across multiple batches via ``forward_with_coefficients``.
         """
-        S_half = S // 2
-        eps_half = torch.randn(
-            [S_half, self.num_coeffs, self.output_dim],
-            generator=self.generator,
-            dtype=self.dtype,
-            device=self.device,
+        reference = self._sqrt_coeffs_m1
+        generator = ensure_generator_device(self, reference.device)
+        eps = standard_normal_samples(
+            S,
+            self.num_coeffs,
+            self.output_dim,
+            generator=generator,
+            dtype=reference.dtype,
+            device=reference.device,
+            antithetic=True,
         )
-        eps = torch.cat([eps_half, -eps_half], dim=0)
         eps_flat = eps.reshape(S, -1)
         a_flat, _ = self.flow(eps_flat)
         return a_flat.reshape(S, self.num_coeffs, self.output_dim)
@@ -368,6 +383,23 @@ class FTIP(torch.nn.Module):
         """Predict through the likelihood."""
         return self.predict_f(predict_at, S)[0]
 
+    def predict_y_samples(self, x, num_samples, *, seed=None):
+        """Return likelihood samples with shape ``[samples, observations, outputs]``."""
+        with temporary_generator_seed(self, seed):
+            samples = self.predict_f(x, int(num_samples))[0]
+            if self.likelihood_type == "regression":
+                generator = ensure_generator_device(self, samples.device)
+                noise = standard_normal_samples(
+                    int(num_samples),
+                    samples.shape[1],
+                    samples.shape[2],
+                    generator=generator,
+                    dtype=samples.dtype,
+                    device=samples.device,
+                )
+                samples = samples + torch.exp(0.5 * self.log_variance) * noise
+            return samples
+
     # ------------------------------------------------------------------
     # Training and prediction
     # ------------------------------------------------------------------
@@ -408,60 +440,24 @@ class FTIP(torch.nn.Module):
         -------
         losses : list of float (if return_loss=True)
         """
+        validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-
-        if epochs is None and iterations is None:
-            raise ValueError("Either epochs or iterations must be set.")
-
-        scheduler = None
-        if cosine_annealing:
-            T_max = epochs if epochs is not None else iterations // len(train_loader)
-            eta_min = optimizer.param_groups[0]["lr"] / 100
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=T_max, eta_min=eta_min
-            )
-
-        self.train()
-        losses = []
-
-        if epochs is not None:
-            loop = (
-                tqdm(range(epochs), unit=" epoch", desc="Training") if use_tqdm else range(epochs)
-            )
-            for _ in loop:
-                for inputs, target in train_loader:
-                    inputs = inputs.to(self.device)
-                    target = target.to(self.device)
-                    loss = self._train_step(optimizer, inputs, target)
-                    if return_loss:
-                        losses.append(loss.item())
-                if scheduler is not None:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        if iterations is not None:
-            loop = (
-                tqdm(range(iterations), unit=" iter", desc="Training")
-                if use_tqdm
-                else range(iterations)
-            )
-            data_stream = infinite_loader(train_loader)
-            iters_per_epoch = len(train_loader)
-            for i in loop:
-                inputs, target = next(data_stream)
-                inputs = inputs.to(self.device)
-                target = target.to(self.device)
-                loss = self._train_step(optimizer, inputs, target)
-                if return_loss:
-                    losses.append(loss.item())
-                if scheduler is not None and (i + 1) % iters_per_epoch == 0:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        return losses
+        scheduler = (
+            make_cosine_scheduler(optimizer, train_loader, epochs=epochs, iterations=iterations)
+            if cosine_annealing
+            else None
+        )
+        return fit_loop(
+            self,
+            train_loader,
+            optimizer,
+            epochs=epochs,
+            iterations=iterations,
+            use_tqdm=use_tqdm,
+            return_loss=return_loss,
+            scheduler=scheduler,
+        )
 
     def _train_step(self, optimizer, X, y):
         """Single gradient step."""
@@ -504,27 +500,14 @@ class FTIP(torch.nn.Module):
         log_q = compute_gp_log_marginal(self._cached_m, self._cached_phi, y, sigma2 + 1e-3)
         return self.prior_regularizer_scaler / X.shape[0] * log_q
 
-    def predict(self, data_loader, device=None):
-        """
-        Run predictions over a DataLoader.
-
-        Returns
-        -------
-        all_means : torch.Tensor
-        """
-        if device is None:
-            device = self.device
-
+    def predict(self, X, num_samples, *, seed=None):
+        """Return tensor predictions; batching is handled by the shared utility."""
         self.eval()
-        all_means = []
-
         with torch.no_grad():
-            for inputs, _ in data_loader:
-                inputs = inputs.to(device)
-                mean = self(inputs)
-                all_means.append(mean.cpu())
-
-        return torch.cat(all_means, dim=0)
+            values = self.predict_y_samples(X, num_samples, seed=seed)
+            if self.likelihood_type == "regression":
+                values = values * self.y_std + self.y_mean
+            return values
 
     # ------------------------------------------------------------------
     # Utilities
@@ -604,32 +587,11 @@ class FTIP(torch.nn.Module):
         self.flow.set_affine(shift, L_flat, learnable=learnable_affine)
 
     def print_variables(self):
-        """Prints the model parameters in a formatted manner."""
-        print("\n---- MODEL PARAMETERS ----")
-        np.set_printoptions(threshold=3, edgeitems=2)
-        sections = []
-        pad = "  "
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            name = name.split(".")
-            for i in range(len(name) - 1):
-                if name[i] not in sections:
-                    print(pad * i, name[i].upper())
-                    sections = name[: i + 1]
-
-            padding = pad * (len(name) - 1)
-            print(
-                padding,
-                f"{name[-1]}: ({str(list(param.data.size()))[1:-1]})",
-            )
-            print(
-                padding + " " * (len(name[-1]) + 2),
-                param.data.detach().cpu().numpy().flatten(),
-            )
-        print("\n---------------------------\n\n")
+        """Print trainable parameters using the shared formatter."""
+        print_trainable_parameters(self)
 
 
+@preserve_constructor_rng
 class UnifiedFTIP(torch.nn.Module):
     """Flow-Transformed Implicit Process with built-in Gaussian warmup.
 
@@ -839,14 +801,16 @@ class UnifiedFTIP(torch.nn.Module):
         """MC prediction through the full flow (Phase 2)."""
         f = self.generative_function(x)
 
-        S_half = S // 2
-        eps_half = torch.randn(
-            [S_half, self.num_coeffs, self.output_dim],
-            generator=self.generator,
-            dtype=self.dtype,
-            device=self.device,
+        generator = ensure_generator_device(self, f.device)
+        eps = standard_normal_samples(
+            S,
+            self.num_coeffs,
+            self.output_dim,
+            generator=generator,
+            dtype=f.dtype,
+            device=f.device,
+            antithetic=True,
         )
-        eps = torch.cat([eps_half, -eps_half], dim=0)
 
         eps_flat = eps.reshape(S, -1)
         a_flat, ldj = self.flow(eps_flat)
@@ -865,6 +829,48 @@ class UnifiedFTIP(torch.nn.Module):
 
         posterior_samples = torch.einsum("snd, asd->and", phi, a) + m.squeeze(0)
         return posterior_samples, f
+
+    def predict_f_samples(self, x, num_samples, *, seed=None):
+        """Return flow-phase latent samples using the common sample-first API."""
+        with temporary_generator_seed(self, seed):
+            if self.phase == "warmup":
+                mean, variance = self.predict_f_gaussian(x)
+                generator = ensure_generator_device(self, mean.device)
+                noise = standard_normal_samples(
+                    int(num_samples),
+                    mean.shape[0],
+                    mean.shape[1],
+                    generator=generator,
+                    dtype=mean.dtype,
+                    device=mean.device,
+                )
+                return mean.unsqueeze(0) + noise * torch.sqrt(torch.clamp(variance, min=1e-10))
+            return self.predict_f(x, int(num_samples))[0]
+
+    def predict_y_samples(self, x, num_samples, *, seed=None):
+        """Return likelihood samples using the common sample-first API."""
+        with temporary_generator_seed(self, seed):
+            values = self.predict_f_samples(x, int(num_samples))
+            if self.likelihood_type == "regression":
+                generator = ensure_generator_device(self, values.device)
+                noise = standard_normal_samples(
+                    int(num_samples),
+                    values.shape[1],
+                    values.shape[2],
+                    generator=generator,
+                    dtype=values.dtype,
+                    device=values.device,
+                )
+                values = values + torch.exp(0.5 * self.log_variance) * noise
+            return values
+
+    def predict(self, X, num_samples, *, seed=None):
+        self.eval()
+        with torch.no_grad():
+            values = self.predict_y_samples(X, num_samples, seed=seed)
+            if self.likelihood_type == "regression":
+                values = values * self.y_std + self.y_mean
+            return values
 
     def KL_flow(self):
         """MC-estimated KL for the flow (Phase 2)."""

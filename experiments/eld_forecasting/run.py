@@ -224,8 +224,10 @@ class AnalogPriorPredictive(torch.nn.Module):
         self.prior = prior
         self.seed = int(seed)
 
-    def predict_f_samples(self, X: torch.Tensor, S: int) -> torch.Tensor:
-        return self.prior.sample(X, int(S), seed=self.seed)
+    def predict_f_samples(
+        self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
+    ) -> torch.Tensor:
+        return self.prior.sample(X, int(num_samples), seed=self.seed if seed is None else int(seed))
 
 
 class SeasonalNaivePredictive(torch.nn.Module):
@@ -243,7 +245,9 @@ class SeasonalNaivePredictive(torch.nn.Module):
             ).reshape(-1, 1)
         self.register_buffer("values", values_tensor)
 
-    def predict_f_samples(self, X: torch.Tensor, S: int) -> torch.Tensor:
+    def predict_f_samples(
+        self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
+    ) -> torch.Tensor:
         n = X.shape[0]
         if n == self.values.shape[0]:
             values = self.values
@@ -251,7 +255,7 @@ class SeasonalNaivePredictive(torch.nn.Module):
             pos = (X[:, 0].clamp(-1.0, 1.0) + 1.0) * 0.5 * float(self.values.shape[0] - 1)
             idx = pos.round().long().clamp(0, self.values.shape[0] - 1)
             values = self.values[idx]
-        return values.unsqueeze(0).repeat(int(S), 1, 1)
+        return values.unsqueeze(0).repeat(int(num_samples), 1, 1)
 
 
 def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
@@ -352,39 +356,17 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
     raise ValueError(f"Unknown method {method!r}.")
 
 
-def vip_pathwise_samples(model: VIP, X: torch.Tensor, samples: int) -> torch.Tensor:
-    if model.dtype != X.dtype:
-        X = X.to(model.dtype)
-    f = model.generative_function(X)
-    m = f.mean(dim=0, keepdim=True)
-    phi = (f - m) / model._sqrt_coeffs_m1
-    q_sqrt = torch.zeros_like(model._q_sqrt_buf)
-    q_sqrt[model._tril_row, model._tril_col] = model.q_sqrt_tri
-    eps = torch.randn(
-        int(samples),
-        model.num_coeffs,
-        model.output_dim,
-        generator=model.generator,
-        dtype=model.dtype,
-        device=model.device,
-    )
-    coeffs = model.q_mu.unsqueeze(0) + torch.einsum("sid,asd->aid", q_sqrt, eps)
-    return torch.einsum("ind,aid->and", phi, coeffs) + m.squeeze(0)
-
-
 def predictive_function_samples(
     model, method: str, X: torch.Tensor, n_samples: int, seed: int
 ) -> torch.Tensor:
     model.eval()
     with torch.no_grad():
         if method in {"analog", "seasonal_naive"}:
-            values = model.predict_f_samples(X, int(n_samples))
+            values = model.predict_f_samples(X, int(n_samples), seed=seed)
         elif method in {"vip", "vip_512"}:
-            values = vip_pathwise_samples(model, X, int(n_samples))
+            values = model.predict_f_samples(X, int(n_samples), seed=seed)
         elif method == "ftip":
-            requested = int(n_samples)
-            call_samples = requested if requested % 2 == 0 else requested + 1
-            values = model.predict_y(X, call_samples)[:requested]
+            values = model.predict_f_samples(X, int(n_samples), seed=seed)
         elif method == "gmvip_empirical":
             values = model.sample_posterior_values(X, int(n_samples), seed=seed)
         else:

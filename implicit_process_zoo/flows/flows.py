@@ -1,5 +1,7 @@
 import torch
 
+from ..utils.random import preserve_constructor_rng
+
 
 class AffineLayer(torch.nn.Module):
     """Learnable (or fixed) affine transform: a = L @ eps + shift.
@@ -94,6 +96,7 @@ class CouplingLayer(torch.nn.Module):
         return torch.cat([z1, z2], dim=-1), ldj
 
 
+@preserve_constructor_rng
 class CouplingFlow(torch.nn.Module):
     def __init__(self, depth, input_dim, device, dtype, seed, init_scale=1e-3):
         super().__init__()

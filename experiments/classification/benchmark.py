@@ -46,6 +46,7 @@ from implicit_process_zoo.priors.generative_functions import (
 )
 from implicit_process_zoo.sip import SIP
 from implicit_process_zoo.tfsvi import TFSVI
+from implicit_process_zoo.utils import build_training_checkpoint, save_training_checkpoint
 from implicit_process_zoo.utils.dataset import get_dataset
 from implicit_process_zoo.utils.metrics import MetricsClassification
 from implicit_process_zoo.utils.utils import infinite_loader
@@ -541,12 +542,12 @@ class DeterministicCNNMAP(torch.nn.Module):
         feat = feat.reshape(feat.shape[0], -1)
         return self.classifier(feat)
 
-    def predict_f_samples(self, X, S=1):
+    def predict_f_samples(self, X, num_samples, *, seed=None):
         logits = self.predict_logits(X)
-        return logits.unsqueeze(0).expand(S, *logits.shape)
+        return logits.unsqueeze(0).expand(num_samples, *logits.shape)
 
     def forward(self, X):
-        return self.predict_f_samples(X, S=1)
+        return self.predict_f_samples(X, num_samples=1)
 
     def nelbo(self, X, y):
         X = X.to(dtype=self.dtype, device=self.device)
@@ -997,7 +998,7 @@ def build_model(args, train_dataset, model_type, ap_variant=None):
 
 def predict_logits_samples(model, xb, args, model_type):
     if model_type == "map":
-        return model.predict_f_samples(xb, S=1)
+        return model.predict_f_samples(xb, num_samples=1)
     if model_type == "vip":
         old = model.num_mc_samples
         model.num_mc_samples = args.eval_samples
@@ -1007,15 +1008,15 @@ def predict_logits_samples(model, xb, args, model_type):
     if model_type == "ftip":
         return model.predict_y(xb, S=args.ftip_eval_samples)
     if model_type == "mfvi":
-        return model.predict(xb, S=args.mfvi_num_eval_samples)
+        return model.predict(xb, num_samples=args.mfvi_num_eval_samples)
     if model_type == "fbnn":
-        return model.predict(xb, S=args.eval_samples)
+        return model.predict(xb, num_samples=args.eval_samples)
     if model_type == "tfsvi":
-        return model.predict(xb, S=args.tfsvi_num_eval_samples)
+        return model.predict(xb, num_samples=args.tfsvi_num_eval_samples)
     if model_type == "sip":
-        return model.predict_f_samples(xb, S=args.sip_num_eval_samples)
+        return model.predict_f_samples(xb, num_samples=args.sip_num_eval_samples)
     if model_type == "gmvip":
-        return model.predict_f_samples(xb, S=args.gmvip_num_eval_samples)
+        return model.predict_f_samples(xb, num_samples=args.gmvip_num_eval_samples)
     raise ValueError(f"Unknown model_type: {model_type}")
 
 
@@ -1162,7 +1163,7 @@ def train_with_metrics(
                 epoch_iterator.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
 
     diagnostics = extract_diagnostics(model)
-    return losses, metrics_history, diagnostics
+    return losses, metrics_history, diagnostics, optimizer, scheduler
 
 
 def maybe_evaluate_during_training(
@@ -1308,7 +1309,7 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
 
     try:
         t0 = time.time()
-        losses, metrics_history, diagnostics = train_with_metrics(
+        losses, metrics_history, diagnostics, optimizer, scheduler = train_with_metrics(
             model,
             train_loader,
             train_eval_dataset,
@@ -1356,14 +1357,14 @@ def run_single(dataset_name, model_type, args, ap_variant=None):
                 args.output_dir,
                 checkpoint_file_name(dataset_name, model_type, args, ap_variant),
             )
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "result": result,
-                    "args": vars(args),
-                },
-                ckpt_path,
+            checkpoint = build_training_checkpoint(
+                model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                global_step=len(losses),
+                arguments=vars(args),
             )
+            save_training_checkpoint(ckpt_path, checkpoint)
             result["checkpoint_path"] = ckpt_path
 
         print_metrics("Train", train_metrics)

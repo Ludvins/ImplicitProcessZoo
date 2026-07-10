@@ -497,13 +497,15 @@ class DeepEnsemble(torch.nn.Module):
         self.members = torch.nn.ModuleList(members)
         self.is_deep_ensemble = True
 
-    def predict_f_samples(self, X: torch.Tensor, S: int) -> torch.Tensor:
+    def predict_f_samples(
+        self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
+    ) -> torch.Tensor:
         values = [member.predict_f(X) for member in self.members]
         stacked = torch.stack(values, dim=0)
-        if int(S) <= stacked.shape[0]:
-            return stacked[: int(S)]
-        repeats = math.ceil(int(S) / stacked.shape[0])
-        return stacked.repeat((repeats, 1, 1))[: int(S)]
+        if int(num_samples) <= stacked.shape[0]:
+            return stacked[: int(num_samples)]
+        repeats = math.ceil(int(num_samples) / stacked.shape[0])
+        return stacked.repeat((repeats, 1, 1))[: int(num_samples)]
 
 
 class ContextFBNN(FBNN):
@@ -878,47 +880,25 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
     raise ValueError(f"Unknown method {method!r}.")
 
 
-def vip_pathwise_samples(model: VIP, X: torch.Tensor, samples: int) -> torch.Tensor:
-    if model.dtype != X.dtype:
-        X = X.to(model.dtype)
-    f = model.generative_function(X)
-    m = f.mean(dim=0, keepdim=True)
-    phi = (f - m) / model._sqrt_coeffs_m1
-    q_sqrt = torch.zeros_like(model._q_sqrt_buf)
-    q_sqrt[model._tril_row, model._tril_col] = model.q_sqrt_tri
-    eps = torch.randn(
-        int(samples),
-        model.num_coeffs,
-        model.output_dim,
-        generator=model.generator,
-        dtype=model.dtype,
-        device=model.device,
-    )
-    coeffs = model.q_mu.unsqueeze(0) + torch.einsum("sid,asd->aid", q_sqrt, eps)
-    return torch.einsum("ind,aid->and", phi, coeffs) + m.squeeze(0)
-
-
 def predictive_function_samples(
     model, method: str, X: torch.Tensor, n_samples: int, seed: int
 ) -> torch.Tensor:
     model.eval()
     with torch.no_grad():
         if method in {"map", "deep_ensemble"}:
-            values = model.predict_f_samples(X, S=int(n_samples))
+            values = model.predict_f_samples(X, num_samples=int(n_samples), seed=seed)
         elif method == "mfvi":
-            values = model.predict_f_samples(X, int(n_samples))
+            values = model.predict_f_samples(X, int(n_samples), seed=seed)
         elif method == "vip":
-            values = vip_pathwise_samples(model, X, int(n_samples))
+            values = model.predict_f_samples(X, int(n_samples), seed=seed)
         elif method == "ftip":
-            requested = int(n_samples)
-            call_samples = requested if requested % 2 == 0 else requested + 1
-            values = model.predict_y(X, call_samples)[:requested]
+            values = model.predict_f_samples(X, int(n_samples), seed=seed)
         elif method == "sip":
-            values = model.predict_f_samples(X, int(n_samples))
+            values = model.predict_f_samples(X, int(n_samples), seed=seed)
         elif method in {"gmvip", "gmvip_cov", "gmvip_rbf"}:
             values = model.sample_posterior_values(X, int(n_samples), seed=seed)
         elif method in {"fbnn_observed", "fbnn_full", "tfsvi_observed", "tfsvi_full"}:
-            values = model.predict_f_samples(X, int(n_samples))
+            values = model.predict_f_samples(X, int(n_samples), seed=seed)
         else:
             raise ValueError(f"Unknown method {method!r}.")
     if values.ndim == 2:

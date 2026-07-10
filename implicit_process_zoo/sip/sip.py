@@ -4,7 +4,6 @@ from contextlib import contextmanager
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm import tqdm
 
 from ..utils.likelihood import (
     bernoulli_logp,
@@ -15,7 +14,8 @@ from ..utils.likelihood import (
     predict_mean_and_var_regression,
 )
 from ..utils.linalg import safe_cholesky
-from ..utils.utils import infinite_loader
+from ..utils.random import fork_torch_rng, preserve_constructor_rng, temporary_generator_seed
+from ..utils.training import fit_loop, make_cosine_scheduler, validate_fit_mode
 
 
 class _MLP(nn.Module):
@@ -62,6 +62,7 @@ def _module_requires_grad(module, requires_grad):
             param.requires_grad_(state)
 
 
+@preserve_constructor_rng
 class SIP(nn.Module):
     """Sparse Implicit Process with critic-estimated inducing KL.
 
@@ -530,23 +531,25 @@ class SIP(nn.Module):
     # Prediction
     # ------------------------------------------------------------------
 
-    def predict_f_samples(self, X, S):
+    def predict_f_samples(self, X, num_samples, *, seed=None):
         if self.dtype != X.dtype:
             X = X.to(self.dtype)
         mX, mZ, KZZ, KXZ, _, KXX = self._estimate_prior_moments(X)
-        u = self._sample_u(int(S))
-        return self._sample_f_given_u_full(mX, mZ, KZZ, KXZ, KXX, u)
+        with temporary_generator_seed(self, seed), fork_torch_rng(seed):
+            u = self._sample_u(int(num_samples))
+            return self._sample_f_given_u_full(mX, mZ, KZZ, KXZ, KXX, u)
 
     def predict_f(self, X):
         samples = self.predict_f_samples(X, self.num_eval_samples)
         return samples.mean(dim=0), samples.var(dim=0, unbiased=False)
 
-    def predict_y_samples(self, X, S):
-        F_samples = self.predict_f_samples(X, S)
-        if self.likelihood_type == "regression":
-            std = torch.sqrt(torch.exp(self.effective_log_variance()))
-            return F_samples + std * torch.randn_like(F_samples)
-        return F_samples
+    def predict_y_samples(self, X, num_samples, *, seed=None):
+        with temporary_generator_seed(self, seed), fork_torch_rng(seed):
+            F_samples = self.predict_f_samples(X, num_samples)
+            if self.likelihood_type == "regression":
+                std = torch.sqrt(torch.exp(self.effective_log_variance()))
+                return F_samples + std * torch.randn_like(F_samples)
+            return F_samples
 
     def forward(self, predict_at):
         """Return predictive mixture components in the original target scale."""
@@ -584,60 +587,29 @@ class SIP(nn.Module):
         return_loss=False,
         cosine_annealing=False,
     ):
+        validate_fit_mode(epochs=epochs, iterations=iterations)
         if optimizer is None:
             optimizer = torch.optim.Adam(self.vi_parameters(), lr=lr)
+        scheduler = (
+            make_cosine_scheduler(optimizer, train_loader, epochs=epochs, iterations=iterations)
+            if cosine_annealing
+            else None
+        )
+        return fit_loop(
+            self,
+            train_loader,
+            optimizer,
+            epochs=epochs,
+            iterations=iterations,
+            use_tqdm=use_tqdm,
+            return_loss=return_loss,
+            scheduler=scheduler,
+        )
 
-        if epochs is None and iterations is None:
-            raise ValueError("Either epochs or iterations must be set.")
-
-        scheduler = None
-        if cosine_annealing:
-            T_max = epochs if epochs is not None else max(1, iterations // len(train_loader))
-            eta_min = optimizer.param_groups[0]["lr"] / 100
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=T_max, eta_min=eta_min
-            )
-
-        self.train()
-        losses = []
-
-        if epochs is not None:
-            loop = (
-                tqdm(range(epochs), unit=" epoch", desc="Training") if use_tqdm else range(epochs)
-            )
-            for _ in loop:
-                for inputs, target in train_loader:
-                    inputs = inputs.to(self.device)
-                    target = target.to(self.device)
-                    loss = self._train_step(optimizer, inputs, target)
-                    if return_loss:
-                        losses.append(loss.detach().cpu().numpy())
-                if scheduler is not None:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        if iterations is not None:
-            loop = (
-                tqdm(range(iterations), unit=" iter", desc="Training")
-                if use_tqdm
-                else range(iterations)
-            )
-            data_stream = infinite_loader(train_loader)
-            iters_per_epoch = len(train_loader)
-            for i in loop:
-                inputs, target = next(data_stream)
-                inputs = inputs.to(self.device)
-                target = target.to(self.device)
-                loss = self._train_step(optimizer, inputs, target)
-                if return_loss:
-                    losses.append(loss.detach().cpu().numpy())
-                if scheduler is not None and (i + 1) % iters_per_epoch == 0:
-                    scheduler.step()
-                if use_tqdm:
-                    loop.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
-
-        return losses
+    def _before_fit_step(self, _X, _y):
+        """Update the SIP critic before each variational optimizer step."""
+        self._train_critic()
+        self._step += 1
 
     def _train_step(self, optimizer, X, y):
         if y.ndim == 1:
@@ -647,25 +619,16 @@ class SIP(nn.Module):
         if self.dtype != y.dtype:
             y = y.to(self.dtype)
 
-        self._train_critic()
-        self._step += 1
         optimizer.zero_grad()
         loss = self.nelbo(X, y)
         loss.backward()
         optimizer.step()
         return loss
 
-    def predict(self, data_loader, device=None):
-        if device is None:
-            device = self.device
-
+    def predict(self, X, num_samples, *, seed=None):
         self.eval()
-        all_means = []
-        all_stds = []
         with torch.no_grad():
-            for inputs, _ in data_loader:
-                inputs = inputs.to(device)
-                mean, std = self(inputs)
-                all_means.append(mean.cpu())
-                all_stds.append(std.cpu())
-        return torch.cat(all_means, dim=1), torch.cat(all_stds, dim=1)
+            values = self.predict_y_samples(X, num_samples, seed=seed)
+            if self.likelihood_type == "regression":
+                values = values * self.y_std + self.y_mean
+            return values

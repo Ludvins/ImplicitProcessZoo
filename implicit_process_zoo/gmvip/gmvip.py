@@ -5,11 +5,13 @@ from torch import nn
 
 from ..priors.function_bank import CoherentPriorFunctionSampler
 from ..utils.likelihood import multiclass_logp
+from ..utils.random import preserve_constructor_rng
 from .likelihoods import GaussianRegressionLikelihood
 from .operators import EmpiricalCovarianceMatheronOperator, RBFCardinalMatheronOperator
 from .posteriors import CholeskyGaussianCoefficientPosterior, RealNVPCoefficientPosterior
 
 
+@preserve_constructor_rng
 class GeneralizedMatheronVIP(nn.Module):
     """
     Generalized Matheron Variational Implicit Process.
@@ -619,7 +621,7 @@ class GeneralizedMatheronVIP(nn.Module):
         return loss, metrics
 
     @torch.no_grad()
-    def predict(
+    def predict_summary(
         self,
         X: torch.Tensor,
         num_samples: int = 128,
@@ -658,32 +660,62 @@ class GeneralizedMatheronVIP(nn.Module):
             self.train(was_training)
 
     @torch.no_grad()
+    def predict_y_samples(
+        self,
+        X: torch.Tensor,
+        num_samples: int,
+        *,
+        seed: int | None = None,
+    ) -> torch.Tensor:
+        samples = self.sample_posterior_values(X, int(num_samples), seed=seed)
+        if self.likelihood_type == "multiclass":
+            return samples
+        if seed is None:
+            noise = torch.randn_like(samples)
+        else:
+            generator = torch.Generator(device=samples.device).manual_seed(int(seed) + 1)
+            noise = torch.randn(
+                samples.shape,
+                generator=generator,
+                dtype=samples.dtype,
+                device=samples.device,
+            )
+        samples = samples + self.noise_std * noise
+        if self.output_dim > 1:
+            return samples
+        return samples.unsqueeze(-1)
+
     def predict_samples(
         self,
         X: torch.Tensor,
         num_samples: int = 128,
         noisy: bool = False,
     ) -> torch.Tensor:
-        samples = self.sample_posterior_values(X, int(num_samples))
-        if self.likelihood_type == "multiclass":
-            return samples
+        """Backward-compatible sampling helper; prefer the common methods."""
         if noisy:
-            samples = samples + self.noise_std * torch.randn_like(samples)
-        if self.output_dim > 1:
-            return samples
-        return samples.unsqueeze(-1)
+            return self.predict_y_samples(X, num_samples)
+        return self.predict_f_samples(X, num_samples)
+
+    @torch.no_grad()
+    def predict(self, X: torch.Tensor, num_samples: int, *, seed=None) -> torch.Tensor:
+        return self.predict_y_samples(X, num_samples, seed=seed)
 
     def forward(self, X: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if self.likelihood_type == "multiclass":
-            return self.predict_f_samples(X, S=128), None
-        pred = self.predict(X, num_samples=128, include_noise=True)
+            return self.predict_f_samples(X, 128), None
+        pred = self.predict_summary(X, num_samples=128, include_noise=True)
         if self.output_dim > 1:
             return pred["y_mean"], pred["y_var"].sqrt()
         return pred["y_mean"].unsqueeze(-1), pred["y_var"].sqrt().unsqueeze(-1)
 
     @torch.no_grad()
-    def predict_f_samples(self, X: torch.Tensor, S: int = 128) -> torch.Tensor:
-        return self.sample_posterior_values(X, int(S))
+    def predict_f_samples(
+        self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
+    ) -> torch.Tensor:
+        samples = self.sample_posterior_values(X, int(num_samples), seed=seed)
+        if self.output_dim == 1 and samples.ndim == 2:
+            samples = samples.unsqueeze(-1)
+        return samples
 
     def forward_prior(self, X: torch.Tensor, num_samples: int) -> torch.Tensor:
         samples = self.sample_prior_values(X, int(num_samples))

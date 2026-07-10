@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..utils.random import preserve_constructor_rng
 from .conditional_flows import rq_spline_forward
 from .flows import AffineLayer
 
@@ -102,6 +103,7 @@ class SplineCouplingLayer(nn.Module):
         return torch.cat([z1, out], dim=-1), ldj
 
 
+@preserve_constructor_rng
 class SplineCouplingFlow(nn.Module):
     """Stack of RQ-spline coupling layers with bit-reversal between them.
 

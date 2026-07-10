@@ -729,7 +729,7 @@ def predictive_function_samples(
     model.eval()
     with torch.no_grad():
         if method == "map":
-            return model.predict_f_samples(X, S=int(n_samples))
+            return model.predict_f_samples(X, num_samples=int(n_samples))
         if method == "mfvi":
             return model.predict_f_samples(X, int(n_samples))
         if method == "vip":
