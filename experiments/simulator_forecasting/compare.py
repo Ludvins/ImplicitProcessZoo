@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from experiments.common import write_csv_rows
+from experiments.common import oscillation_period_error, write_csv_rows
 
 from .plots import plot_metric_by_region
 
@@ -30,6 +30,7 @@ def _coerce(row: dict) -> dict:
         "cov95",
         "width90",
         "width95",
+        "oscillation_period_error",
         "train_time_sec",
         "eval_time_sec",
     ):
@@ -42,8 +43,47 @@ def collect_rows(results_root: str | Path) -> list[dict]:
     root = Path(results_root)
     rows: list[dict] = []
     for path in root.glob("*/seed_*/metrics_per_target_region.csv"):
-        rows.extend(_coerce(row) for row in _read_rows(path))
+        file_rows = [_coerce(row) for row in _read_rows(path)]
+        predictions = path.parent / "predictions"
+        period_errors: dict[tuple[int, int], float] = {}
+        for row in file_rows:
+            if row.get("oscillation_period_error") not in (None, ""):
+                continue
+            key = (int(row["target_id"]), int(row["n_train"]))
+            if key in period_errors:
+                row["oscillation_period_error"] = period_errors[key]
+                continue
+            prediction_path = (
+                predictions / f"target_{row['target_id']}_ntrain_{row['n_train']}.npz"
+            )
+            if not prediction_path.exists():
+                continue
+            with np.load(prediction_path) as payload:
+                t = payload["t"]
+                heldout = t > _observation_end(file_rows, row)
+                value = oscillation_period_error(
+                    payload["samples"][:, heldout],
+                    payload["truth"][heldout],
+                    t[heldout],
+                    channels=(0,),
+                )
+            period_errors[key] = float(value)
+            row["oscillation_period_error"] = period_errors[key]
+        rows.extend(file_rows)
     return rows
+
+
+def _observation_end(rows: list[dict], row: dict) -> float:
+    matches = [
+        candidate
+        for candidate in rows
+        if candidate.get("target_id") == row.get("target_id")
+        and candidate.get("n_train") == row.get("n_train")
+        and candidate.get("region") == "interpolation"
+    ]
+    if not matches:
+        raise ValueError("Cannot infer the observation horizon without an interpolation row.")
+    return float(matches[0]["region_end"])
 
 
 def write_summary(path: Path, rows: list[dict]) -> None:
@@ -52,7 +92,16 @@ def write_summary(path: Path, rows: list[dict]) -> None:
     for row in rows:
         groups.setdefault((row["method"], row["n_train"], row["region"]), []).append(row)
     fields = ["method", "n_train", "region"]
-    metrics = ["rmse", "nlpd", "crps", "cov90", "cov95", "width90", "width95"]
+    metrics = [
+        "rmse",
+        "nlpd",
+        "crps",
+        "cov90",
+        "cov95",
+        "width90",
+        "width95",
+        "oscillation_period_error",
+    ]
     fields.extend(f"{metric}_mean" for metric in metrics)
     fields.extend(f"{metric}_stderr" for metric in metrics)
     output_rows = []

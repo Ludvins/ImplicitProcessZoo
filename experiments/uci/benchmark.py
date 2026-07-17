@@ -720,6 +720,12 @@ def parse_args(
         help="GMVIP latent coefficient posterior.",
     )
     p.add_argument(
+        "--gmvip_path_mode",
+        choices=["full", "inducing_only"],
+        default="full",
+        help="Use the complete prior-path residual or the inducing-only GMVIP ablation.",
+    )
+    p.add_argument(
         "--gmvip_num_inducing", type=int, default=32, help="Number of GMVIP inducing points."
     )
     p.add_argument(
@@ -1244,6 +1250,7 @@ def build_model(args, train_dataset, model_type=None):
             inducing_points=inducing_points,
             operator_type=_arg("gmvip_operator_type", "rbf"),
             posterior_type=_arg("gmvip_posterior_type", "gaussian"),
+            path_mode=_arg("gmvip_path_mode", "full"),
             num_operator_bank_samples=_arg("gmvip_num_operator_bank_samples", 256),
             learn_noise=_arg("gmvip_learn_noise", True),
             init_log_noise=_arg("gmvip_init_log_noise", -2.5),
@@ -1869,6 +1876,7 @@ def _variant_tag(args, model_type):
         tag = (
             f"_{getattr(args, 'gmvip_operator_type', 'rbf')}"
             f"_{getattr(args, 'gmvip_posterior_type', 'gaussian')}"
+            f"_{getattr(args, 'gmvip_path_mode', 'full')}"
             f"_{getattr(args, 'gmvip_mean_mode', 'prior_sample')}"
             f"_{getattr(args, 'gmvip_inducing_scale', 'prior_cholesky')}"
             f"_Z{getattr(args, 'gmvip_num_inducing', 32)}"
@@ -2067,6 +2075,7 @@ def _build_result(
                 "gmvip_layer_model": "BayesLinear",
                 "gmvip_operator_type": args.gmvip_operator_type,
                 "gmvip_posterior_type": args.gmvip_posterior_type,
+                "gmvip_path_mode": args.gmvip_path_mode,
                 "gmvip_num_inducing": args.gmvip_num_inducing,
                 "gmvip_inducing_method": args.gmvip_inducing_method,
                 "gmvip_num_operator_bank_samples": args.gmvip_num_operator_bank_samples,

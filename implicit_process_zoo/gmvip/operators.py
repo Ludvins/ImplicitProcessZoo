@@ -90,7 +90,7 @@ class BaseMatheronOperator(nn.Module):
         -------
         torch.Tensor
             Lower-triangular scale with shape ``[M, M]`` or
-            ``[K, M, M]``.
+            ``[K, M, M]``; joint-output operators use ``[M*K, M*K]``.
         """
         raise NotImplementedError
 
@@ -121,7 +121,15 @@ class BaseMatheronOperator(nn.Module):
         if mu_Z.shape != (self.num_inducing, output_dim):
             raise ValueError("Vector coefficients require inducing mean with shape [M, K].")
         if D_Z.ndim == 2:
-            transformed = torch.einsum("smk,jm->sjk", a, D_Z)
+            joint_dim = self.num_inducing * output_dim
+            if D_Z.shape == (joint_dim, joint_dim):
+                transformed = a.reshape(a.shape[0], joint_dim).matmul(D_Z.T).reshape_as(a)
+            elif D_Z.shape == (self.num_inducing, self.num_inducing):
+                transformed = torch.einsum("smk,jm->sjk", a, D_Z)
+            else:
+                raise ValueError(
+                    "Shared inducing scale must have shape [M, M] or [M*K, M*K]."
+                )
         elif D_Z.ndim == 3:
             if D_Z.shape[0] != output_dim:
                 raise ValueError("Batched inducing scale must have shape [K, M, M].")
@@ -145,7 +153,16 @@ class BaseMatheronOperator(nn.Module):
         if residual.ndim != 3:
             raise ValueError("Residuals must have shape [S, M] or [S, M, K].")
         if psi.ndim == 2:
-            correction = torch.einsum("smk,nm->snk", residual, psi)
+            output_dim = residual.shape[-1]
+            joint_dim = self.num_inducing * output_dim
+            if psi.shape[1] == joint_dim:
+                if psi.shape[0] % output_dim:
+                    raise ValueError("Joint psi row count must be divisible by output dimension.")
+                num_query = psi.shape[0] // output_dim
+                correction = residual.reshape(residual.shape[0], joint_dim).matmul(psi.T)
+                correction = correction.reshape(residual.shape[0], num_query, output_dim)
+            else:
+                correction = torch.einsum("smk,nm->snk", residual, psi)
         elif psi.ndim == 3:
             if psi.shape[0] != residual.shape[-1]:
                 raise ValueError("Batched psi must have shape [K, N, M].")
@@ -223,6 +240,7 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         freeze_base_prior: bool = True,
         seed: int | None = None,
         enforce_exact_Z_identity: bool = True,
+        joint_outputs: bool = False,
     ):
         if num_bank_samples < 2:
             raise ValueError("num_bank_samples must be at least 2.")
@@ -241,6 +259,7 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         self.shrinkage = float(shrinkage)
         self.detach_bank_values = bool(detach_bank_values and not learn_Z)
         self.detach_prior_grad = bool(detach_prior_grad)
+        self.joint_outputs = bool(joint_outputs)
         self.bank = PriorFunctionBank(
             prior=base_prior,
             num_bank_samples=self.num_bank_samples,
@@ -249,6 +268,8 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
             detach_prior_grad=self.detach_prior_grad,
         )
         bank_Z, mu_Z, K_ZZ_raw, K_ZZ, L_ZZ = self._compute_Z_moments()
+        self.output_dim = int(bank_Z.shape[-1]) if bank_Z.ndim == 3 else 1
+        self.joint_outputs = self.joint_outputs and self.output_dim > 1
         self.register_buffer("bank_Z", bank_Z.detach().clone())
         self.register_buffer("mu_Z", mu_Z.detach().clone())
         self.register_buffer("K_ZZ_raw", K_ZZ_raw.detach().clone())
@@ -259,10 +280,23 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
     def _compute_Z_moments(self):
         bank_Z = self.bank.evaluate(self.Z)
         mu_Z = empirical_mean(bank_Z)
-        K_ZZ_raw = empirical_cross_cov(bank_Z, bank_Z, mu_Z, mu_Z)
+        K_ZZ_raw = self._cross_covariance(bank_Z, bank_Z, mu_Z, mu_Z)
         K_ZZ = stabilize_covariance(K_ZZ_raw, jitter=self.jitter, shrinkage=self.shrinkage)
         L_ZZ = safe_cholesky(K_ZZ, initial_jitter=self.jitter)
         return bank_Z, mu_Z, K_ZZ_raw, K_ZZ, L_ZZ
+
+    def _cross_covariance(
+        self,
+        values_x: torch.Tensor,
+        values_z: torch.Tensor,
+        mean_x: torch.Tensor,
+        mean_z: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.joint_outputs or values_x.ndim == 2:
+            return empirical_cross_cov(values_x, values_z, mean_x, mean_z)
+        centered_x = (values_x - mean_x.unsqueeze(0)).reshape(values_x.shape[0], -1)
+        centered_z = (values_z - mean_z.unsqueeze(0)).reshape(values_z.shape[0], -1)
+        return centered_x.T.matmul(centered_z) / float(values_x.shape[0] - 1)
 
     def _current_Z_moments(self):
         if self.learn_Z or not self.detach_bank_values:
@@ -286,7 +320,7 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         else:
             bank_X = self.bank.evaluate(X)
         mu_X = empirical_mean(bank_X)
-        return empirical_cross_cov(bank_X, bank_Z, mu_X, mu_Z)
+        return self._cross_covariance(bank_X, bank_Z, mu_X, mu_Z)
 
     def psi(self, X: torch.Tensor) -> torch.Tensor:
         """Estimate empirical interpolation weights.
@@ -299,10 +333,14 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         Returns
         -------
         torch.Tensor
-            Interpolation weights with shape ``[N, M]``.
+            Interpolation weights with shape ``[N, M]`` (scalar),
+            ``[K, N, M]`` (output-wise), or ``[N*K, M*K]`` (joint-output).
         """
         X = X.to(dtype=self.Z.dtype, device=self.Z.device)
         if self.is_exact_inducing_input(X):
+            if self.joint_outputs:
+                dimension = self.num_inducing * self.output_dim
+                return torch.eye(dimension, dtype=self.Z.dtype, device=self.Z.device)
             return self._identity_psi()
         cacheable = not self.learn_Z and self.detach_bank_values
         cache_key = None
@@ -337,7 +375,8 @@ class EmpiricalCovarianceMatheronOperator(BaseMatheronOperator):
         Returns
         -------
         torch.Tensor
-            Cholesky factor with shape ``[M, M]`` or ``[K, M, M]``.
+            Cholesky factor with shape ``[M, M]``, ``[K, M, M]``, or
+            ``[M*K, M*K]`` for joint outputs.
         """
         if self.learn_Z or not self.detach_bank_values:
             _, _, _, _, L_ZZ = self._compute_Z_moments()

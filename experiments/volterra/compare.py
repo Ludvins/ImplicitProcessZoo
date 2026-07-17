@@ -7,7 +7,21 @@ from pathlib import Path
 
 import numpy as np
 
+from experiments.common import (
+    oscillation_period_error,
+    peak_time_error,
+    phase_lag_error,
+    positivity_violation_rate,
+)
 from experiments.volterra.plots import DEFAULT_METHOD_LABELS, plot_lv_shared_axis_method_comparison
+
+DYNAMICS_METRICS = {
+    "prey_peak_time_error",
+    "predator_peak_time_error",
+    "oscillation_period_error",
+    "prey_predator_phase_lag_error",
+    "positivity_violation_rate",
+}
 
 
 def _parse_csv_list(value: str | None) -> list[str]:
@@ -35,8 +49,37 @@ def _read_metric_rows(
                     parsed[key] = np.nan
                 else:
                     parsed[key] = float(value)
-            rows[int(parsed["target_id"])] = parsed
+            target_id = int(parsed["target_id"])
+            if not DYNAMICS_METRICS.issubset(parsed):
+                prediction = _load_prediction(results_root, method, seed, target_id)
+                parsed.update(
+                    {
+                        key: value
+                        for key, value in _dynamics_metrics(prediction).items()
+                        if key not in parsed
+                    }
+                )
+            rows[target_id] = parsed
     return rows
+
+
+def _dynamics_metrics(prediction: dict[str, np.ndarray]) -> dict[str, float]:
+    t = prediction["t_plot"]
+    heldout = t > float(np.max(prediction["y_train_x"]))
+    samples = prediction["samples"][:, heldout]
+    truth = prediction["y_true"][heldout]
+    times = t[heldout]
+    return {
+        "prey_peak_time_error": float(peak_time_error(samples, truth, times, channel=0)),
+        "predator_peak_time_error": float(
+            peak_time_error(samples, truth, times, channel=1)
+        ),
+        "oscillation_period_error": float(
+            oscillation_period_error(samples, truth, times, channels=(0, 1))
+        ),
+        "prey_predator_phase_lag_error": float(phase_lag_error(samples, truth, times)),
+        "positivity_violation_rate": float(positivity_violation_rate(samples)),
+    }
 
 
 def _metric_score(row: dict[str, float | str], metric: str) -> float:

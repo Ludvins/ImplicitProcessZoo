@@ -20,6 +20,10 @@ from experiments.common import (
 from experiments.common import (
     deep_merge,
     load_yaml,
+    oscillation_period_error,
+    peak_time_error,
+    phase_lag_error,
+    positivity_violation_rate,
     write_csv_rows,
 )
 from experiments.volterra.datasets import load_lotka_volterra_tasks
@@ -46,8 +50,26 @@ from implicit_process_zoo.priors.generative_functions import BayesianNN, BayesLi
 from implicit_process_zoo.sip import SIP
 from implicit_process_zoo.vip import VIP
 
-METHODS = ("map", "mfvi", "vip", "ftip", "sip", "gmvip_empirical", "gmvip_rbf", "oracle_prior_bank")
-METHOD_ALIASES = {"oracle": "oracle_prior_bank"}
+METHODS = (
+    "analog_prior",
+    "gmvip_surrogate_prior",
+    "empirical_gp",
+    "map",
+    "mfvi",
+    "vip",
+    "ftip",
+    "sip",
+    "gmvip_empirical",
+    "gmvip_rbf",
+    "oracle_prior_bank",
+)
+METHOD_ALIASES = {
+    "analog": "analog_prior",
+    "prior_predictive": "analog_prior",
+    "surrogate_prior": "gmvip_surrogate_prior",
+    "empirical_gaussian": "empirical_gp",
+    "oracle": "oracle_prior_bank",
+}
 
 
 DEFAULT_LOTKA_VOLTERRA_CONFIG: dict = {
@@ -67,9 +89,14 @@ DEFAULT_LOTKA_VOLTERRA_CONFIG: dict = {
         # None means sample and weight reference_bank_size ODE prior functions.
         "bank_size": None,
     },
+    "empirical_gp": {
+        "bank_size": 512,
+        "jitter": 1.0e-8,
+    },
     "gmvip": {
         "operator": "empirical",
         "num_inducing": 96,
+        "joint_output_covariance": True,
         "prior_bank_size": 512,
         "rbf_lengthscale": 0.25,
         "jitter": 1.0e-5,
@@ -90,13 +117,13 @@ DEFAULT_LOTKA_VOLTERRA_CONFIG: dict = {
         "warm_start_from_vip": True,
         "warm_start_learnable_affine": False,
         "training_overrides": {
-            "regression_coeffs": 128,
+            "regression_coeffs": 20,
             "n_mc_train": 8,
         },
         "fine_tune_training": {
             "learning_rate": 2.0e-4,
-            "max_steps": 625,
-            "early_stopping_patience": 626,
+            "max_steps": 400,
+            "early_stopping_patience": 401,
             "eval_interval": 100,
         },
     },
@@ -129,7 +156,7 @@ DEFAULT_LOTKA_VOLTERRA_CONFIG: dict = {
         "batch_size": "full",
         "hidden_dims": [32, 32],
         "activation": "tanh",
-        "regression_coeffs": 512,
+        "regression_coeffs": 20,
         "disable_tqdm": False,
     },
     "metrics": {
@@ -157,6 +184,7 @@ SMOKE_LOTKA_VOLTERRA_CONFIG: dict = {
     "gmvip": {
         "operator": "rbf",
         "num_inducing": 6,
+        "joint_output_covariance": True,
         "rbf_lengthscale": 0.25,
         "jitter": 1.0e-5,
         "shrinkage": 0.02,
@@ -415,6 +443,136 @@ class OraclePriorBankPosterior(torch.nn.Module):
         return self.prior.evaluate(X, self.bank_latents[draw_idx])
 
 
+class AnalogPriorPredictive(torch.nn.Module):
+    """Unconditional trajectory draws from the normalized ODE prior."""
+
+    is_fixed_predictive = True
+
+    def __init__(self, prior: LotkaVolterraPrior, *, seed: int):
+        super().__init__()
+        self.prior = prior
+        self.seed = int(seed)
+
+    def predict_f_samples(
+        self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
+    ) -> torch.Tensor:
+        return self.prior.sample(
+            X,
+            int(num_samples),
+            seed=self.seed if seed is None else int(seed),
+        )
+
+
+class EmpiricalGPPredictive(torch.nn.Module):
+    """Joint finite-grid empirical GP conditioned on both observed species."""
+
+    is_fixed_predictive = True
+
+    def __init__(
+        self,
+        task,
+        *,
+        bank_size: int,
+        seed: int,
+        jitter: float = 1.0e-8,
+    ):
+        super().__init__()
+        bank_size = int(bank_size)
+        if bank_size < 2:
+            raise ValueError("The empirical GP needs at least two prior trajectories.")
+
+        with torch.no_grad():
+            latents = task.prior.sample_latents(bank_size, seed=int(seed))
+            bank = task.prior.evaluate(task.X_plot, latents)
+            if bank.ndim != 3 or bank.shape[-1] != 2:
+                raise ValueError("Empirical GP prior values must have shape [B, T, 2].")
+
+            grid_size = int(bank.shape[1])
+            flat_bank = bank.reshape(bank_size, 2 * grid_size)
+            mean = flat_bank.mean(dim=0)
+            features = (flat_bank - mean).T / math.sqrt(float(bank_size - 1))
+
+            train_idx = torch.as_tensor(
+                task.metadata["train_indices"], dtype=torch.long, device=bank.device
+            )
+            output_offsets = torch.arange(2, dtype=torch.long, device=bank.device)
+            observed_idx = (2 * train_idx.unsqueeze(-1) + output_offsets).reshape(-1)
+            observed_features = features[observed_idx]
+            observed_mean = mean[observed_idx]
+            observed_targets = task.y_train.to(dtype=bank.dtype, device=bank.device).reshape(-1)
+            observed_noise = (
+                task.noise_std.to(dtype=bank.dtype, device=bank.device)
+                .reshape(1, 2)
+                .expand(train_idx.numel(), 2)
+                .reshape(-1)
+            )
+
+            observed_covariance = observed_features @ observed_features.T
+            marginal_scale = features.square().sum(dim=1).mean().clamp_min(
+                torch.finfo(bank.dtype).eps
+            )
+            numerical_jitter = max(float(jitter), float(torch.finfo(bank.dtype).eps))
+            observed_system = observed_covariance + torch.diag(
+                observed_noise.square() + numerical_jitter * marginal_scale
+            )
+            observed_cholesky = torch.linalg.cholesky(observed_system)
+            cross_covariance = features @ observed_features.T
+
+        self.grid_size = grid_size
+        self.bank_size = bank_size
+        self.register_buffer("mean", mean)
+        self.register_buffer("features", features)
+        self.register_buffer("observed_indices", observed_idx)
+        self.register_buffer("observed_mean", observed_mean)
+        self.register_buffer("observed_features", observed_features)
+        self.register_buffer("observed_targets", observed_targets)
+        self.register_buffer("observed_noise", observed_noise)
+        self.register_buffer("observed_cholesky", observed_cholesky)
+        self.register_buffer("cross_covariance", cross_covariance)
+
+    def _query_indices(self, X: torch.Tensor) -> torch.Tensor:
+        positions = (
+            (X[:, 0].to(dtype=self.mean.dtype, device=self.mean.device).clamp(-1.0, 1.0) + 1.0)
+            * 0.5
+            * float(self.grid_size - 1)
+        )
+        time_idx = positions.round().long().clamp(0, self.grid_size - 1)
+        offsets = torch.arange(2, dtype=torch.long, device=self.mean.device)
+        return (2 * time_idx.unsqueeze(-1) + offsets).reshape(-1)
+
+    def predict_f_samples(
+        self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
+    ) -> torch.Tensor:
+        num_samples = int(num_samples)
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive.")
+        generator = torch.Generator(device=self.mean.device)
+        generator.manual_seed(0 if seed is None else int(seed))
+        latent_noise = torch.randn(
+            num_samples,
+            self.bank_size,
+            dtype=self.mean.dtype,
+            device=self.mean.device,
+            generator=generator,
+        )
+        observation_noise = torch.randn(
+            num_samples,
+            self.observed_targets.numel(),
+            dtype=self.mean.dtype,
+            device=self.mean.device,
+            generator=generator,
+        ) * self.observed_noise
+
+        query_idx = self._query_indices(X)
+        query_features = self.features[query_idx]
+        prior_query = self.mean[query_idx] + latent_noise @ query_features.T
+        prior_observed = self.observed_mean + latent_noise @ self.observed_features.T
+        residual = self.observed_targets - prior_observed - observation_noise
+        solved = torch.cholesky_solve(residual.T, self.observed_cholesky).T
+        correction = solved @ self.cross_covariance[query_idx].T
+        return (prior_query + correction).reshape(num_samples, X.shape[0], 2)
+
+
 class FreshLotkaVolterraSIPPrior(torch.nn.Module):
     """SIP adapter that can draw fresh Lotka-Volterra ODE latents per prior call."""
 
@@ -475,11 +633,23 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
     method = METHOD_ALIASES.get(method, method)
     if method == "ftip":
         config = _ftip_base_config(config)
-    if method == "gmvip_empirical":
+    if method in {"gmvip_empirical", "gmvip_surrogate_prior"}:
         config = _gmvip_base_config(config)
     train_cfg = _training_config(config)
     output_dim = int(task.y_train.shape[-1])
     noise_std_norm = task.noise_std.to(dtype=dtype, device=device)
+    if method == "analog_prior":
+        return AnalogPriorPredictive(task.prior, seed=seed + 11)
+
+    if method == "empirical_gp":
+        empirical_cfg = dict(config.get("empirical_gp", {}))
+        return EmpiricalGPPredictive(
+            task,
+            bank_size=int(empirical_cfg.get("bank_size", 512)),
+            seed=seed + 17,
+            jitter=float(empirical_cfg.get("jitter", 1.0e-8)),
+        )
+
     if method == "map":
         model = DeterministicMAP(
             input_dim=1,
@@ -634,9 +804,9 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
         _fix_model_noise(model, noise_std_norm)
         return model
 
-    if method in {"gmvip_empirical", "gmvip_rbf"}:
+    if method in {"gmvip_empirical", "gmvip_surrogate_prior", "gmvip_rbf"}:
         gmvip_cfg = dict(config.get("gmvip", {}))
-        operator = "empirical" if method == "gmvip_empirical" else "rbf"
+        operator = "rbf" if method == "gmvip_rbf" else "empirical"
         num_inducing = int(gmvip_cfg.get("num_inducing", 32))
         bank_size = int(config.get("prior", {}).get("bank_size", 512))
         prior = task.prior.clone_with_normalization(
@@ -676,8 +846,16 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             data_alpha=float(gmvip_cfg.get("data_alpha", 0.0)),
             max_grad_norm=train_cfg.max_grad_norm,
             output_dim=output_dim,
+            joint_output_covariance=bool(
+                gmvip_cfg.get("joint_output_covariance", False)
+            ),
             operator_bank_seed=seed + 101,
         )
+        if method == "gmvip_surrogate_prior":
+            # Leave the freshly initialized coefficient law at q(a) = N(0, I)
+            # and bypass optimization. This isolates the predictive effect of
+            # the finite-rank GMVIP surrogate from posterior adaptation.
+            model.is_fixed_predictive = True
         return model
 
     if method == "oracle_prior_bank":
@@ -730,7 +908,9 @@ def predictive_function_samples(
             return model.predict_y(X, int(n_samples))
         if method == "sip":
             return model.predict_f_samples(X, int(n_samples))
-        if method in {"gmvip_empirical", "gmvip_rbf"}:
+        if method in {"analog_prior", "empirical_gp"}:
+            return model.predict_f_samples(X, int(n_samples), seed=seed)
+        if method in {"gmvip_empirical", "gmvip_surrogate_prior", "gmvip_rbf"}:
             return model.sample_posterior_values(X, int(n_samples), seed=seed)
         if method == "oracle_prior_bank":
             return model.predict_f_samples(X, int(n_samples), seed=seed)
@@ -747,7 +927,9 @@ def _validation_loss(model, method: str, task, n_samples: int, seed: int) -> flo
 
 def fit_model(model, method: str, task, config: dict, *, seed: int, device) -> dict:
     train_cfg = _training_config(config)
-    if getattr(model, "is_oracle_prior_bank", False):
+    if getattr(model, "is_fixed_predictive", False) or getattr(
+        model, "is_oracle_prior_bank", False
+    ):
         return {
             "train_time_sec": 0.0,
             "steps": 0,
@@ -875,15 +1057,28 @@ def evaluate_target(model, method: str, task, config: dict, *, seed: int, out_di
     )
     prior_ids = task.prior.sample_indices(min(512, task.prior.num_paths), seed=seed + 701)
     prior_plot = task.prior.evaluate_raw(task.X_plot, prior_ids).to(samples_plot.device)
-    nearest = nearest_prior_mse(samples_plot[: min(eval_samples, 128)], prior_plot, chunk_size=32)
     t_grid = torch.as_tensor(
         task.metadata["t_grid"], dtype=samples_plot.dtype, device=samples_plot.device
     )
-    residual = lotka_volterra_residual_score(samples_plot[: min(eval_samples, 64)], t_grid)
+    test_idx = torch.as_tensor(
+        task.metadata["test_indices"], dtype=torch.long, device=t_grid.device
+    )
+    train_idx = np.asarray(task.metadata["train_indices"], dtype=int)
+    test_samples_plot = samples_plot[:, test_idx]
+    test_truth_plot = y_plot_true[test_idx]
+    test_t = t_grid[test_idx]
+    prior_test = prior_plot[:, test_idx]
+    nearest = nearest_prior_mse(
+        test_samples_plot[: min(eval_samples, 128)], prior_test, chunk_size=32
+    )
+    residual = lotka_volterra_residual_score(
+        test_samples_plot[: min(eval_samples, 64)], test_t
+    )
     mean_test = samples_test.mean(dim=0)
     row = {
         "experiment": "lotka_volterra",
         "method": method,
+        "metric_partition": "test_(20,30]",
         "seed": int(seed),
         "target_id": int(task.metadata["target_id"]),
         "rmse": float(rmse(mean_test, y_test).detach().cpu()),
@@ -896,6 +1091,29 @@ def evaluate_target(model, method: str, task, config: dict, *, seed: int, out_di
         "nearest_prior_mse": float(nearest["mean"].detach().cpu()),
         "nearest_prior_mse_median": float(nearest["median"].detach().cpu()),
         "ode_residual": float(residual.mean().detach().cpu()),
+        "prey_peak_time_error": float(
+            peak_time_error(test_samples_plot, test_truth_plot, test_t, channel=0)
+            .detach()
+            .cpu()
+        ),
+        "predator_peak_time_error": float(
+            peak_time_error(test_samples_plot, test_truth_plot, test_t, channel=1)
+            .detach()
+            .cpu()
+        ),
+        "oscillation_period_error": float(
+            oscillation_period_error(
+                test_samples_plot, test_truth_plot, test_t, channels=(0, 1)
+            )
+            .detach()
+            .cpu()
+        ),
+        "prey_predator_phase_lag_error": float(
+            phase_lag_error(test_samples_plot, test_truth_plot, test_t).detach().cpu()
+        ),
+        "positivity_violation_rate": float(
+            positivity_violation_rate(test_samples_plot).detach().cpu()
+        ),
         "eval_time_sec": time.time() - start,
     }
     for level, value in coverage.items():
@@ -905,7 +1123,6 @@ def evaluate_target(model, method: str, task, config: dict, *, seed: int, out_di
 
     pred_dir = out_dir / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
-    train_idx = np.asarray(task.metadata["train_indices"], dtype=int)
     t_grid_np = np.asarray(task.metadata["t_grid"], dtype=np.float64)
     np.savez_compressed(
         pred_dir / f"target_{task.metadata['target_id']}.npz",
@@ -989,7 +1206,7 @@ def run_method(method: str, config: dict, cli_args) -> dict:
     method = METHOD_ALIASES.get(method, method)
     if method == "ftip":
         config = _ftip_base_config(config)
-    if method == "gmvip_empirical":
+    if method in {"gmvip_empirical", "gmvip_surrogate_prior"}:
         config = _gmvip_base_config(config)
     seed = int(cli_args.seed)
     dtype = torch.float64 if str(cli_args.dtype) == "float64" else torch.float32

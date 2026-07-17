@@ -1,5 +1,6 @@
 import torch
 
+from experiments.common import oscillation_period_error
 from experiments.simulator_forecasting.metrics import (
     coerce_regions,
     crps_from_samples,
@@ -112,3 +113,13 @@ def test_metrics_by_region_accepts_configurable_t_obs_regions():
     assert masks["near_extrapolation"].sum().item() == 5
     assert masks["far_extrapolation"].sum().item() == 10
     assert set(rows) == {"interpolation", "near_extrapolation", "far_extrapolation"}
+
+
+def test_oscillation_period_error_recovers_sine_period_difference():
+    t = torch.linspace(0.0, 12.0, 1201, dtype=torch.float64)
+    truth = torch.sin(2.0 * torch.pi * t / 2.0).reshape(-1, 1)
+    prediction = torch.sin(2.0 * torch.pi * t / 3.0).reshape(1, -1, 1).expand(4, -1, -1)
+
+    error = oscillation_period_error(prediction, truth, t)
+
+    assert torch.allclose(error, torch.tensor(1.0, dtype=error.dtype), atol=1e-3)

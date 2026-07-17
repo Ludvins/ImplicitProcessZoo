@@ -69,7 +69,12 @@ def _standard_normal_sample(
 
 
 class CholeskyGaussianCoefficientPosterior(nn.Module):
-    """Full-covariance Gaussian posterior over whitened inducing coefficients."""
+    """Gaussian posterior over whitened inducing coefficients.
+
+    Vector outputs use one full covariance per output by default. Setting
+    ``joint_output_covariance=True`` instead uses one covariance over the
+    flattened ``[M, K]`` coefficient array, including cross-output terms.
+    """
 
     def __init__(
         self,
@@ -79,6 +84,7 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         init_log_std: float = 0.0,
         min_log_std: float | None = -8.0,
         max_log_std: float | None = 4.0,
+        joint_output_covariance: bool = False,
         device=None,
         dtype=None,
     ):
@@ -89,20 +95,28 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
             raise ValueError("output_dim must be positive.")
         self.num_inducing = int(num_inducing)
         self.output_dim = int(output_dim)
+        self.joint_output_covariance = bool(
+            joint_output_covariance and self.output_dim > 1
+        )
         self.min_log_std = min_log_std
         self.max_log_std = max_log_std
-        self.num_tril_entries = self.num_inducing * (self.num_inducing + 1) // 2
+        self.covariance_dim = (
+            self.num_inducing * self.output_dim
+            if self.joint_output_covariance
+            else self.num_inducing
+        )
+        self.num_tril_entries = self.covariance_dim * (self.covariance_dim + 1) // 2
         loc_shape = (
             (self.num_inducing,) if self.output_dim == 1 else (self.num_inducing, self.output_dim)
         )
         raw_shape = (
             (self.num_tril_entries,)
-            if self.output_dim == 1
+            if self.output_dim == 1 or self.joint_output_covariance
             else (self.output_dim, self.num_tril_entries)
         )
         self.loc = nn.Parameter(torch.full(loc_shape, float(init_mean), device=device, dtype=dtype))
         raw = torch.zeros(raw_shape, device=device, dtype=dtype)
-        idx = torch.tril_indices(self.num_inducing, self.num_inducing, device=raw.device)
+        idx = torch.tril_indices(self.covariance_dim, self.covariance_dim, device=raw.device)
         raw[..., idx[0] == idx[1]] = float(init_log_std)
         self.raw_scale_tril = nn.Parameter(raw)
 
@@ -115,6 +129,8 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         log_diag = self._scale_tril_and_log_diag()[1]
         if self.output_dim == 1:
             return log_diag
+        if self.joint_output_covariance:
+            return log_diag.reshape(self.num_inducing, self.output_dim)
         return log_diag.T
 
     @property
@@ -132,7 +148,7 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
     def _scale_tril_and_log_diag(self) -> tuple[torch.Tensor, torch.Tensor]:
         return _scale_tril_from_raw(
             self.raw_scale_tril,
-            self.num_inducing,
+            self.covariance_dim,
             self.min_log_std,
             self.max_log_std,
         )
@@ -169,6 +185,9 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         )
         if self.output_dim == 1:
             return self.loc.unsqueeze(0) + eps.matmul(self.scale_tril.T)
+        if self.joint_output_covariance:
+            samples = self.loc.reshape(1, -1) + eps.matmul(self.scale_tril.T)
+            return samples.reshape(int(num_samples), self.num_inducing, self.output_dim)
         eps = eps.reshape(int(num_samples), self.output_dim, self.num_inducing)
         samples = self.loc.T.unsqueeze(0) + torch.einsum("skm,kjm->skj", eps, self.scale_tril)
         return samples.transpose(1, 2)
@@ -239,6 +258,8 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
         )
         if self.output_dim == 1:
             return samples.reshape(int(num_samples), self.num_inducing)
+        if self.joint_output_covariance:
+            return samples.reshape(int(num_samples), self.num_inducing, self.output_dim)
         return samples.reshape(int(num_samples), self.output_dim, self.num_inducing).transpose(1, 2)
 
     def kl_to_standard_normal(self) -> torch.Tensor:

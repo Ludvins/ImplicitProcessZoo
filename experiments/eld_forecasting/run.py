@@ -40,7 +40,16 @@ from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
 from implicit_process_zoo.utils.random import fork_torch_rng
 from implicit_process_zoo.vip import VIP
 
-METHODS = ("analog", "seasonal_naive", "vip", "vip_512", "ftip", "gmvip_empirical")
+METHODS = (
+    "analog",
+    "seasonal_naive",
+    "empirical_gaussian",
+    "gmvip_empirical_exact",
+    "vip",
+    "vip_512",
+    "ftip",
+    "gmvip_empirical",
+)
 PAPER_METHODS = ("analog", "vip", "ftip", "gmvip_empirical")
 
 
@@ -65,7 +74,7 @@ DEFAULT_CONFIG: dict = {
         "selection": "calendar_prefix_nn",
     },
     "gmvip": {
-        "num_inducing": 192,
+        "num_inducing": 96,
         "jitter": 1.0e-5,
         "shrinkage": 0.02,
         "beta": 1.0,
@@ -89,7 +98,7 @@ DEFAULT_CONFIG: dict = {
         "disable_tqdm": True,
     },
     "metrics": {
-        "levels": [0.9, 0.95],
+        "levels": [0.8, 0.9, 0.95],
         "regions": {"test_forecast": {"start": 96, "stop": 192}},
     },
     "plots": {
@@ -135,7 +144,7 @@ SMOKE_CONFIG: dict = {
         "regression_coeffs": 8,
         "disable_tqdm": True,
     },
-    "metrics": {"levels": [0.9, 0.95], "regions": None},
+    "metrics": {"levels": [0.8, 0.9, 0.95], "regions": None},
 }
 
 
@@ -156,7 +165,7 @@ PILOT_CONFIG: dict = {
         "max_steps": 500,
         "n_mc_eval": 256,
     },
-    "metrics": {"levels": [0.9, 0.95], "regions": None},
+    "metrics": {"levels": [0.8, 0.9, 0.95], "regions": None},
 }
 
 
@@ -244,6 +253,217 @@ class AnalogPriorPredictive(torch.nn.Module):
         return self.prior.sample(X, int(num_samples), seed=self.seed if seed is None else int(seed))
 
 
+class EmpiricalGaussianPredictive(torch.nn.Module):
+    """Original analytic Gaussian approximation used in the paper table."""
+
+    is_fixed_predictive = True
+
+    def __init__(self, task, *, jitter: float = 1.0e-10):
+        super().__init__()
+        windows = task.prior.windows[..., 0]
+        if windows.ndim != 2:
+            raise ValueError("Historical prior windows must have shape [P, T, 1].")
+        if int(windows.shape[0]) < 2:
+            raise ValueError("The empirical Gaussian baseline needs at least two prior paths.")
+
+        dtype = windows.dtype
+        device = windows.device
+        prefix_length = int(task.X_train.shape[0])
+        if prefix_length <= 0 or prefix_length >= int(windows.shape[1]):
+            raise ValueError("The observed prefix must be non-empty and shorter than the window.")
+
+        mean = windows.mean(dim=0)
+        centered = windows - mean
+        covariance = centered.mT @ centered / float(windows.shape[0] - 1)
+        covariance = 0.5 * (covariance + covariance.mT)
+
+        observed_covariance = covariance[:prefix_length, :prefix_length]
+        noise_variance = task.noise_std.to(dtype=dtype, device=device).reshape(-1)[0].square()
+        scale = covariance.diagonal().mean().clamp_min(torch.finfo(dtype).eps)
+        numerical_jitter = max(float(jitter), float(torch.finfo(dtype).eps)) * scale
+        observed_system = observed_covariance + (
+            noise_variance + numerical_jitter
+        ) * torch.eye(prefix_length, dtype=dtype, device=device)
+        observed_cholesky = torch.linalg.cholesky(observed_system)
+
+        cross_covariance = covariance[:, :prefix_length]
+        residual = task.y_train[:, 0].to(dtype=dtype, device=device) - mean[:prefix_length]
+        conditional_mean = mean + cross_covariance @ torch.cholesky_solve(
+            residual.unsqueeze(-1), observed_cholesky
+        ).squeeze(-1)
+        conditional_covariance = covariance - cross_covariance @ torch.cholesky_solve(
+            cross_covariance.mT, observed_cholesky
+        )
+        conditional_covariance = 0.5 * (conditional_covariance + conditional_covariance.mT)
+
+        eigenvalues, eigenvectors = torch.linalg.eigh(conditional_covariance)
+        factor = eigenvectors * eigenvalues.clamp_min(0.0).sqrt().unsqueeze(0)
+
+        self.window_length = int(windows.shape[1])
+        self.device = device
+        self.dtype = dtype
+        self.register_buffer("prior_mean", mean)
+        self.register_buffer("prior_covariance", covariance)
+        self.register_buffer("posterior_mean", conditional_mean)
+        self.register_buffer("posterior_covariance", conditional_covariance)
+        self.register_buffer("posterior_factor", factor)
+
+    def predict_f_samples(
+        self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
+    ) -> torch.Tensor:
+        num_samples = int(num_samples)
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive.")
+        generator = torch.Generator(device=self.device)
+        generator.manual_seed(0 if seed is None else int(seed))
+        standard_normal = torch.randn(
+            num_samples,
+            self.window_length,
+            dtype=self.dtype,
+            device=self.device,
+            generator=generator,
+        )
+        full_samples = self.posterior_mean.unsqueeze(0) + standard_normal @ self.posterior_factor.mT
+        positions = (
+            (X[:, 0].to(dtype=self.dtype, device=self.device).clamp(-1.0, 1.0) + 1.0)
+            * 0.5
+            * float(self.window_length - 1)
+        )
+        indices = positions.round().long().clamp(0, self.window_length - 1)
+        return full_samples[:, indices].unsqueeze(-1)
+
+
+class ExactEmpiricalMatheronPredictive(torch.nn.Module):
+    """Exact-q(a) GMVIP predictor retaining empirical historical residuals."""
+
+    is_fixed_predictive = True
+
+    def __init__(self, task, *, jitter: float = 1.0e-10):
+        super().__init__()
+        windows = task.prior.windows[..., 0]
+        if windows.ndim != 2:
+            raise ValueError("Historical prior windows must have shape [P, T, 1].")
+        if int(windows.shape[0]) < 2:
+            raise ValueError("The empirical Gaussian baseline needs at least two prior paths.")
+
+        dtype = windows.dtype
+        device = windows.device
+        prefix_length = int(task.X_train.shape[0])
+        if prefix_length <= 0 or prefix_length >= int(windows.shape[1]):
+            raise ValueError("The observed prefix must be non-empty and shorter than the window.")
+
+        mean = windows.mean(dim=0)
+        centered = windows - mean
+        raw_covariance = centered.mT @ centered / float(windows.shape[0] - 1)
+        raw_covariance = 0.5 * (raw_covariance + raw_covariance.mT)
+
+        covariance = raw_covariance
+        observed_covariance = covariance[:prefix_length, :prefix_length]
+        noise_variance = task.noise_std.to(dtype=dtype, device=device).reshape(-1)[0].square()
+        inducing_scale, cholesky_info = torch.linalg.cholesky_ex(observed_covariance)
+        if int(cholesky_info.item()) != 0:
+            scale = raw_covariance.diagonal().mean().clamp_min(torch.finfo(dtype).eps)
+            numerical_jitter = max(float(jitter), float(torch.finfo(dtype).eps)) * scale
+            covariance = raw_covariance + numerical_jitter * torch.eye(
+                int(windows.shape[1]), dtype=dtype, device=device
+            )
+            observed_covariance = covariance[:prefix_length, :prefix_length]
+            inducing_scale = torch.linalg.cholesky(observed_covariance)
+
+        cross_covariance = covariance[:, :prefix_length]
+        residual = task.y_train[:, 0].to(dtype=dtype, device=device) - mean[:prefix_length]
+
+        # Exact full-covariance Gaussian posterior in whitened coordinates:
+        #   S_a = (I + sigma^-2 L^T L)^-1,
+        #   m_a = sigma^-2 S_a L^T (y - mu).
+        identity = torch.eye(prefix_length, dtype=dtype, device=device)
+        coefficient_precision = identity + inducing_scale.mT @ inducing_scale / noise_variance
+        coefficient_precision_factor = torch.linalg.cholesky(coefficient_precision)
+        coefficient_covariance = torch.cholesky_inverse(coefficient_precision_factor)
+        coefficient_mean = torch.cholesky_solve(
+            (inducing_scale.mT @ residual / noise_variance).unsqueeze(-1),
+            coefficient_precision_factor,
+        ).squeeze(-1)
+
+        inducing_posterior_mean = mean[:prefix_length] + inducing_scale @ coefficient_mean
+        inducing_posterior_covariance = (
+            inducing_scale @ coefficient_covariance @ inducing_scale.mT
+        )
+        inducing_posterior_covariance = 0.5 * (
+            inducing_posterior_covariance + inducing_posterior_covariance.mT
+        )
+        inducing_eigenvalues, inducing_eigenvectors = torch.linalg.eigh(
+            inducing_posterior_covariance
+        )
+        inducing_factor = inducing_eigenvectors * inducing_eigenvalues.clamp_min(0.0).sqrt().unsqueeze(0)
+
+        projection = torch.cholesky_solve(
+            cross_covariance.mT, inducing_scale
+        ).mT
+        projection[:prefix_length] = identity
+
+        # The empirical Matheron residual vanishes at the inducing locations,
+        # so adding it preserves the exact posterior draw over the prefix.
+        path_residuals = centered - centered[:, :prefix_length] @ projection.mT
+        path_residuals[:, :prefix_length] = 0.0
+        path_residuals = path_residuals - path_residuals.mean(dim=0, keepdim=True)
+
+        self.window_length = int(windows.shape[1])
+        self.prefix_length = prefix_length
+        self.device = device
+        self.dtype = dtype
+        self.register_buffer("prior_mean", mean)
+        self.register_buffer("prior_covariance", covariance)
+        self.register_buffer("inducing_scale", inducing_scale)
+        self.register_buffer("coefficient_posterior_mean", coefficient_mean)
+        self.register_buffer("coefficient_posterior_covariance", coefficient_covariance)
+        self.register_buffer("inducing_posterior_mean", inducing_posterior_mean)
+        self.register_buffer("inducing_posterior_covariance", inducing_posterior_covariance)
+        self.register_buffer("inducing_posterior_factor", inducing_factor)
+        self.register_buffer("conditional_projection", projection)
+        self.register_buffer("empirical_residuals", path_residuals)
+
+    def predict_f_samples(
+        self, X: torch.Tensor, num_samples: int, *, seed: int | None = None
+    ) -> torch.Tensor:
+        num_samples = int(num_samples)
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive.")
+        generator = torch.Generator(device=self.device)
+        generator.manual_seed(0 if seed is None else int(seed))
+        inducing_noise = torch.randn(
+            num_samples,
+            self.prefix_length,
+            dtype=self.dtype,
+            device=self.device,
+            generator=generator,
+        )
+        inducing_values = (
+            self.inducing_posterior_mean.unsqueeze(0)
+            + inducing_noise @ self.inducing_posterior_factor.mT
+        )
+        conditional_mean = self.prior_mean.unsqueeze(0) + (
+            inducing_values - self.prior_mean[: self.prefix_length].unsqueeze(0)
+        ) @ self.conditional_projection.mT
+        residual_indices = torch.randint(
+            0,
+            int(self.empirical_residuals.shape[0]),
+            (num_samples,),
+            dtype=torch.long,
+            device=self.device,
+            generator=generator,
+        )
+        residual_samples = self.empirical_residuals[residual_indices]
+        full_samples = conditional_mean + residual_samples
+        # Preserve exact cardinality despite eigensolver roundoff.
+        full_samples[:, : self.prefix_length] = inducing_values
+        positions = (
+            (X[:, 0].to(dtype=self.dtype, device=self.device).clamp(-1.0, 1.0) + 1.0)
+            * 0.5
+            * float(self.window_length - 1)
+        )
+        indices = positions.round().long().clamp(0, self.window_length - 1)
+        return full_samples[:, indices].unsqueeze(-1)
 class SeasonalNaivePredictive(torch.nn.Module):
     is_fixed_predictive = True
 
@@ -278,6 +498,10 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
     noise_std = task.noise_std.to(dtype=dtype, device=device)
     if method == "analog":
         return AnalogPriorPredictive(task.prior, seed=seed + 11)
+    if method == "empirical_gaussian":
+        return EmpiricalGaussianPredictive(task)
+    if method == "gmvip_empirical_exact":
+        return ExactEmpiricalMatheronPredictive(task)
     if method == "seasonal_naive":
         return SeasonalNaivePredictive(task)
     regression_coeffs = int(train_cfg.regression_coeffs)
@@ -375,7 +599,12 @@ def predictive_function_samples(
 ) -> torch.Tensor:
     model.eval()
     with torch.no_grad():
-        if method in {"analog", "seasonal_naive"}:
+        if method in {
+            "analog",
+            "seasonal_naive",
+            "empirical_gaussian",
+            "gmvip_empirical_exact",
+        }:
             values = model.predict_f_samples(X, int(n_samples), seed=seed)
         elif method in {"vip", "vip_512"}:
             values = model.predict_f_samples(X, int(n_samples), seed=seed)
@@ -471,7 +700,7 @@ def evaluate_target(
         y_true,
         t_grid,
         noise_std,
-        levels=tuple(config.get("metrics", {}).get("levels", [0.9, 0.95])),
+        levels=tuple(config.get("metrics", {}).get("levels", [0.8, 0.9, 0.95])),
         regions=regions,
     )
 
@@ -576,8 +805,10 @@ def _summarize(rows: list[dict]) -> dict:
         "nll",
         "crps",
         "cqm",
+        "cov80",
         "cov90",
         "cov95",
+        "width80",
         "width90",
         "width95",
         "peak_magnitude_error",

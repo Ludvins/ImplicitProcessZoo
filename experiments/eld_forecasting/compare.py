@@ -7,6 +7,53 @@ import numpy as np
 import pandas as pd
 
 
+def _backfill_interval_metrics(
+    frame: pd.DataFrame,
+    method_dir: Path,
+    *,
+    levels: tuple[float, ...] = (0.8,),
+) -> pd.DataFrame:
+    """Derive newly requested interval metrics from saved prediction samples."""
+    missing_levels = [
+        level
+        for level in levels
+        if f"cov{int(round(100 * level))}" not in frame
+        or f"width{int(round(100 * level))}" not in frame
+    ]
+    required = {"target_id", "region_start_idx", "region_stop_idx"}
+    if not missing_levels or not required.issubset(frame.columns):
+        return frame
+
+    result = frame.copy()
+    cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for index, row in result.iterrows():
+        target_id = int(row["target_id"])
+        if target_id not in cache:
+            prediction_path = method_dir / "predictions" / f"target_{target_id}.npz"
+            if not prediction_path.is_file():
+                continue
+            with np.load(prediction_path) as prediction:
+                cache[target_id] = (
+                    np.asarray(prediction["samples"], dtype=np.float64),
+                    np.asarray(prediction["truth"], dtype=np.float64),
+                )
+        samples, truth = cache[target_id]
+        start = int(row["region_start_idx"])
+        stop = int(row["region_stop_idx"])
+        region_samples = samples[:, start:stop]
+        region_truth = truth[start:stop]
+        for level in missing_levels:
+            suffix = int(round(100 * level))
+            alpha = 0.5 * (1.0 - level)
+            lower = np.quantile(region_samples, alpha, axis=0)
+            upper = np.quantile(region_samples, 1.0 - alpha, axis=0)
+            result.loc[index, f"cov{suffix}"] = float(
+                np.mean((region_truth >= lower) & (region_truth <= upper))
+            )
+            result.loc[index, f"width{suffix}"] = float(np.mean(upper - lower))
+    return result
+
+
 def aggregate(results_root: str | Path) -> pd.DataFrame:
     root = Path(results_root)
     paths = list(root.glob("*/*/metrics_per_target_region.csv"))
@@ -18,6 +65,7 @@ def aggregate(results_root: str | Path) -> pd.DataFrame:
     frames = []
     for path in paths:
         frame = pd.read_csv(path)
+        frame = _backfill_interval_metrics(frame, path.parent)
         if "run_seed" not in frame:
             try:
                 frame["run_seed"] = int(path.parent.name.removeprefix("seed_"))
@@ -43,8 +91,10 @@ def aggregate(results_root: str | Path) -> pd.DataFrame:
         "nll",
         "crps",
         "cqm",
+        "cov80",
         "cov90",
         "cov95",
+        "width80",
         "width90",
         "width95",
         "peak_magnitude_error",

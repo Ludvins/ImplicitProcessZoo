@@ -22,6 +22,7 @@ from experiments.common import (
     fix_gaussian_noise,
     json_safe,
     load_yaml,
+    oscillation_period_error,
     write_csv_rows,
 )
 from experiments.simulator_forecasting.datasets import load_damped_oscillator_tasks
@@ -958,6 +959,10 @@ def evaluate_target(
     metric_rows = metrics_by_region(
         samples, y_true, t_grid, noise_std, levels=(0.9, 0.95), regions=regions
     )
+    heldout = t_grid > float(task.metadata["t_obs"])
+    period_error = oscillation_period_error(
+        samples[:, heldout], y_true[heldout], t_grid[heldout], channels=(0,)
+    )
 
     pred_dir = out_dir / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
@@ -1010,6 +1015,7 @@ def evaluate_target(
                 "region_end": hi,
                 "region_include_left": include_left,
                 "eval_time_sec": time.time() - start,
+                "oscillation_period_error": float(period_error.detach().cpu()),
                 **values,
             }
         )
@@ -1036,7 +1042,16 @@ def _summarize(rows: list[dict]) -> dict:
         key = (row.get("method"), row.get("n_train"), row.get("region"))
         groups.setdefault(key, []).append(row)
     summary = {}
-    metrics = ("rmse", "nlpd", "crps", "cov90", "cov95", "width90", "width95")
+    metrics = (
+        "rmse",
+        "nlpd",
+        "crps",
+        "cov90",
+        "cov95",
+        "width90",
+        "width95",
+        "oscillation_period_error",
+    )
     for key, group in groups.items():
         method, n_train, region = key
         name = f"{method}|n_train={n_train}|{region}"

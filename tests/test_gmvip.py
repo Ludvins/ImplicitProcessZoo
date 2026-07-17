@@ -54,6 +54,7 @@ def _toy_classification_data(num_points=12, num_classes=3):
 def _make_model(
     operator_type="rbf",
     posterior_type="gaussian",
+    path_mode="full",
     num_inducing=6,
     num_operator_bank_samples=40,
     mean_mode="prior_sample",
@@ -66,6 +67,7 @@ def _make_model(
         inducing_points=Z,
         operator_type=operator_type,
         posterior_type=posterior_type,
+        path_mode=path_mode,
         num_operator_bank_samples=num_operator_bank_samples,
         jitter=1e-5,
         shrinkage=0.02,
@@ -86,6 +88,8 @@ def _make_vector_model(
     num_operator_bank_samples=16,
     seed=0,
     learn_noise=True,
+    joint_output_covariance=False,
+    path_mode="full",
 ):
     Z = torch.linspace(-1.5, 1.5, num_inducing, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
     return GeneralizedMatheronVIP(
@@ -97,6 +101,7 @@ def _make_vector_model(
         inducing_points=Z,
         operator_type=operator_type,
         posterior_type="gaussian",
+        path_mode=path_mode,
         num_operator_bank_samples=num_operator_bank_samples,
         learn_noise=learn_noise,
         init_log_noise=torch.tensor([-2.0, -1.5], dtype=DTYPE, device=DEVICE),
@@ -108,6 +113,7 @@ def _make_vector_model(
         inducing_scale="prior_cholesky",
         operator_bank_seed=seed + 100,
         output_dim=2,
+        joint_output_covariance=joint_output_covariance,
         num_train_samples=4,
         max_grad_norm=None,
     )
@@ -164,9 +170,75 @@ def test_supported_configs_instantiate_and_removed_posterior_raises():
     assert rbf_flow.posterior_type == "realnvp"
     assert rbf.antithetic_samples is True
     assert rbf_flow.antithetic_samples is True
+    assert rbf.path_mode == "full"
 
     with pytest.raises(ValueError):
         _make_model(operator_type="rbf", posterior_type="unsupported", seed=6)
+
+    with pytest.raises(ValueError, match="path_mode"):
+        _make_model(path_mode="unsupported", seed=7)
+
+
+@pytest.mark.parametrize("operator_type", ["empirical", "rbf"])
+def test_inducing_only_path_matches_mean_plus_inducing_correction(operator_type):
+    model = _make_model(
+        operator_type=operator_type,
+        path_mode="inducing_only",
+        seed=8,
+    )
+    X = torch.linspace(-1.2, 1.2, 9, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    coefficients = torch.linspace(
+        -0.8,
+        0.9,
+        3 * model.Z.shape[0],
+        dtype=DTYPE,
+        device=DEVICE,
+    ).reshape(3, model.Z.shape[0])
+
+    def fail_if_sampled(*args, **kwargs):
+        raise AssertionError("inducing-only mode must not sample a residual prior path")
+
+    model.sample_residual_prior_values = fail_if_sampled
+    actual = model.posterior_values_from_coefficients(X, coefficients)
+
+    u = model.operator.whitened_to_inducing(coefficients)
+    mu_X = model.operator.mean_at(X)
+    mu_Z = model.operator.inducing_mean()
+    psi = model.operator.psi(X)
+    expected = mu_X + (u - mu_Z).matmul(psi.T)
+
+    assert actual.shape == (3, X.shape[0])
+    assert torch.allclose(actual, expected, atol=1e-10, rtol=1e-10)
+
+
+def test_joint_output_inducing_only_path_matches_full_matrix_correction():
+    model = _make_vector_model(
+        operator_type="empirical",
+        num_inducing=5,
+        seed=9,
+        joint_output_covariance=True,
+        path_mode="inducing_only",
+    )
+    X = torch.linspace(-1.1, 1.1, 7, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    coefficients = torch.linspace(
+        -0.7,
+        0.8,
+        4 * model.Z.shape[0] * model.output_dim,
+        dtype=DTYPE,
+        device=DEVICE,
+    ).reshape(4, model.Z.shape[0], model.output_dim)
+
+    actual = model.posterior_values_from_coefficients(X, coefficients)
+
+    u = model.operator.whitened_to_inducing(coefficients)
+    mu_X = model.operator.mean_at(X)
+    mu_Z = model.operator.inducing_mean()
+    psi = model.operator.psi(X)
+    correction = (u - mu_Z).reshape(coefficients.shape[0], -1).matmul(psi.T)
+    expected = mu_X + correction.reshape(coefficients.shape[0], X.shape[0], model.output_dim)
+
+    assert actual.shape == (4, X.shape[0], model.output_dim)
+    assert torch.allclose(actual, expected, atol=1e-10, rtol=1e-10)
 
 
 def test_deprecated_gaussian_likelihood_type_maps_to_regression():
@@ -243,6 +315,27 @@ def test_multiclass_cholesky_gaussian_posterior_shapes_and_zero_kl():
     assert torch.allclose(kl, torch.zeros((), dtype=DTYPE), atol=1e-12)
 
 
+def test_joint_output_cholesky_posterior_uses_one_full_covariance():
+    posterior = CholeskyGaussianCoefficientPosterior(
+        5,
+        output_dim=3,
+        joint_output_covariance=True,
+        device=DEVICE,
+        dtype=DTYPE,
+    )
+
+    samples = posterior.rsample(num_samples=7)
+    prior = posterior.sample_prior(num_samples=6)
+    kl = posterior.kl_to_standard_normal()
+
+    assert samples.shape == (7, 5, 3)
+    assert prior.shape == (6, 5, 3)
+    assert posterior.scale_tril.shape == (15, 15)
+    assert posterior.std.shape == (5, 3)
+    assert posterior.raw_scale_tril.shape == (15 * 16 // 2,)
+    assert torch.allclose(kl, torch.zeros((), dtype=DTYPE), atol=1e-12)
+
+
 @pytest.mark.parametrize("operator_type", ["empirical", "rbf"])
 def test_vector_regression_gmvip_sample_shapes_are_finite(operator_type):
     torch.manual_seed(41)
@@ -258,6 +351,34 @@ def test_vector_regression_gmvip_sample_shapes_are_finite(operator_type):
     assert pred_samples.shape == (5, 7, 2)
     assert torch.isfinite(posterior).all()
     assert torch.isfinite(prior).all()
+
+
+def test_joint_vector_empirical_gmvip_uses_cross_output_operator_and_posterior():
+    model = _make_vector_model(
+        operator_type="empirical",
+        num_inducing=5,
+        seed=44,
+        joint_output_covariance=True,
+    )
+    X = torch.linspace(-1.0, 1.0, 7, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    y = torch.stack([torch.sin(X[:, 0]), torch.cos(X[:, 0])], dim=-1)
+
+    psi = model.compute_interpolation_matrix(X)
+    cross_covariance = model.compute_cross_covariance(X)
+    posterior = model.sample_posterior_values(X, num_samples=5, seed=441)
+    loss, _ = model.elbo_loss(X, y, num_samples=4, num_data=X.shape[0])
+    loss.backward()
+
+    assert model.joint_output_covariance is True
+    assert model.operator.joint_outputs is True
+    assert model.operator.K_ZZ.shape == (10, 10)
+    assert torch.any(model.operator.K_ZZ_raw[0::2, 1::2].abs() > 1e-10)
+    assert model.coefficients.scale_tril.shape == (10, 10)
+    assert psi.shape == (14, 10)
+    assert cross_covariance.shape == (14, 10)
+    assert posterior.shape == (5, 7, 2)
+    assert model.coefficients.raw_scale_tril.grad is not None
+    assert torch.isfinite(model.coefficients.raw_scale_tril.grad).all()
 
 
 @pytest.mark.parametrize("operator_type", ["empirical", "rbf"])

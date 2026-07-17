@@ -122,4 +122,6 @@ def test_run_smoke_all_writes_region_metrics(tmp_path):
             out_root / "simulator_forecasting" / method / "seed_0" / "metrics_per_target_region.csv"
         )
         assert metrics_path.exists()
-        assert "far_extrapolation" in metrics_path.read_text(encoding="utf-8")
+        metrics_text = metrics_path.read_text(encoding="utf-8")
+        assert "far_extrapolation" in metrics_text
+        assert "oscillation_period_error" in metrics_text

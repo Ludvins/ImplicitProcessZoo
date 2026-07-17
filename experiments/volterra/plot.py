@@ -7,17 +7,22 @@ from pathlib import Path
 
 import numpy as np
 
-DEFAULT_RESULTS_ROOT = Path("results/simprior_paper_ready_defaults/lotka_volterra")
+DEFAULT_RESULTS_ROOT = Path("results/volterra_coeff_ablation/s20/lotka_volterra")
+JOINT_RESULTS_ROOT = Path("results/simprior_joint_output_z96/lotka_volterra")
 DEFAULT_METHOD_ROOTS = {
+    "analog_prior": JOINT_RESULTS_ROOT,
+    "gmvip_surrogate_prior": JOINT_RESULTS_ROOT,
     "vip": DEFAULT_RESULTS_ROOT,
-    "ftip": Path("results/simprior_search_ordering/ftip_steps625_mc8_coeff128/lotka_volterra"),
-    "gmvip_empirical": Path(
-        "results/simprior_search_ordering/gmvip_bank512_z96_beta1_steps800/lotka_volterra"
-    ),
+    "ftip": DEFAULT_RESULTS_ROOT,
+    "empirical_gp": JOINT_RESULTS_ROOT,
+    "gmvip_empirical": JOINT_RESULTS_ROOT,
 }
-DEFAULT_OUTPUT_DIR = Path("results/simprior_search_ordering")
+DEFAULT_OUTPUT_DIR = Path("results/volterra_coeff_ablation/figures")
 
 METHOD_LABELS = {
+    "analog_prior": "Prior predictive",
+    "gmvip_surrogate_prior": "GMVIP surrogate prior",
+    "empirical_gp": "Empirical GP",
     "map": "MAP",
     "mfvi": "MFVI",
     "vip": "VIP",
@@ -28,6 +33,9 @@ METHOD_LABELS = {
     "oracle_prior_bank": "Oracle",
 }
 METHOD_SLUGS = {
+    "analog_prior": "analog",
+    "gmvip_surrogate_prior": "gmvip_surrogate_prior",
+    "empirical_gp": "empirical_gp",
     "gmvip_empirical": "gmvip",
     "oracle_prior_bank": "oracle",
 }
@@ -313,7 +321,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override one method root as METHOD=PATH.",
     )
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--methods", default="vip,ftip,gmvip_empirical")
+    parser.add_argument(
+        "--methods",
+        default="analog_prior,gmvip_surrogate_prior,vip,ftip,gmvip_empirical",
+    )
     parser.add_argument(
         "--target-ids", default="9", help="Comma-separated ids, ranges like 0-4, or all."
     )

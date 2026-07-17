@@ -19,6 +19,8 @@ def _pyplot():
 DEFAULT_COLORS = {
     "analog": "#777777",
     "seasonal_naive": "#9c755f",
+    "empirical_gaussian": "#59a14f",
+    "gmvip_empirical_exact": "#e15759",
     "vip": "#4e79a7",
     "vip_512": "#59a14f",
     "ftip": "#f28e2b",
@@ -26,8 +28,10 @@ DEFAULT_COLORS = {
 }
 
 DEFAULT_LABELS = {
-    "analog": "Analog",
+    "analog": "Analog prior",
     "seasonal_naive": "Seasonal naive",
+    "empirical_gaussian": "Empirical Gaussian",
+    "gmvip_empirical_exact": "GMVIP exact",
     "vip": "VIP",
     "vip_512": "VIP-512",
     "ftip": "FTIP",

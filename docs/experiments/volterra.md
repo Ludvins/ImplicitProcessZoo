@@ -34,14 +34,18 @@ python -m experiments.volterra.run \
 ```
 
 The default preset uses 20 targets, 80 noisy observations per target, a
-256-function empirical operator bank, 64 inducing points, 400 optimization
-steps, and 256 evaluation samples. VIP uses 512 coefficients under the same
-step budget. SIP uses the generic implementation with a simulator adapter that
-draws fresh ODE prior latents by default.
+512-function empirical operator bank, 96 inducing locations, 800 optimization
+steps for GMVIP, and 256 evaluation samples. VIP and FTIP each use 20 sampled
+prior basis functions. VIP is trained for 400 steps; FTIP is warm-started from
+a 400-step VIP fit and then fine-tuned for 400 additional steps. SIP uses the
+generic implementation with a simulator adapter that draws fresh ODE prior
+latents by default.
 
-Supported methods are `map`, `mfvi`, `vip`, `ftip`, `sip`,
-`gmvip_empirical`, `gmvip_rbf`, and `oracle_prior_bank`. Use `--method all` to
-run the preset's complete supported set.
+Supported methods include the training-free `analog_prior` (raw simulator
+prior), `gmvip_surrogate_prior` (GMVIP with its coefficient law fixed to
+standard normal), and `empirical_gp`, together with `map`, `mfvi`, `vip`,
+`ftip`, `sip`, `gmvip_empirical`, `gmvip_rbf`, and `oracle_prior_bank`. Use
+`--method all` to run the complete supported set.
 
 ## Comparison plots
 
@@ -55,27 +59,35 @@ python -m experiments.volterra.compare \
 
 ```bash
 python -m experiments.volterra.run \
-  --method vip --seed 0 \
-  --output-dir results/simprior_paper_ready_defaults \
+  --method vip --seed 0 --target-start 0 --target-stop 20 \
+  --output-dir results/volterra_coeff_ablation/s20 \
   --skip-plots --disable-tqdm
 
 python -m experiments.volterra.run \
   --method ftip --seed 0 --target-start 0 --target-stop 20 \
-  --output-dir results/simprior_search_ordering/ftip_steps625_mc8_coeff128 \
+  --output-dir results/volterra_coeff_ablation/s20 \
   --skip-plots --disable-tqdm
 
 python -m experiments.volterra.run \
   --method gmvip_empirical --seed 0 --target-start 0 --target-stop 20 \
-  --output-dir results/simprior_search_ordering/gmvip_bank512_z96_beta1_steps800 \
+  --output-dir results/simprior_joint_output_z96 \
+  --skip-plots --disable-tqdm
+
+python -m experiments.volterra.run \
+  --method gmvip_surrogate_prior --seed 0 --target-start 0 --target-stop 20 \
+  --output-dir results/simprior_joint_output_z96 \
   --skip-plots --disable-tqdm
 
 python -m experiments.volterra.plot
 ```
 
-The FTIP run trains a VIP source, warm-starts the flow, and uses the built-in
-intermediate fine-tuning budget. Empirical GMVIP uses a 512-sample operator
-bank, 96 inducing points, and 800 steps. The default plot shows target 9 and
-writes matching PNG/PDF files.
+The FTIP run trains a 400-step VIP source, warm-starts the flow, and performs
+400 additional fine-tuning steps. Empirical GMVIP uses a 512-sample operator
+bank, 96 inducing locations, a joint 192-dimensional output covariance, and
+800 steps. The default plot reads the (S=20) VIP and FTIP runs above, compares
+them with the raw prior predictive, GMVIP surrogate prior, and trained GMVIP on
+target 9, and writes matching PNG/PDF files. Empirical GP remains available as
+an optional diagnostic but is not in the default paper comparison.
 
 Select other methods, roots, or targets with:
 
@@ -109,3 +121,30 @@ Generated targets default to `data/simprior/lotka_volterra/`. Each run writes
 under `results/simprior/lotka_volterra/<method>/seed_<seed>/`, including
 `metrics.json`, `metrics_per_target.csv`, `runtime.json`, compressed prediction
 arrays, and optional figures. Shared-axis comparisons go under `shared_axes/`.
+
+Paper reporting uses 90% interval coverage for calibration. All reported
+metrics are evaluated only on the designated test partition (`t > 20`), while
+`15 < t <= 20` remains validation-only. Dynamics metrics include absolute prey
+and predator first-local-peak-time errors, mean absolute oscillation-period
+error across the two species, absolute prey-to-predator phase-lag error, and
+the fraction of posterior sample values below zero. Timing metrics are in the
+time units of the simulation grid and use the posterior mean; positivity uses
+all posterior samples on the test partition.
+
+The default empirical GMVIP is joint-output. Its empirical inducing covariance
+and Gaussian coefficient posterior each operate on the flattened prey--predator
+array, so 96 temporal inducing locations produce one full covariance over 192
+inducing variables. Set `gmvip.joint_output_covariance: false` to recover the
+older output-wise block-diagonal parameterization.
+
+Three training-free controls are available. `analog_prior` (shown as *Prior
+predictive*) draws unconditional trajectories directly from the ODE parameter
+prior. `gmvip_surrogate_prior` uses the same joint-output empirical GMVIP
+operator as the trained method but fixes
+\(q(a)=p(a)=\mathcal N(0,I)\), so it isolates the effect of the surrogate
+construction without posterior adaptation. `empirical_gp` is an optional
+diagnostic that estimates a joint prey--predator mean and covariance from 512
+simulator trajectories and conditions the resulting finite-grid Gaussian
+process analytically on the noisy observations. Its sampler uses an equivalent
+low-rank Matheron update rather than factorizing the full 1202-dimensional grid
+covariance.

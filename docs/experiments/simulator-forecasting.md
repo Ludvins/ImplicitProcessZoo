@@ -21,7 +21,10 @@ python -m experiments.simulator_forecasting.run \
 Outputs are written under
 `results/simprior/simulator_forecasting/<method>/seed_<seed>/`. The main table,
 `metrics_per_target_region.csv`, has one row per target, training-set size, and
-horizon region.
+horizon region. Paper reporting uses 90% interval coverage for calibration and
+the absolute oscillation-period error as a dynamics diagnostic. The period is
+estimated from the posterior-mean trajectory over the held-out horizon
+`t > T_obs`; the same global held-out value is attached to each regional row.
 
 ## Reproduce the T_obs=15 figure
 

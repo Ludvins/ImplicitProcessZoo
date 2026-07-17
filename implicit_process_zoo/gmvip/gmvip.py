@@ -23,6 +23,11 @@ class GeneralizedMatheronVIP(nn.Module):
 
         f(X) = g(X) + Psi_Z(X) [mu_Z + D_Z a - g(Z)].
 
+    With ``path_mode="inducing_only"``, the coherent sampled prior path is
+    replaced by its mean, giving the inducing-only ablation
+
+        f_ind(X) = mu(X) + Psi_Z(X) D_Z a.
+
     The corresponding prior uses a ~ N(0, I). The Gaussian posterior variant
     uses q(a) = N(m, L_q L_q^T), giving a closed-form coefficient KL. The
     RealNVP variant uses affine coupling layers over a and estimates the same
@@ -74,8 +79,10 @@ class GeneralizedMatheronVIP(nn.Module):
         operator_bank_seed: int | None = None,
         bank_seed: int | None = None,
         output_dim: int = 1,
+        joint_output_covariance: bool = False,
         num_classes: int | None = None,
         likelihood_type: str | None = None,
+        path_mode: str = "full",
     ):
         super().__init__()
         if inducing_points.ndim != 2:
@@ -99,8 +106,14 @@ class GeneralizedMatheronVIP(nn.Module):
         self.base_prior = base_prior
         self.operator_type = str(operator_type)
         self.posterior_type = str(posterior_type)
+        self.path_mode = str(path_mode)
+        if self.path_mode not in {"full", "inducing_only"}:
+            raise ValueError("path_mode must be 'full' or 'inducing_only'.")
         self.likelihood_type = str(likelihood)
         self.output_dim = int(output_dim)
+        self.joint_output_covariance = bool(
+            joint_output_covariance and self.output_dim > 1
+        )
         self.num_classes = None if num_classes is None else int(num_classes)
         self.epsilon = 1e-3
         self.detach_prior_samples = bool(detach_prior_samples)
@@ -129,6 +142,7 @@ class GeneralizedMatheronVIP(nn.Module):
                 freeze_base_prior=freeze_base_prior,
                 seed=operator_bank_seed,
                 enforce_exact_Z_identity=enforce_exact_Z_identity,
+                joint_outputs=self.joint_output_covariance,
             )
         elif self.operator_type == "rbf":
             self.operator = RBFCardinalMatheronOperator(
@@ -162,6 +176,7 @@ class GeneralizedMatheronVIP(nn.Module):
                 init_log_std=posterior_init_log_std,
                 min_log_std=posterior_min_log_std,
                 max_log_std=posterior_max_log_std,
+                joint_output_covariance=self.joint_output_covariance,
                 device=self.Z.device,
                 dtype=self.Z.dtype,
             )
@@ -329,7 +344,10 @@ class GeneralizedMatheronVIP(nn.Module):
     ) -> torch.Tensor:
         X = self._as_model_input(X)
         coefficients = coefficients.to(dtype=self.Z.dtype, device=self.Z.device)
-        if g_X is None or g_Z is None:
+        if self.path_mode == "inducing_only":
+            g_X = self.operator.mean_at(X)
+            g_Z = self.operator.inducing_mean()
+        elif g_X is None or g_Z is None:
             g_X, g_Z = self.sample_residual_prior_values(
                 X,
                 coefficients.shape[0],

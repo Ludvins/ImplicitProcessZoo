@@ -20,6 +20,8 @@ from experiments.eld_forecasting.metrics import forecast_regions, validation_tes
 from experiments.eld_forecasting.priors import HistoricalLoadWindowPrior
 from experiments.eld_forecasting.run import (
     DEFAULT_CONFIG,
+    EmpiricalGaussianPredictive,
+    ExactEmpiricalMatheronPredictive,
     _load_config,
     _load_expected_targets,
     build_model,
@@ -73,7 +75,15 @@ def test_eld_synthetic_build_train_predict_smoke():
         },
     }
 
-    for method in ("analog", "seasonal_naive", "vip", "ftip", "gmvip_empirical"):
+    for method in (
+        "analog",
+        "seasonal_naive",
+        "empirical_gaussian",
+        "gmvip_empirical_exact",
+        "vip",
+        "ftip",
+        "gmvip_empirical",
+    ):
         model = build_model(
             method, task, config, seed=123, device=torch.device("cpu"), dtype=torch.float64
         )
@@ -83,6 +93,78 @@ def test_eld_synthetic_build_train_predict_smoke():
         assert info["steps"] >= 0
         assert samples.shape == (3, 5, 1)
         assert torch.isfinite(samples).all()
+
+
+def test_empirical_gaussian_matches_analytic_conditioning():
+    task = load_synthetic_tasks(
+        seed=3, n_targets=1, bank_size=16, window_length=12, prefix_length=5
+    )[0]
+    model = EmpiricalGaussianPredictive(task)
+
+    windows = task.prior.windows[..., 0]
+    mean = windows.mean(dim=0)
+    centered = windows - mean
+    covariance = centered.mT @ centered / float(windows.shape[0] - 1)
+    prefix_length = int(task.X_train.shape[0])
+    noise_variance = task.noise_std[0].square()
+    system = covariance[:prefix_length, :prefix_length] + noise_variance * torch.eye(
+        prefix_length, dtype=windows.dtype
+    )
+    cross_covariance = covariance[:, :prefix_length]
+    residual = task.y_train[:, 0] - mean[:prefix_length]
+    expected_mean = mean + cross_covariance @ torch.linalg.solve(system, residual)
+    expected_covariance = covariance - cross_covariance @ torch.linalg.solve(
+        system, cross_covariance.mT
+    )
+
+    torch.testing.assert_close(model.posterior_mean, expected_mean, atol=1e-8, rtol=1e-8)
+    torch.testing.assert_close(
+        model.posterior_covariance, expected_covariance, atol=1e-8, rtol=1e-8
+    )
+    samples = model.predict_f_samples(task.X_plot, 7, seed=19)
+    assert samples.shape == (7, 12, 1)
+    assert torch.isfinite(samples).all()
+
+
+def test_exact_empirical_matheron_has_full_exact_coefficient_posterior():
+    task = load_synthetic_tasks(
+        seed=5, n_targets=1, bank_size=24, window_length=16, prefix_length=6
+    )[0]
+    matheron = ExactEmpiricalMatheronPredictive(task)
+
+    expected_inducing_mean = matheron.prior_mean[: matheron.prefix_length] + (
+        matheron.inducing_scale @ matheron.coefficient_posterior_mean
+    )
+    torch.testing.assert_close(
+        matheron.inducing_posterior_mean,
+        expected_inducing_mean,
+        atol=1e-10,
+        rtol=1e-10,
+    )
+    expected_inducing_covariance = (
+        matheron.inducing_scale
+        @ matheron.coefficient_posterior_covariance
+        @ matheron.inducing_scale.mT
+    )
+    torch.testing.assert_close(
+        matheron.inducing_posterior_covariance,
+        expected_inducing_covariance,
+        atol=1e-10,
+        rtol=1e-10,
+    )
+
+    prefix_length = int(task.X_train.shape[0])
+    assert matheron.coefficient_posterior_covariance.shape == (
+        prefix_length,
+        prefix_length,
+    )
+    off_diagonal = matheron.coefficient_posterior_covariance - torch.diag(
+        torch.diagonal(matheron.coefficient_posterior_covariance)
+    )
+    assert torch.count_nonzero(off_diagonal.abs() > 1e-10) > 0
+    samples = matheron.predict_f_samples(task.X_plot, 32, seed=91)
+    assert samples.shape == (32, 16, 1)
+    assert torch.isfinite(samples).all()
 
 
 def test_eld_synthetic_runner_writes_metrics(tmp_path):
@@ -112,11 +194,12 @@ def test_eld_synthetic_runner_writes_metrics(tmp_path):
         assert {row["target_seed"] for row in rows} == {"0"}
         assert all("region_start_idx" in row and "region_stop_idx" in row for row in rows)
         assert all("region_include_left" not in row for row in rows)
+        assert all("cov80" in row and "width80" in row for row in rows)
         metrics = json.loads((path.parent / "metrics.json").read_text(encoding="utf-8"))
         assert metrics["run_seed"] == 0
 
 
-def test_eld_paper_preset_is_the_frozen_original_experiment():
+def test_eld_paper_preset_is_the_canonical_experiment():
     config = _load_config(parse_args(["--preset", "eld_paper"]))
 
     assert config == DEFAULT_CONFIG
@@ -127,11 +210,12 @@ def test_eld_paper_preset_is_the_frozen_original_experiment():
     assert config["data"]["prior_years"] == [2011, 2012, 2013]
     assert config["data"]["target_years"] == [2014]
     assert config["prior"] == {"bank_size": 2048, "selection": "calendar_prefix_nn"}
-    assert config["gmvip"]["num_inducing"] == 192
+    assert config["gmvip"]["num_inducing"] == 96
     assert config["training"]["max_steps"] == 500
     assert config["training"]["n_mc_train"] == 8
     assert config["training"]["n_mc_eval"] == 256
     assert config["training"]["regression_coeffs"] == 20
+    assert config["metrics"]["levels"] == [0.8, 0.9, 0.95]
     assert config["metrics"]["regions"] == {"test_forecast": {"start": 96, "stop": 192}}
     expected = _load_expected_targets(config["data"]["target_manifest"], run_seed=0)
     assert expected is not None

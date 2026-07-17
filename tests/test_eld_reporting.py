@@ -44,6 +44,36 @@ def test_eld_aggregate_uses_original_median_iqr_summary(tmp_path):
     assert overall["rmse_mean"] == 4.0
 
 
+def test_eld_aggregate_backfills_80_percent_intervals_from_predictions(tmp_path):
+    metric_path = tmp_path / "vip" / "seed_0" / "metrics_per_target_region.csv"
+    metric_path.parent.mkdir(parents=True)
+    (metric_path.parent / "config.yaml").write_text(
+        "experiment: eld_forecasting\n", encoding="utf-8"
+    )
+    pd.DataFrame(
+        [
+            {
+                "method": "vip",
+                "run_seed": 0,
+                "target_id": 18,
+                "client_id": "MT_353",
+                "start_time": "2014-09-23 00:00:00",
+                "region": "test_forecast",
+                "region_start_idx": 4,
+                "region_stop_idx": 8,
+                "rmse": 0.0,
+            }
+        ]
+    ).to_csv(metric_path, index=False)
+    _write_prediction(tmp_path, "vip")
+
+    summary = aggregate(tmp_path)
+    overall = summary.iloc[0]
+
+    assert overall["cov80_median"] == 1.0
+    assert np.isclose(overall["width80_median"], 1.6)
+
+
 def _write_prediction(root, method):
     path = root / method / "seed_0" / "predictions" / "target_18.npz"
     path.parent.mkdir(parents=True)

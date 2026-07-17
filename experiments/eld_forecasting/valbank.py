@@ -157,7 +157,7 @@ def _score_validation(
         y_true,
         t_grid,
         noise_std,
-        levels=tuple(config.get("metrics", {}).get("levels", [0.9, 0.95])),
+        levels=tuple(config.get("metrics", {}).get("levels", [0.8, 0.9, 0.95])),
         regions={
             "validation": {
                 "start": _hours_to_points(train_hours),

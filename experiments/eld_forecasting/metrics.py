@@ -128,7 +128,7 @@ def mixture_gaussian_nlpd(samples, y_true, noise_var, eps: float = 1e-12):
     return -(torch.logsumexp(log_probs, dim=0) - math.log(samples.shape[0])).mean()
 
 
-def interval_coverage(samples, y_true, levels=(0.9, 0.95)):
+def interval_coverage(samples, y_true, levels=(0.8, 0.9, 0.95)):
     samples = _as_tensor(samples)
     y_true = _as_tensor(y_true, like=samples)
     result = {}
@@ -140,7 +140,7 @@ def interval_coverage(samples, y_true, levels=(0.9, 0.95)):
     return result
 
 
-def interval_width(samples, levels=(0.9, 0.95)):
+def interval_width(samples, levels=(0.8, 0.9, 0.95)):
     samples = _as_tensor(samples)
     result = {}
     for level in levels:
@@ -212,7 +212,7 @@ def peak_errors(samples, y_true, t):
 
 
 def metrics_by_region(
-    samples, y_true, t, noise_std, levels=(0.9, 0.95), regions: dict | None = None
+    samples, y_true, t, noise_std, levels=(0.8, 0.9, 0.95), regions: dict | None = None
 ):
     samples = _as_tensor(samples)
     if samples.ndim == 2:

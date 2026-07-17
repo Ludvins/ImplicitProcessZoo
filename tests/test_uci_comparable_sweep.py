@@ -107,6 +107,15 @@ def test_variant_tags_distinguish_prior_and_inducing_states():
     assert "learnprior" in _variant_tag(sip_learn, "sip")
     assert "fixedprior" in _variant_tag(sip_fixed, "sip")
 
+    gmvip_full = _args(["--model", "gmvip"])
+    gmvip_inducing_only = _args(
+        ["--model", "gmvip", "--gmvip_path_mode", "inducing_only"]
+    )
+    assert gmvip_full.gmvip_path_mode == "full"
+    assert _variant_tag(gmvip_full, "gmvip") != _variant_tag(gmvip_inducing_only, "gmvip")
+    assert "_full_" in _variant_tag(gmvip_full, "gmvip")
+    assert "_inducing_only_" in _variant_tag(gmvip_inducing_only, "gmvip")
+
 
 def test_ftip_prior_flag_controls_generator_trainability():
     dataset = TinyTrainDataset()
@@ -178,6 +187,11 @@ def test_gmvip_and_sip_build_with_learn_z_and_both_prior_states():
         model = build_model(parse_args([*gmvip_common, prior_flag]), dataset)
         assert model.Z.requires_grad
         assert any(p.requires_grad for p in model.base_prior.parameters()) is should_train
+
+    inducing_only_model = build_model(
+        parse_args([*gmvip_common, "--gmvip_path_mode", "inducing_only"]), dataset
+    )
+    assert inducing_only_model.path_mode == "inducing_only"
 
     for prior_flag, should_train in [("--sip_learn_prior", True), ("--no-sip_learn_prior", False)]:
         model = build_model(parse_args([*sip_common, prior_flag]), dataset)

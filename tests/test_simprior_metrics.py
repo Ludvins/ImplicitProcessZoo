@@ -1,5 +1,10 @@
 import torch
 
+from experiments.common import (
+    peak_time_error,
+    phase_lag_error,
+    positivity_violation_rate,
+)
 from experiments.volterra.metrics import (
     crps_from_samples,
     gaussian_nll_from_samples,
@@ -65,3 +70,28 @@ def test_lotka_volterra_residual_score_is_finite_for_valid_curve():
 
     assert score.shape == (1,)
     assert torch.isfinite(score).all()
+
+
+def test_lotka_volterra_dynamics_metrics_have_known_values():
+    t = torch.linspace(0.0, 10.0, 1001, dtype=torch.float64)
+    truth = torch.stack(
+        [
+            2.0 + torch.cos(2.0 * torch.pi * (t - 2.0) / 4.0),
+            2.0 + torch.cos(2.0 * torch.pi * (t - 3.0) / 4.0),
+        ],
+        dim=-1,
+    )
+    prediction = torch.stack(
+        [
+            2.0 + torch.cos(2.0 * torch.pi * (t - 2.5) / 4.0),
+            2.0 + torch.cos(2.0 * torch.pi * (t - 4.0) / 4.0),
+        ],
+        dim=-1,
+    ).unsqueeze(0)
+
+    assert torch.allclose(peak_time_error(prediction, truth, t, channel=0), t.new_tensor(0.5))
+    assert torch.allclose(phase_lag_error(prediction, truth, t), t.new_tensor(0.5), atol=1e-6)
+
+    prediction[:, :10, 0] = -0.1
+    expected_rate = torch.tensor(10 / prediction.numel(), dtype=prediction.dtype)
+    assert torch.allclose(positivity_violation_rate(prediction), expected_rate)

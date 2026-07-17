@@ -22,6 +22,9 @@ def _save(fig, path_base: str | Path, **savefig_kwargs) -> None:
 
 
 DEFAULT_METHOD_LABELS = {
+    "analog_prior": "Prior predictive",
+    "gmvip_surrogate_prior": "GMVIP surrogate prior",
+    "empirical_gp": "Empirical GP",
     "map": "MAP",
     "mfvi": "MFVI",
     "vip": "VIP",
@@ -34,6 +37,8 @@ DEFAULT_METHOD_LABELS = {
 
 
 DEFAULT_METHOD_COLORS = {
+    "analog_prior": "#79706E",
+    "empirical_gp": "#59A14F",
     "map": "#9D755D",
     "mfvi": "#B279A2",
     "vip": "#4C78A8",

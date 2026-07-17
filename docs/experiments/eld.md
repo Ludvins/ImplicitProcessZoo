@@ -39,13 +39,47 @@ The `eld_paper` preset fixes the experiment:
 - 2,048 historical 2011--2013 windows selected by `calendar_prefix_nn`;
 - analog, VIP, FTIP, and empirical GMVIP;
 - 20 VIP/FTIP coefficients;
-- 192 GMVIP inducing locations, empirical operator, beta 1;
-- 500 optimization steps, 8 training samples, 256 evaluation samples; and
+- 96 GMVIP inducing locations (one per observed context point), empirical
+  operator, beta 1;
+- 500 optimization steps, 8 training samples, 256 evaluation samples;
+- central 80%, 90%, and 95% interval coverage and width; and
 - median and IQR across all 75 seed-target windows as the primary report.
 
 The frozen target manifest is validated before training. Any loader change that
 maps a target ID to a different client/date fails. Seed-0 target 18 is client
 `MT_353` beginning `2014-09-23 00:00:00`.
+
+The optional training-free `gmvip_empirical_exact` method uses the observed
+prefix as the inducing set, $Z=X_{\mathrm{obs}}$, derives the exact
+full-covariance Gaussian posterior over its 96 whitened inducing coefficients,
+and retains conditional residual paths from the historical trajectory bank.
+It performs no optimization. Run it with:
+
+```bash
+for seed in 0 1 2; do
+  python -m experiments.eld_forecasting.run \
+    --preset eld_paper \
+    --method gmvip_empirical_exact \
+    --seed ${seed} \
+    --output-dir results/eld_forecasting_exact_gmvip \
+    --disable-tqdm
+done
+
+python -m experiments.eld_forecasting.compare \
+  --results-root results/eld_forecasting_exact_gmvip \
+  --output results/eld_forecasting_exact_gmvip/summary_median_iqr.csv
+```
+
+The exact coefficient posterior is
+
+\[
+S_a=\left(I+\sigma_y^{-2}L^\top L\right)^{-1},\qquad
+m_a=\sigma_y^{-2}S_aL^\top(y_{\mathrm{obs}}-\mu),
+\]
+
+where $LL^\top$ is the empirical covariance at the observed locations.
+The implementation uses all 2,048 selected paths to estimate these moments,
+rather than resampling a second operator bank.
 
 Metrics use integer half-open intervals. Rows distinguish `run_seed` from
 `target_seed`, store exact region boundaries/timestamps, and include auditable
