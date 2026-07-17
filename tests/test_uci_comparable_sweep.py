@@ -197,3 +197,31 @@ def test_gmvip_and_sip_build_with_learn_z_and_both_prior_states():
         model = build_model(parse_args([*sip_common, prior_flag]), dataset)
         assert isinstance(model.Z, torch.nn.Parameter)
         assert any(p.requires_grad for p in model.generative_function.parameters()) is should_train
+
+
+def test_gmvip_grid_inducing_initializer_builds_for_multidimensional_uci_inputs():
+    dataset = TinyTrainDataset()
+    args = _args([
+        "--model",
+        "gmvip",
+        "--hidden_dims",
+        "4",
+        "--gmvip_operator_type",
+        "empirical",
+        "--gmvip_posterior_type",
+        "gaussian",
+        "--gmvip_num_inducing",
+        "4",
+        "--gmvip_inducing_method",
+        "grid",
+        "--gmvip_num_train_samples",
+        "8",
+        "--gmvip_num_eval_samples",
+        "8",
+        "--gmvip_num_operator_bank_samples",
+        "8",
+    ])
+
+    model = build_model(args, dataset)
+
+    assert model.Z.shape == (4, 2)

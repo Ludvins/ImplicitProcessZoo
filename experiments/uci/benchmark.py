@@ -586,7 +586,7 @@ def parse_args(
         "--sip_inducing_method",
         type=str,
         default="kmeans",
-        choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+        choices=["grid", "random_subset", "kmeans", "grid_1d", "train_quantiles"],
         help="Initialization method for SIP inducing inputs.",
     )
     p.add_argument(
@@ -732,7 +732,7 @@ def parse_args(
         "--gmvip_inducing_method",
         type=str,
         default="kmeans",
-        choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+        choices=["grid", "random_subset", "kmeans", "grid_1d", "train_quantiles"],
         help="Initialization rule for GMVIP inducing points.",
     )
     p.add_argument(

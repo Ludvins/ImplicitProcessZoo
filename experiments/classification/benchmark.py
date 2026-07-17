@@ -284,7 +284,7 @@ def parse_args(argv=None):
         "--sip_inducing_method",
         type=str,
         default="random_subset",
-        choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+        choices=["grid", "random_subset", "kmeans", "grid_1d", "train_quantiles"],
     )
     p.add_argument("--sip_num_prior_samples", type=int, default=64)
     p.add_argument("--sip_num_train_samples", type=int, default=None)
@@ -331,7 +331,7 @@ def parse_args(argv=None):
         "--gmvip_inducing_method",
         type=str,
         default="random_subset",
-        choices=["random_subset", "kmeans", "grid_1d", "train_quantiles"],
+        choices=["grid", "random_subset", "kmeans", "grid_1d", "train_quantiles"],
     )
     p.add_argument("--gmvip_num_operator_bank_samples", type=int, default=64)
     p.add_argument("--gmvip_num_train_samples", type=int, default=None)
