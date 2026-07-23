@@ -1260,9 +1260,8 @@ class FreshLotkaVolterraSIPPrior(torch.nn.Module):
         self.num_samples = int(num_samples)
         self.seed = int(seed)
         self.fresh_prior_samples = bool(fresh_prior_samples)
-        self.register_buffer(
-            "_sample_counter", torch.zeros((), dtype=torch.long, device=base_prior.device)
-        )
+        self.generator = torch.Generator(device=base_prior.device)
+        self.generator.manual_seed(self.seed)
 
     @property
     def input_dim(self) -> int:
@@ -1284,8 +1283,16 @@ class FreshLotkaVolterraSIPPrior(torch.nn.Module):
         sample_count = self.num_samples if num_samples is None else int(num_samples)
         seed = self.seed
         if self.fresh_prior_samples:
-            seed = self.seed + int(self._sample_counter.item())
-            self._sample_counter.add_(1)
+            seed = int(
+                torch.randint(
+                    0,
+                    torch.iinfo(torch.int32).max,
+                    (),
+                    generator=self.generator,
+                    dtype=torch.int64,
+                    device=self.device,
+                ).item()
+            )
         latents = self.base_prior.sample_latents(
             sample_count, seed=seed, cache=not self.fresh_prior_samples
         )
