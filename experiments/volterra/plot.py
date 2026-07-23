@@ -158,11 +158,7 @@ def _load_prediction(
     method: str,
     target_id: int,
 ) -> dict[str, np.ndarray]:
-    path = (
-        _method_dir(root, seed, basis_size, method)
-        / "predictions"
-        / f"target_{target_id}.npz"
-    )
+    path = _method_dir(root, seed, basis_size, method) / "predictions" / f"target_{target_id}.npz"
     if not path.exists():
         raise FileNotFoundError(f"Missing prediction artifact: {path}")
     with np.load(path) as payload:
@@ -185,9 +181,7 @@ def _read_metrics(root: Path, seed: int, basis_size: int, method: str) -> list[d
         converted.append(
             {
                 key: (
-                    value
-                    if key in {"experiment", "method", "metric_partition"}
-                    else float(value)
+                    value if key in {"experiment", "method", "metric_partition"} else float(value)
                 )
                 for key, value in row.items()
                 if value not in {"", None}
@@ -365,9 +359,7 @@ def write_main_table(
         for method in methods
     }
     wrappers = {
-        metric: _rank_wrappers(
-            {method: summaries[method][metric][0] for method in methods}, metric
-        )
+        metric: _rank_wrappers({method: summaries[method][metric][0] for method in methods}, metric)
         for metric, _ in METRICS
     }
     lines = [
@@ -423,10 +415,7 @@ def write_basis_table(
     )
     wrappers = {
         metric: _rank_wrappers(
-            {
-                f"{method}:{basis_size}": summary[metric][0]
-                for method, basis_size, summary in rows
-            },
+            {f"{method}:{basis_size}": summary[metric][0] for method, basis_size, summary in rows},
             metric,
         )
         for metric, _ in METRICS
@@ -440,10 +429,7 @@ def write_basis_table(
     for method, basis_size, summary in rows:
         row_key = f"{method}:{basis_size}"
         representation = f"$S={basis_size}$" if basis_size is not None else "$M=96$"
-        cells = [
-            _format_cell(*summary[metric], wrappers[metric][row_key])
-            for metric, _ in METRICS
-        ]
+        cells = [_format_cell(*summary[metric], wrappers[metric][row_key]) for metric, _ in METRICS]
         lines.append(
             f"{METHOD_LABELS.get(method, method)} & {representation} & "
             + " & ".join(cells)
@@ -509,10 +495,7 @@ def write_noise_comparison(
 
     wrappers = {
         metric: _rank_wrappers(
-            {
-                key: report_rows[key]["metrics"][metric]["mean"]
-                for key, *_ in row_specs
-            },
+            {key: report_rows[key]["metrics"][metric]["mean"] for key, *_ in row_specs},
             metric,
         )
         for metric, _ in METRICS

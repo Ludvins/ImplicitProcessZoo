@@ -14,8 +14,7 @@ def as_curves(samples: torch.Tensor) -> torch.Tensor:
         samples = samples[..., 0]
     if samples.ndim != 2:
         raise ValueError(
-            "Function samples must have shape [S, N] or [S, N, 1], "
-            f"got {tuple(samples.shape)}."
+            f"Function samples must have shape [S, N] or [S, N, 1], got {tuple(samples.shape)}."
         )
     if samples.shape[0] < 2:
         raise ValueError("At least two function samples are required.")
@@ -74,9 +73,7 @@ def projection_directions(
         dtype=dtype,
         device=device,
     )
-    return directions / directions.norm(dim=1, keepdim=True).clamp_min(
-        torch.finfo(dtype).eps
-    )
+    return directions / directions.norm(dim=1, keepdim=True).clamp_min(torch.finfo(dtype).eps)
 
 
 def pointwise_wasserstein1(
@@ -104,9 +101,7 @@ def sliced_wasserstein2(
     """Sliced Wasserstein-2 distance between complete sampled functions."""
     reference = as_curves(reference)
     candidate = as_curves(candidate).to(dtype=reference.dtype, device=reference.device)
-    directions = torch.as_tensor(
-        directions, dtype=reference.dtype, device=reference.device
-    )
+    directions = torch.as_tensor(directions, dtype=reference.dtype, device=reference.device)
     if reference.shape != candidate.shape:
         raise ValueError(
             "Sliced Wasserstein currently requires equal sample and grid sizes, "
@@ -137,12 +132,8 @@ def moment_errors(
     mean_rmse = (reference.mean(dim=0) - candidate.mean(dim=0)).square().mean().sqrt()
     reference_centered = reference - reference.mean(dim=0, keepdim=True)
     candidate_centered = candidate - candidate.mean(dim=0, keepdim=True)
-    reference_cov = reference_centered.T @ reference_centered / float(
-        reference.shape[0] - 1
-    )
-    candidate_cov = candidate_centered.T @ candidate_centered / float(
-        candidate.shape[0] - 1
-    )
+    reference_cov = reference_centered.T @ reference_centered / float(reference.shape[0] - 1)
+    candidate_cov = candidate_centered.T @ candidate_centered / float(candidate.shape[0] - 1)
     denominator = torch.linalg.matrix_norm(reference_cov).clamp_min(
         torch.finfo(reference.dtype).eps
     )
@@ -179,12 +170,8 @@ def energy_distance(
     reference = as_curves(reference)
     candidate = as_curves(candidate).to(dtype=reference.dtype, device=reference.device)
     cross = _mean_pairwise_distance(reference, candidate, chunk_size=chunk_size)
-    within_reference = _mean_pairwise_distance(
-        reference, reference, chunk_size=chunk_size
-    )
-    within_candidate = _mean_pairwise_distance(
-        candidate, candidate, chunk_size=chunk_size
-    )
+    within_reference = _mean_pairwise_distance(reference, reference, chunk_size=chunk_size)
+    within_candidate = _mean_pairwise_distance(candidate, candidate, chunk_size=chunk_size)
     return (2.0 * cross - within_reference - within_candidate).clamp_min(0.0)
 
 
@@ -215,17 +202,13 @@ def _mean_rbf_kernel(
     total = left.new_zeros(())
     count = 0
     scale_tensor = left.new_tensor(scales)
-    bandwidths_sq = (bandwidth * scale_tensor).square().clamp_min(
-        torch.finfo(left.dtype).eps
-    )
+    bandwidths_sq = (bandwidth * scale_tensor).square().clamp_min(torch.finfo(left.dtype).eps)
     for left_start in range(0, left.shape[0], int(chunk_size)):
         left_chunk = left[left_start : left_start + int(chunk_size)]
         for right_start in range(0, right.shape[0], int(chunk_size)):
             right_chunk = right[right_start : right_start + int(chunk_size)]
             distance_sq = torch.cdist(left_chunk, right_chunk).square() / dimension
-            kernels = torch.exp(
-                -0.5 * distance_sq.unsqueeze(-1) / bandwidths_sq
-            ).mean(dim=-1)
+            kernels = torch.exp(-0.5 * distance_sq.unsqueeze(-1) / bandwidths_sq).mean(dim=-1)
             total = total + kernels.sum()
             count += kernels.numel()
     return total / float(count)
@@ -242,9 +225,7 @@ def rbf_mmd2(
     """Biased non-negative multi-bandwidth RBF MMD squared."""
     reference = as_curves(reference)
     candidate = as_curves(candidate).to(dtype=reference.dtype, device=reference.device)
-    bandwidth = torch.as_tensor(
-        bandwidth, dtype=reference.dtype, device=reference.device
-    )
+    bandwidth = torch.as_tensor(bandwidth, dtype=reference.dtype, device=reference.device)
     reference_kernel = _mean_rbf_kernel(
         reference,
         reference,
@@ -295,9 +276,7 @@ def fidelity_metrics(
         robustness_reference = reference[:count]
         robustness_candidate = candidate[:count]
     metrics = {
-        "joint_sw2": float(
-            sliced_wasserstein2(reference, candidate, directions).detach().cpu()
-        ),
+        "joint_sw2": float(sliced_wasserstein2(reference, candidate, directions).detach().cpu()),
         "marginal_w1_mean": float(pointwise.mean().detach().cpu()),
         "marginal_w1_max": float(pointwise.max().detach().cpu()),
         "mean_rmse": float(mean_error.detach().cpu()),

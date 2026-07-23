@@ -111,9 +111,7 @@ class GeneralizedMatheronVIP(nn.Module):
             raise ValueError("path_mode must be 'full' or 'inducing_only'.")
         self.likelihood_type = str(likelihood)
         self.output_dim = int(output_dim)
-        self.joint_output_covariance = bool(
-            joint_output_covariance and self.output_dim > 1
-        )
+        self.joint_output_covariance = bool(joint_output_covariance and self.output_dim > 1)
         self.num_classes = None if num_classes is None else int(num_classes)
         self.epsilon = 1e-3
         self.detach_prior_samples = bool(detach_prior_samples)

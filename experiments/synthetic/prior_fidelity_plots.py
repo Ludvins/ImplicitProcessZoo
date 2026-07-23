@@ -211,11 +211,7 @@ def plot_gmvip_bank_sensitivity(
 ) -> None:
     """Plot GMVIP distance sensitivity to its empirical operator bank size."""
     plt = _pyplot()
-    rows = [
-        row
-        for row in summary_rows
-        if row["method"] == "gmvip" and bool(row["in_bank_sweep"])
-    ]
+    rows = [row for row in summary_rows if row["method"] == "gmvip" and bool(row["in_bank_sweep"])]
     rows.sort(key=lambda row: int(row["operator_bank_size"]))
     if not rows:
         return

@@ -169,9 +169,7 @@ def _configure_model_noise(model, noise_std: torch.Tensor, *, learn: bool) -> No
 def _model_noise_std_norm(model, task, config: dict) -> torch.Tensor:
     if not _learn_observation_noise(config) or getattr(model, "is_fixed_predictive", False):
         return task.noise_std
-    if getattr(model, "likelihood", None) is not None and hasattr(
-        model.likelihood, "noise_std"
-    ):
+    if getattr(model, "likelihood", None) is not None and hasattr(model.likelihood, "noise_std"):
         value = model.likelihood.noise_std
     elif hasattr(model, "effective_log_variance"):
         value = torch.exp(0.5 * model.effective_log_variance())
@@ -262,9 +260,9 @@ class EmpiricalGaussianPredictive(torch.nn.Module):
         noise_variance = task.noise_std.to(dtype=dtype, device=device).reshape(-1)[0].square()
         scale = covariance.diagonal().mean().clamp_min(torch.finfo(dtype).eps)
         numerical_jitter = max(float(jitter), float(torch.finfo(dtype).eps)) * scale
-        observed_system = observed_covariance + (
-            noise_variance + numerical_jitter
-        ) * torch.eye(prefix_length, dtype=dtype, device=device)
+        observed_system = observed_covariance + (noise_variance + numerical_jitter) * torch.eye(
+            prefix_length, dtype=dtype, device=device
+        )
         observed_cholesky = torch.linalg.cholesky(observed_system)
 
         cross_covariance = covariance[:, :prefix_length]
@@ -367,20 +365,18 @@ class ExactEmpiricalMatheronPredictive(torch.nn.Module):
         ).squeeze(-1)
 
         inducing_posterior_mean = mean[:prefix_length] + inducing_scale @ coefficient_mean
-        inducing_posterior_covariance = (
-            inducing_scale @ coefficient_covariance @ inducing_scale.mT
-        )
+        inducing_posterior_covariance = inducing_scale @ coefficient_covariance @ inducing_scale.mT
         inducing_posterior_covariance = 0.5 * (
             inducing_posterior_covariance + inducing_posterior_covariance.mT
         )
         inducing_eigenvalues, inducing_eigenvectors = torch.linalg.eigh(
             inducing_posterior_covariance
         )
-        inducing_factor = inducing_eigenvectors * inducing_eigenvalues.clamp_min(0.0).sqrt().unsqueeze(0)
+        inducing_factor = inducing_eigenvectors * inducing_eigenvalues.clamp_min(
+            0.0
+        ).sqrt().unsqueeze(0)
 
-        projection = torch.cholesky_solve(
-            cross_covariance.mT, inducing_scale
-        ).mT
+        projection = torch.cholesky_solve(cross_covariance.mT, inducing_scale).mT
         projection[:prefix_length] = identity
 
         # The empirical Matheron residual vanishes at the inducing locations,
@@ -423,9 +419,11 @@ class ExactEmpiricalMatheronPredictive(torch.nn.Module):
             self.inducing_posterior_mean.unsqueeze(0)
             + inducing_noise @ self.inducing_posterior_factor.mT
         )
-        conditional_mean = self.prior_mean.unsqueeze(0) + (
-            inducing_values - self.prior_mean[: self.prefix_length].unsqueeze(0)
-        ) @ self.conditional_projection.mT
+        conditional_mean = (
+            self.prior_mean.unsqueeze(0)
+            + (inducing_values - self.prior_mean[: self.prefix_length].unsqueeze(0))
+            @ self.conditional_projection.mT
+        )
         residual_indices = torch.randint(
             0,
             int(self.empirical_residuals.shape[0]),
@@ -445,6 +443,8 @@ class ExactEmpiricalMatheronPredictive(torch.nn.Module):
         )
         indices = positions.round().long().clamp(0, self.window_length - 1)
         return full_samples[:, indices].unsqueeze(-1)
+
+
 class SeasonalNaivePredictive(torch.nn.Module):
     is_fixed_predictive = True
 
@@ -1066,12 +1066,7 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
     tasks = tasks or _load_tasks(config, args, seed=seed, device=device, dtype=dtype)
     ids = [int(task.metadata["target_id"]) for task in tasks]
     basis_size = int(args.vip_basis_size)
-    out_dir = (
-        Path(args.output_root)
-        / f"seed_{seed}"
-        / f"S_{basis_size}"
-        / method
-    )
+    out_dir = Path(args.output_root) / f"seed_{seed}" / f"S_{basis_size}" / method
     out_dir.mkdir(parents=True, exist_ok=True)
     config_path = out_dir / "config.yaml"
     config_text = yaml.safe_dump(config, sort_keys=False)
@@ -1214,9 +1209,7 @@ def main(argv: list[str] | None = None):
     config["training"]["n_mc_eval"] = (
         int(config["training"]["n_mc_eval"]) if args.smoke else EVALUATION_SAMPLES
     )
-    config["likelihood"]["learn_observation_noise"] = bool(
-        args.learn_observation_noise
-    )
+    config["likelihood"]["learn_observation_noise"] = bool(args.learn_observation_noise)
     if args.disable_tqdm:
         config.setdefault("training", {})["disable_tqdm"] = True
     methods = _requested_methods(args.methods)

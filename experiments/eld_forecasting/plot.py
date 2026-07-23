@@ -372,15 +372,18 @@ def _read_metric_rows(
                     manifest.get("data_usage", {}).get("validation"),
                     "none",
                 )
-            if method == "gmvip_empirical" and int(
-                manifest.get("config", {}).get("gmvip", {}).get("num_inducing", -1)
-            ) != 96:
+            if (
+                method == "gmvip_empirical"
+                and int(manifest.get("config", {}).get("gmvip", {}).get("num_inducing", -1)) != 96
+            ):
                 mismatches["gmvip.num_inducing"] = (
                     manifest.get("config", {}).get("gmvip", {}).get("num_inducing"),
                     96,
                 )
             if mismatches:
-                raise RuntimeError(f"Incompatible electricity manifest {manifest_path}: {mismatches}")
+                raise RuntimeError(
+                    f"Incompatible electricity manifest {manifest_path}: {mismatches}"
+                )
             dataset_hashes.add(manifest["dataset"]["sha256"])
             with metric_path.open("r", encoding="utf-8-sig", newline="") as handle:
                 for row in csv.DictReader(handle):
@@ -503,9 +506,7 @@ def main(argv: list[str] | None = None) -> dict:
     results_root = Path(args.results_root)
     out_dir = Path(args.out_dir)
     methods = [item.strip() for item in args.methods.split(",") if item.strip()]
-    figure_methods = [
-        item.strip() for item in args.figure_methods.split(",") if item.strip()
-    ]
+    figure_methods = [item.strip() for item in args.figure_methods.split(",") if item.strip()]
     seeds = [int(item.strip()) for item in args.seeds.split(",") if item.strip()]
     table = write_main_table(
         out_dir / "electricity_main_table.tex",

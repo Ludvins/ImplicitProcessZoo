@@ -297,6 +297,7 @@ def test_eld_regions_are_half_open_nonoverlapping_and_dynamic():
     assert smoke["observed_prefix"]["stop"] == smoke["full_forecast"]["start"]
     assert "next_day_forecast" not in smoke
 
+
 def test_window_index_vectorized_selection_records_fallback_and_caches():
     values = np.asarray(
         [

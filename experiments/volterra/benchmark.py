@@ -121,15 +121,9 @@ class LotkaVolterraPrior(torch.nn.Module):
                 device=device,
             ),
         )
-        self.register_buffer(
-            "theta_log_stds", torch.full((4,), 0.15, dtype=dtype, device=device)
-        )
-        self.register_buffer(
-            "initial_low", torch.tensor([0.8, 0.8], dtype=dtype, device=device)
-        )
-        self.register_buffer(
-            "initial_high", torch.tensor([1.2, 1.2], dtype=dtype, device=device)
-        )
+        self.register_buffer("theta_log_stds", torch.full((4,), 0.15, dtype=dtype, device=device))
+        self.register_buffer("initial_low", torch.tensor([0.8, 0.8], dtype=dtype, device=device))
+        self.register_buffer("initial_high", torch.tensor([1.2, 1.2], dtype=dtype, device=device))
 
         y_mean_tensor = torch.as_tensor(y_mean, dtype=dtype, device=device)
         y_std_tensor = torch.as_tensor(y_std, dtype=dtype, device=device)
@@ -293,9 +287,7 @@ class LotkaVolterraPrior(torch.nn.Module):
             x = X[:, 0]
         else:
             raise ValueError("X must have shape [N] or [N, 1].")
-        return ((x.clamp(-1.0, 1.0) + 1.0) * 0.5 * self.t_max).clamp(
-            float(self.t[0]), self.t_max
-        )
+        return ((x.clamp(-1.0, 1.0) + 1.0) * 0.5 * self.t_max).clamp(float(self.t[0]), self.t_max)
 
     def _cache_key(self, theta: torch.Tensor) -> tuple:
         return (
@@ -623,9 +615,7 @@ def fit_lotka_volterra_theta_least_squares(sample, t_grid):
     predator_design = torch.stack((interaction, -predator), dim=-1)
     prey_theta = torch.linalg.lstsq(prey_design, derivative[:, 0]).solution
     predator_theta = torch.linalg.lstsq(predator_design, derivative[:, 1]).solution
-    return torch.stack(
-        (prey_theta[0], prey_theta[1], predator_theta[0], predator_theta[1])
-    )
+    return torch.stack((prey_theta[0], prey_theta[1], predator_theta[0], predator_theta[1]))
 
 
 def lotka_volterra_residual_score(samples, t_grid):
@@ -697,6 +687,7 @@ def _git_metadata() -> dict:
         "commit": run_git("rev-parse", "HEAD"),
         "dirty": None if status is None else bool(status),
     }
+
 
 METHODS = (
     "analog_prior",
@@ -996,9 +987,7 @@ def _model_noise_std_norm(
     known_noise = task.noise_std
     if not _learn_observation_noise(config):
         return known_noise
-    if getattr(model, "likelihood", None) is not None and hasattr(
-        model.likelihood, "noise_std"
-    ):
+    if getattr(model, "likelihood", None) is not None and hasattr(model.likelihood, "noise_std"):
         noise_std = model.likelihood.noise_std
     elif hasattr(model, "effective_log_variance"):
         noise_std = torch.exp(0.5 * model.effective_log_variance())
@@ -1187,8 +1176,8 @@ class EmpiricalGPPredictive(torch.nn.Module):
             )
 
             observed_covariance = observed_features @ observed_features.T
-            marginal_scale = features.square().sum(dim=1).mean().clamp_min(
-                torch.finfo(bank.dtype).eps
+            marginal_scale = (
+                features.square().sum(dim=1).mean().clamp_min(torch.finfo(bank.dtype).eps)
             )
             numerical_jitter = max(float(jitter), float(torch.finfo(bank.dtype).eps))
             observed_system = observed_covariance + torch.diag(
@@ -1234,13 +1223,16 @@ class EmpiricalGPPredictive(torch.nn.Module):
             device=self.mean.device,
             generator=generator,
         )
-        observation_noise = torch.randn(
-            num_samples,
-            self.observed_targets.numel(),
-            dtype=self.mean.dtype,
-            device=self.mean.device,
-            generator=generator,
-        ) * self.observed_noise
+        observation_noise = (
+            torch.randn(
+                num_samples,
+                self.observed_targets.numel(),
+                dtype=self.mean.dtype,
+                device=self.mean.device,
+                generator=generator,
+            )
+            * self.observed_noise
+        )
 
         query_idx = self._query_indices(X)
         query_features = self.features[query_idx]
@@ -1533,15 +1525,12 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             data_alpha=float(gmvip_cfg.get("data_alpha", 0.0)),
             max_grad_norm=train_cfg.max_grad_norm,
             output_dim=output_dim,
-            joint_output_covariance=bool(
-                gmvip_cfg.get("joint_output_covariance", False)
-            ),
+            joint_output_covariance=bool(gmvip_cfg.get("joint_output_covariance", False)),
             operator_bank_seed=seed + 101,
         )
         if int(model.operator.num_bank_samples) != bank_size:
             raise RuntimeError(
-                "GMVIP operator-bank construction did not honor "
-                f"the resolved size B={bank_size}."
+                f"GMVIP operator-bank construction did not honor the resolved size B={bank_size}."
             )
         if method == "gmvip_surrogate_prior":
             # Leave the freshly initialized coefficient law at q(a) = N(0, I)
@@ -1786,9 +1775,7 @@ def evaluate_target(model, method: str, task, config: dict, *, seed: int, out_di
     nearest = nearest_prior_mse(
         test_samples_plot[: min(eval_samples, 128)], prior_test, chunk_size=32
     )
-    residual = lotka_volterra_residual_score(
-        test_samples_plot[: min(eval_samples, 64)], test_t
-    )
+    residual = lotka_volterra_residual_score(test_samples_plot[: min(eval_samples, 64)], test_t)
     mean_test = test_samples_plot.mean(dim=0)
     row = {
         "experiment": "lotka_volterra",
@@ -1817,14 +1804,10 @@ def evaluate_target(model, method: str, task, config: dict, *, seed: int, out_di
         "nearest_prior_mse_median": float(nearest["median"].detach().cpu()),
         "ode_residual": float(residual.mean().detach().cpu()),
         "prey_peak_time_error": float(
-            peak_time_error(test_samples_plot, test_truth_plot, test_t, channel=0)
-            .detach()
-            .cpu()
+            peak_time_error(test_samples_plot, test_truth_plot, test_t, channel=0).detach().cpu()
         ),
         "predator_peak_time_error": float(
-            peak_time_error(test_samples_plot, test_truth_plot, test_t, channel=1)
-            .detach()
-            .cpu()
+            peak_time_error(test_samples_plot, test_truth_plot, test_t, channel=1).detach().cpu()
         ),
         "prey_predator_phase_lag_error": float(
             phase_lag_error(test_samples_plot, test_truth_plot, test_t).detach().cpu()
@@ -1938,9 +1921,7 @@ def _summarize(rows: list[dict]) -> dict:
         if values.size:
             finite = values[np.isfinite(values)]
             stderr = (
-                float(np.std(finite, ddof=1) / np.sqrt(finite.size))
-                if finite.size > 1
-                else 0.0
+                float(np.std(finite, ddof=1) / np.sqrt(finite.size)) if finite.size > 1 else 0.0
             )
             summary[key] = {
                 "mean": float(np.nanmean(values)),
@@ -2008,9 +1989,7 @@ def run_method(method: str, config: dict, cli_args) -> dict:
     effective_learn_noise = requested_learn_noise and method in LEARNABLE_NOISE_METHODS
     if effective_learn_noise != requested_learn_noise:
         config = copy.deepcopy(config)
-        config.setdefault("likelihood", {})["learn_observation_noise"] = (
-            effective_learn_noise
-        )
+        config.setdefault("likelihood", {})["learn_observation_noise"] = effective_learn_noise
     seed = int(cli_args.seed)
     dtype = torch.float64
     device = torch.device(cli_args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -2033,10 +2012,7 @@ def run_method(method: str, config: dict, cli_args) -> dict:
     )
     ids = _parse_target_ids(cli_args.target_ids, len(tasks))
     out_dir = (
-        Path(cli_args.output_root)
-        / f"seed_{seed}"
-        / f"S_{int(cli_args.vip_basis_size)}"
-        / method
+        Path(cli_args.output_root) / f"seed_{seed}" / f"S_{int(cli_args.vip_basis_size)}" / method
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "manifest.json"
@@ -2171,10 +2147,7 @@ def main(argv: list[str] | None = None):
     config = copy.deepcopy(
         SMOKE_LOTKA_VOLTERRA_CONFIG if args.smoke else DEFAULT_LOTKA_VOLTERRA_CONFIG
     )
-    data_root = Path(
-        args.data_root
-        or config["data"]["root"]
-    )
+    data_root = Path(args.data_root or config["data"]["root"])
     config["data"]["root"] = str(data_root)
     config["training"]["regression_coeffs"] = int(args.vip_basis_size)
     config["ftip"]["training_overrides"]["regression_coeffs"] = int(args.vip_basis_size)

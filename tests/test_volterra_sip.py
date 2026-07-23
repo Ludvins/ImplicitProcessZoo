@@ -173,9 +173,7 @@ def test_volterra_empirical_gmvip_defaults_to_joint_outputs(tmp_path):
     loss.backward()
 
     joint_dim = int(config["gmvip"]["num_inducing"]) * 2
-    expected_bank_size = config["gmvip"].get(
-        "prior_bank_size", config["prior"]["bank_size"]
-    )
+    expected_bank_size = config["gmvip"].get("prior_bank_size", config["prior"]["bank_size"])
     assert config["gmvip"]["joint_output_covariance"] is True
     assert model.operator.num_bank_samples == expected_bank_size
     assert model.operator.bank_Z.shape[0] == expected_bank_size
@@ -259,9 +257,7 @@ def test_volterra_gmvip_surrogate_prior_is_standard_normal_and_training_free(tmp
         config,
         device=torch.device("cpu"),
     )
-    samples = predictive_function_samples(
-        model, "gmvip_surrogate_prior", task.X_test, 8, seed=123
-    )
+    samples = predictive_function_samples(model, "gmvip_surrogate_prior", task.X_test, 8, seed=123)
 
     joint_dim = int(config["gmvip"]["num_inducing"]) * 2
     assert info["steps"] == 0
@@ -286,9 +282,7 @@ def test_ftip_and_vip_use_the_same_prior_basis_seed(tmp_path):
         prior_bank_size=16,
         dtype=torch.float64,
     )[0]
-    vip = build_model(
-        "vip", task, config, seed=17, device=torch.device("cpu"), dtype=torch.float64
-    )
+    vip = build_model("vip", task, config, seed=17, device=torch.device("cpu"), dtype=torch.float64)
     ftip = build_model(
         "ftip", task, config, seed=17, device=torch.device("cpu"), dtype=torch.float64
     )

@@ -364,9 +364,7 @@ def _configure_model_noise(
 def _model_noise_std_norm(model: torch.nn.Module, task, config: dict) -> torch.Tensor:
     if not _learn_observation_noise(config):
         return task.noise_std
-    if getattr(model, "likelihood", None) is not None and hasattr(
-        model.likelihood, "noise_std"
-    ):
+    if getattr(model, "likelihood", None) is not None and hasattr(model.likelihood, "noise_std"):
         value = model.likelihood.noise_std
     elif hasattr(model, "effective_log_variance"):
         value = torch.exp(0.5 * model.effective_log_variance())
@@ -1203,12 +1201,7 @@ def run_method(method: str, config: dict, cli_args) -> dict:
     data_cfg = dict(config.get("data", {}))
     prior_cfg = dict(config.get("prior", {}))
     basis_size = int(cli_args.vip_basis_size)
-    out_dir = (
-        Path(cli_args.output_root)
-        / f"seed_{seed}"
-        / f"S_{basis_size}"
-        / method
-    )
+    out_dir = Path(cli_args.output_root) / f"seed_{seed}" / f"S_{basis_size}" / method
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
@@ -1226,32 +1219,23 @@ def run_method(method: str, config: dict, cli_args) -> dict:
         else:
             rows = []
         runtimes = (
-            json.loads(runtime_path.read_text(encoding="utf-8"))
-            if runtime_path.is_file()
-            else []
+            json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.is_file() else []
         )
     else:
         manifest = expected_manifest
         rows = []
         runtimes = []
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    completed = {
-        (int(row["target_id"]), int(row["n_train"]))
-        for row in runtimes
-    }
+    completed = {(int(row["target_id"]), int(row["n_train"])) for row in runtimes}
 
     def flush() -> dict:
         metrics = {"method": method, "seed": seed, "summary": _summarize(rows)}
         (out_dir / "metrics.json").write_text(
             json.dumps(_tensor_to_json(metrics), indent=2), encoding="utf-8"
         )
-        runtime_path.write_text(
-            json.dumps(_tensor_to_json(runtimes), indent=2), encoding="utf-8"
-        )
+        runtime_path.write_text(json.dumps(_tensor_to_json(runtimes), indent=2), encoding="utf-8")
         _write_csv(metrics_path, rows)
-        completed_targets = sorted(
-            {int(row["target_id"]) for row in runtimes}
-        )
+        completed_targets = sorted({int(row["target_id"]) for row in runtimes})
         manifest["completed_targets"] = completed_targets
         manifest["status"] = (
             "complete"
@@ -1363,9 +1347,7 @@ def main(argv: list[str] | None = None):
     if int(args.vip_basis_size) <= 1:
         raise ValueError("--vip-basis-size must be greater than one.")
     config = copy.deepcopy(
-        SMOKE_SIMULATOR_FORECASTING_CONFIG
-        if args.smoke
-        else TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG
+        SMOKE_SIMULATOR_FORECASTING_CONFIG if args.smoke else TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG
     )
     config["method"] = args.methods
     config["smoke"] = bool(args.smoke)
@@ -1373,9 +1355,7 @@ def main(argv: list[str] | None = None):
     config["training"]["n_mc_eval"] = (
         int(config["training"]["n_mc_eval"]) if args.smoke else EVALUATION_SAMPLES
     )
-    config["likelihood"]["learn_observation_noise"] = bool(
-        args.learn_observation_noise
-    )
+    config["likelihood"]["learn_observation_noise"] = bool(args.learn_observation_noise)
     config["plots"]["skip"] = True
     if args.disable_tqdm:
         config.setdefault("training", {})["disable_tqdm"] = True

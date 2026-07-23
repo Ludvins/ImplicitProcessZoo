@@ -135,9 +135,7 @@ def sample_vip_surrogate(
     )
     sampler = CoherentPriorFunctionSampler(prior)
     with torch.no_grad():
-        basis = as_curves(
-            sampler.sample_values(x_grid, basis_size, seed=int(basis_seed))
-        )
+        basis = as_curves(sampler.sample_values(x_grid, basis_size, seed=int(basis_seed)))
         empirical_mean = basis.mean(dim=0)
         features = (basis - empirical_mean) / math.sqrt(float(basis_size - 1))
         generator = torch.Generator(device=x_grid.device)
@@ -385,9 +383,7 @@ def _summarize(rows: list[dict]) -> list[dict]:
             values = np.asarray([float(row[metric]) for row in group], dtype=np.float64)
             item[f"{metric}_mean"] = float(values.mean())
             item[f"{metric}_stderr"] = (
-                float(values.std(ddof=1) / math.sqrt(values.size))
-                if values.size > 1
-                else 0.0
+                float(values.std(ddof=1) / math.sqrt(values.size)) if values.size > 1 else 0.0
             )
         summary.append(item)
     return sorted(
@@ -522,9 +518,7 @@ def run_experiment(args: argparse.Namespace) -> dict:
         "vip": [],
         "gmvip": [],
     }
-    sample_payload: dict[str, np.ndarray] = {
-        "x_grid": x_grid[:, 0].detach().cpu().numpy()
-    }
+    sample_payload: dict[str, np.ndarray] = {"x_grid": x_grid[:, 0].detach().cpu().numpy()}
     display_seed = int(args.seeds[0])
 
     for seed in args.seeds:
@@ -548,9 +542,7 @@ def run_experiment(args: argparse.Namespace) -> dict:
             sample_seed=common_seeds["null"],
         )
         standardizer_mean, standardizer_std = fit_pointwise_standardizer(calibration)
-        reference_standardized = standardize_curves(
-            reference, standardizer_mean, standardizer_std
-        )
+        reference_standardized = standardize_curves(reference, standardizer_mean, standardizer_std)
         null_standardized = standardize_curves(null, standardizer_mean, standardizer_std)
         directions = projection_directions(
             x_grid.shape[0],
@@ -559,9 +551,7 @@ def run_experiment(args: argparse.Namespace) -> dict:
             device=device,
             dtype=dtype,
         )
-        bandwidth = estimate_rbf_bandwidth(
-            reference_standardized[: args.robustness_samples]
-        )
+        bandwidth = estimate_rbf_bandwidth(reference_standardized[: args.robustness_samples])
         null_metrics, null_profile = fidelity_metrics(
             reference_standardized,
             null_standardized,
@@ -619,9 +609,7 @@ def run_experiment(args: argparse.Namespace) -> dict:
                 chunk_size=args.pairwise_chunk_size,
                 robustness_max_samples=args.robustness_samples,
             )
-            coefficient_prior_kl = float(
-                diagnostics["coefficient_prior_kl"].detach().cpu()
-            )
+            coefficient_prior_kl = float(diagnostics["coefficient_prior_kl"].detach().cpu())
             rows.append(
                 _row_for_setting(
                     seed=int(seed),
@@ -635,9 +623,7 @@ def run_experiment(args: argparse.Namespace) -> dict:
                 profiles[setting.method].append(profile.cpu().numpy())
                 if int(seed) == display_seed:
                     saved = min(int(args.saved_samples), candidate.shape[0])
-                    sample_payload[f"{setting.method}_default"] = (
-                        candidate[:saved].cpu().numpy()
-                    )
+                    sample_payload[f"{setting.method}_default"] = candidate[:saved].cpu().numpy()
                     sample_payload[f"pointwise_w1_{setting.method}"] = profile.cpu().numpy()
             write_csv_rows(output_dir / "metrics.csv", rows)
             del candidate, candidate_standardized, diagnostics

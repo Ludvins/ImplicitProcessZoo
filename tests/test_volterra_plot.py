@@ -25,9 +25,7 @@ def _write_result(
             "gmvip_rbf",
         }
         mode = "learned" if method in learned_methods else "fixed"
-        nll_definition = (
-            f"equal_weight_gaussian_mixture_with_{mode}_observation_variance"
-        )
+        nll_definition = f"equal_weight_gaussian_mixture_with_{mode}_observation_variance"
     method_dir = root / "seed_0" / f"S_{basis_size}" / method
     method_dir.mkdir(parents=True)
     manifest = {
@@ -58,9 +56,7 @@ def _write_result(
     if "learned" in nll_definition:
         row["observation_noise_std_prey"] = 0.1
         row["observation_noise_std_predator"] = 0.2
-    with (method_dir / "metrics_per_target.csv").open(
-        "w", encoding="utf-8", newline=""
-    ) as handle:
+    with (method_dir / "metrics_per_target.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(row))
         writer.writeheader()
         writer.writerow(row)
@@ -106,9 +102,7 @@ def test_plot_generates_validated_figure_and_tables(tmp_path):
             method,
             20,
             with_prediction=False,
-            nll_definition=(
-                "equal_weight_gaussian_mixture_with_fixed_observation_variance"
-            ),
+            nll_definition=("equal_weight_gaussian_mixture_with_fixed_observation_variance"),
         )
 
     out_dir = tmp_path / "artifacts"
@@ -135,11 +129,9 @@ def test_plot_generates_validated_figure_and_tables(tmp_path):
     assert (out_dir / "volterra_basis_table.tex").exists()
     assert (out_dir / "volterra_noise_comparison_table.tex").exists()
     assert (out_dir / "volterra_noise_comparison.json").exists()
-    assert "Period error" not in (out_dir / "volterra_main_table.tex").read_text(
+    assert "Period error" not in (out_dir / "volterra_main_table.tex").read_text(encoding="utf-8")
+    assert "oscillation_period_error" not in (out_dir / "volterra_noise_comparison.json").read_text(
         encoding="utf-8"
     )
-    assert "oscillation_period_error" not in (
-        out_dir / "volterra_noise_comparison.json"
-    ).read_text(encoding="utf-8")
     assert result["figures"][0]["target_id"] == 9
     assert result["aggregate_target_ids"] == (9,)

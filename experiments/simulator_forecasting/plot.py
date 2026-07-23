@@ -60,9 +60,7 @@ def _validate_manifests(
     expected_targets: int,
 ) -> dict[str, dict[str, object]]:
     manifests = {
-        method: _read_manifest(
-            _method_dir(results_root, method, seed=seed, basis_size=basis_size)
-        )
+        method: _read_manifest(_method_dir(results_root, method, seed=seed, basis_size=basis_size))
         for method in methods
     }
     dataset_hashes = set()
@@ -219,9 +217,7 @@ def plot_target(
     for ax in axes:
         ax.set_xlabel("$t$")
     fig.tight_layout()
-    written = _save_figure(
-        fig, output_root / f"oscillator_target_{target_id}", dpi=dpi
-    )
+    written = _save_figure(fig, output_root / f"oscillator_target_{target_id}", dpi=dpi)
     plt.close(fig)
     return written
 

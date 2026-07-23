@@ -127,9 +127,7 @@ class BaseMatheronOperator(nn.Module):
             elif D_Z.shape == (self.num_inducing, self.num_inducing):
                 transformed = torch.einsum("smk,jm->sjk", a, D_Z)
             else:
-                raise ValueError(
-                    "Shared inducing scale must have shape [M, M] or [M*K, M*K]."
-                )
+                raise ValueError("Shared inducing scale must have shape [M, M] or [M*K, M*K].")
         elif D_Z.ndim == 3:
             if D_Z.shape[0] != output_dim:
                 raise ValueError("Batched inducing scale must have shape [K, M, M].")

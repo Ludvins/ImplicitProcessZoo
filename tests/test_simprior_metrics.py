@@ -38,12 +38,9 @@ def test_mixture_gaussian_nll_matches_manual_log_mixture():
     target = torch.tensor([[1.0]], dtype=torch.float64)
     variance = torch.tensor([0.25], dtype=torch.float64)
     component_logs = -0.5 * (
-        torch.log(2.0 * torch.pi * variance)
-        + (target[0] - samples[:, 0]).square() / variance
+        torch.log(2.0 * torch.pi * variance) + (target[0] - samples[:, 0]).square() / variance
     )
-    expected = -(
-        torch.logsumexp(component_logs, dim=0) - torch.log(torch.tensor(2.0))
-    ).mean()
+    expected = -(torch.logsumexp(component_logs, dim=0) - torch.log(torch.tensor(2.0))).mean()
 
     assert torch.allclose(mixture_gaussian_nll(samples, target, variance), expected)
 
