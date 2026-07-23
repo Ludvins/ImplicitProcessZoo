@@ -52,29 +52,21 @@ jobs:
           python -m experiments.regression.benchmark --help
           python -m experiments.classification.benchmark --help
           python -m experiments.synthetic.plot --help
-          python -m experiments.volterra.generate --help
-          python -m experiments.volterra.run --help
-          python -m experiments.volterra.compare --help
+          python -m experiments.synthetic.prior_fidelity --help
+          python -m experiments.volterra.benchmark --help
           python -m experiments.volterra.plot --help
-          python -m experiments.simulator_forecasting.generate --help
-          python -m experiments.simulator_forecasting.run --help
-          python -m experiments.simulator_forecasting.compare --help
+          python -m experiments.simulator_forecasting.benchmark --help
           python -m experiments.simulator_forecasting.plot --help
-          python -m experiments.simulator_forecasting.paper_figure --help
-          python -m experiments.eld_forecasting.prepare --help
-          python -m experiments.eld_forecasting.run --help
-          python -m experiments.eld_forecasting.valbank --help
-          python -m experiments.eld_forecasting.merge_shards --help
-          python -m experiments.eld_forecasting.compare --help
-          python -m experiments.eld_forecasting.plot_predictions --help
+          python -m experiments.eld_forecasting.benchmark --help
+          python -m experiments.eld_forecasting.plot --help
       - name: ELD synthetic smoke
         run: >-
-          python -m experiments.eld_forecasting.run
-          --preset eld_smoke
-          --method all
-          --synthetic-smoke
+          python -m experiments.eld_forecasting.benchmark
+          --methods analog,vip,gmvip_empirical
+          --smoke
+          --target-ids 0
           --seed 0
-          --output-dir results/ci_eld
+          --output-root results/ci_eld
           --disable-tqdm
       - run: python -m build
       - run: python -m twine check dist/*

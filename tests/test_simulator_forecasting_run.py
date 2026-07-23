@@ -2,16 +2,18 @@ import copy
 
 import torch
 
-from experiments.simulator_forecasting.datasets import load_damped_oscillator_tasks
-from experiments.simulator_forecasting.generate import generate_dataset
-from experiments.simulator_forecasting.priors import DampedOscillatorPrior
-from experiments.simulator_forecasting.run import (
+from experiments.common.oscillator_data import load_damped_oscillator_tasks
+from experiments.common.oscillator_generate import generate_dataset
+from experiments.common.oscillator_prior import DampedOscillatorPrior
+from experiments.simulator_forecasting.benchmark import (
     METHODS,
     SMOKE_SIMULATOR_FORECASTING_CONFIG,
+    TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG,
     FreshDampedOscillatorSIPPrior,
     build_model,
     fit_model,
     main,
+    parse_args,
     predictive_function_samples,
 )
 
@@ -74,54 +76,63 @@ def test_build_train_predict_smoke_methods(tmp_path):
         assert torch.isfinite(samples).all()
 
 
-def test_run_smoke_all_writes_region_metrics(tmp_path):
-    config_path = tmp_path / "override.yaml"
-    data_root = tmp_path / "data"
+def test_canonical_oscillator_defaults():
+    args = parse_args(["--methods", "vip,ftip,gmvip"])
+    config = TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG
+
+    assert args.vip_basis_size == 256
+    assert args.target_ids == "0:20"
+    assert args.learn_observation_noise is True
+    assert not hasattr(args, "validation")
+    assert config["data"]["n_eval_targets"] == 20
+    assert config["data"]["n_train"] == [64]
+    assert config["data"]["n_test"] == 500
+    assert config["data"]["t_obs"] == 15.0
+    assert config["data"]["t_max"] == 30.0
+    assert config["data"]["sigma_y"] == 0.05
+    assert config["prior"]["bank_size"] == 1024
+    assert config["gmvip"]["num_inducing"] == 32
+    assert config["training"]["learning_rate"] == 5.0e-3
+    assert config["training"]["max_steps"] == 3000
+    assert config["training"]["n_mc_train"] == 16
+    assert config["training"]["n_mc_eval"] == 1024
+    assert config["training"]["regression_coeffs"] == 256
+    assert config["likelihood"]["learn_observation_noise"] is True
+    assert config["ftip"]["warm_start_from_vip"] is True
+    assert config["ftip"]["warm_start_steps"] == 3000
+    assert config["ftip"]["warm_start_lr"] == 5.0e-3
+    assert config["ftip"]["fine_tune_steps"] == 3000
+    assert config["ftip"]["fine_tune_lr"] == 1.0e-4
+
+
+def test_run_smoke_writes_canonical_artifacts_without_period_metric(tmp_path):
     out_root = tmp_path / "results"
-    config_path.write_text(
-        "\n".join(
-            [
-                "data:",
-                f"  root: {data_root.as_posix()}",
-                "  n_eval_targets: 1",
-                "  n_train: [4]",
-                "  n_test: 31",
-                "  context_points: 8",
-                "prior:",
-                "  bank_size: 8",
-                "training:",
-                "  max_steps: 1",
-                "  n_mc_eval: 3",
-                "  n_mc_train: 2",
-                "plots:",
-                "  skip: true",
-            ]
-        ),
-        encoding="utf-8",
-    )
 
     main(
         [
-            "--preset",
-            "simulator_forecasting_smoke",
-            "--method",
-            "all",
+            "--methods",
+            "vip,ftip,gmvip",
             "--seed",
             "0",
-            "--config",
-            str(config_path),
-            "--output-dir",
+            "--target-ids",
+            "0",
+            "--vip-basis-size",
+            "8",
+            "--smoke",
+            "--output-root",
             str(out_root),
-            "--skip-plots",
             "--disable-tqdm",
         ]
     )
 
-    for method in METHODS:
-        metrics_path = (
-            out_root / "simulator_forecasting" / method / "seed_0" / "metrics_per_target_region.csv"
-        )
+    for method in ("vip", "ftip", "gmvip"):
+        method_dir = out_root / "seed_0" / "S_8" / method
+        metrics_path = method_dir / "metrics_per_target_region.csv"
         assert metrics_path.exists()
         metrics_text = metrics_path.read_text(encoding="utf-8")
         assert "far_extrapolation" in metrics_text
-        assert "oscillation_period_error" in metrics_text
+        assert "oscillation_period_error" not in metrics_text
+        manifest = (method_dir / "manifest.json").read_text(encoding="utf-8")
+        assert '"mode": "learned_scalar"' in manifest
+        assert '"checkpoint_selection": "none_final_step_only"' in manifest
+        assert (method_dir / "checkpoints" / "target_0_ntrain_4.pt").exists()

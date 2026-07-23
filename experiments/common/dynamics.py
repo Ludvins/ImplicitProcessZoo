@@ -34,13 +34,13 @@ def peak_time_error(samples, target, t, *, channel: int = 0) -> torch.Tensor:
         raise ValueError("samples, target, and time grid must describe the same trajectory.")
     channel = int(channel)
     if channel < 0 or channel >= prediction.shape[1]:
-        raise ValueError(f"channel {channel} is outside trajectory dimension {prediction.shape[1]}.")
+        raise ValueError(
+            f"channel {channel} is outside trajectory dimension {prediction.shape[1]}."
+        )
     predicted_peaks = _local_peak_times(prediction[:, channel], t)
     target_peaks = _local_peak_times(target[:, channel], t)
     predicted_time = (
-        predicted_peaks[0]
-        if predicted_peaks.numel()
-        else t[torch.argmax(prediction[:, channel])]
+        predicted_peaks[0] if predicted_peaks.numel() else t[torch.argmax(prediction[:, channel])]
     )
     target_time = target_peaks[0] if target_peaks.numel() else t[torch.argmax(target[:, channel])]
     return torch.abs(predicted_time - target_time)

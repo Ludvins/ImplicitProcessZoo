@@ -19,6 +19,8 @@ definition while using substantially less memory.
 ## Aggregation
 
 Do not average already-aggregated values across incompatible regions or data
-splits. Prefer the per-target/per-region CSVs, then aggregate with the matching
-`compare` module. The ELD paper report uses median and interquartile range over
-all seed-target windows, not a mean of per-seed medians.
+splits. Prefer the per-target/per-region CSVs and use each experiment's
+canonical `plot.py` reporter. Electricity aggregates all 75 seed--target
+windows as mean \(\pm\) sample standard deviation (`ddof=1`). The oscillator
+uses the same summary across its 20 targets. Lotka--Volterra reports mean
+\(\pm\) sample standard error.

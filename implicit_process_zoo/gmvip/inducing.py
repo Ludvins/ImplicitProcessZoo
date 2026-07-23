@@ -30,9 +30,7 @@ def _latin_hypercube_grid(
     device = mins.device
     dtype = mins.dtype
     num_points = int(num_points)
-    positions = (
-        torch.arange(num_points, dtype=dtype, device=device) + 0.5
-    ) / float(num_points)
+    positions = (torch.arange(num_points, dtype=dtype, device=device) + 0.5) / float(num_points)
     generator = torch.Generator(device=device)
     generator.manual_seed(0 if seed is None else int(seed))
     coords = []
@@ -64,7 +62,7 @@ def _grid_inducing_points(
         return z.unsqueeze(-1)
 
     levels = max(2, math.ceil(num_inducing ** (1.0 / input_dim)))
-    grid_size = levels ** input_dim
+    grid_size = levels**input_dim
     max_grid_size = max(10_000, num_inducing * 64)
 
     if grid_size <= max_grid_size:

@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import json
 import math
+import platform
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,18 +21,16 @@ from experiments.common import (
     build_flow as build_common_flow,
 )
 from experiments.common import (
-    deep_merge,
     fix_gaussian_noise,
-    load_yaml,
     write_csv_rows,
     write_json,
 )
-from experiments.eld_forecasting.datasets import (
+from experiments.common.electricity_data import (
     load_electricity_tasks,
     load_synthetic_tasks,
     processed_exists,
 )
-from experiments.eld_forecasting.metrics import (
+from experiments.common.electricity_metrics import (
     coerce_regions,
     forecast_regions,
     metrics_by_region,
@@ -50,7 +50,11 @@ METHODS = (
     "ftip",
     "gmvip_empirical",
 )
-PAPER_METHODS = ("analog", "vip", "ftip", "gmvip_empirical")
+PAPER_METHODS = ("analog", "vip", "ftip", "empirical_gaussian", "gmvip_empirical")
+LEARNABLE_NOISE_METHODS = {"vip", "vip_512", "ftip", "gmvip_empirical"}
+EVALUATION_SAMPLES = 1024
+FIXED_NOISE_NLL = "equal_weight_gaussian_mixture_with_fixed_observation_variance"
+LEARNED_NOISE_NLL = "equal_weight_gaussian_mixture_with_learned_observation_variance"
 
 
 DEFAULT_CONFIG: dict = {
@@ -91,11 +95,14 @@ DEFAULT_CONFIG: dict = {
         "learning_rate": 5.0e-3,
         "max_steps": 500,
         "n_mc_train": 8,
-        "n_mc_eval": 256,
+        "n_mc_eval": EVALUATION_SAMPLES,
         "batch_size": "full",
         "regression_coeffs": 20,
         "max_grad_norm": 10.0,
         "disable_tqdm": True,
+    },
+    "likelihood": {
+        "learn_observation_noise": True,
     },
     "metrics": {
         "levels": [0.8, 0.9, 0.95],
@@ -103,18 +110,6 @@ DEFAULT_CONFIG: dict = {
     },
     "plots": {
         "skip": True,
-    },
-}
-
-
-VALIDATION_CONFIG: dict = {
-    **copy.deepcopy(DEFAULT_CONFIG),
-    "data": {
-        **copy.deepcopy(DEFAULT_CONFIG["data"]),
-        "split": "validation",
-        "prior_years": [2011, 2012],
-        "target_years": [2013],
-        "target_manifest": None,
     },
 }
 
@@ -148,60 +143,44 @@ SMOKE_CONFIG: dict = {
 }
 
 
-PILOT_CONFIG: dict = {
-    **copy.deepcopy(DEFAULT_CONFIG),
-    "data": {
-        **copy.deepcopy(DEFAULT_CONFIG["data"]),
-        "n_targets": 40,
-        "target_manifest": None,
-    },
-    "prior": {"bank_size": 512, "selection": "calendar"},
-    "gmvip": {
-        **copy.deepcopy(DEFAULT_CONFIG["gmvip"]),
-        "num_inducing": 64,
-    },
-    "training": {
-        **copy.deepcopy(DEFAULT_CONFIG["training"]),
-        "max_steps": 500,
-        "n_mc_eval": 256,
-    },
-    "metrics": {"levels": [0.8, 0.9, 0.95], "regions": None},
-}
-
-
-CONFIG_PRESETS = {
-    "eld_smoke": SMOKE_CONFIG,
-    "eld_pilot": PILOT_CONFIG,
-    "eld_validation": VALIDATION_CONFIG,
-    "eld_paper": DEFAULT_CONFIG,
-}
-
-
-def _deep_update(base: dict, override: dict) -> dict:
-    return deep_merge(base, override or {})
-
-
-def _load_config(args: argparse.Namespace) -> dict:
-    config = copy.deepcopy(CONFIG_PRESETS[args.preset])
-    if args.config:
-        config = _deep_update(config, load_yaml(args.config))
-    data_cfg = config.setdefault("data", {})
-    metrics_cfg = config.setdefault("metrics", {})
-    if metrics_cfg.get("regions") is None:
-        metrics_cfg["regions"] = forecast_regions(
-            int(data_cfg.get("window_length", 192)),
-            int(data_cfg.get("prefix_length", 96)),
-        )
-    coerce_regions(metrics_cfg["regions"])
-    return config
-
-
 def _training_config(config: dict) -> SimpleNamespace:
     return SimpleNamespace(**dict(config.get("training", {})))
 
 
-def _fix_model_noise(model, noise_std: torch.Tensor) -> None:
+def _fixed_log_variance(noise_std: torch.Tensor) -> torch.Tensor:
+    return 2.0 * torch.log(noise_std.clamp_min(1e-8))
+
+
+def _learn_observation_noise(config: dict) -> bool:
+    return bool(config.get("likelihood", {}).get("learn_observation_noise", True))
+
+
+def _configure_model_noise(model, noise_std: torch.Tensor, *, learn: bool) -> None:
+    if hasattr(model, "log_variance"):
+        value = _fixed_log_variance(noise_std).to(
+            dtype=model.log_variance.dtype,
+            device=model.log_variance.device,
+        )
+        model.log_variance = torch.nn.Parameter(value.detach().clone(), requires_grad=learn)
+        return
     fix_gaussian_noise(model, noise_std)
+
+
+def _model_noise_std_norm(model, task, config: dict) -> torch.Tensor:
+    if not _learn_observation_noise(config) or getattr(model, "is_fixed_predictive", False):
+        return task.noise_std
+    if getattr(model, "likelihood", None) is not None and hasattr(model.likelihood, "noise_std"):
+        value = model.likelihood.noise_std
+    elif hasattr(model, "effective_log_variance"):
+        value = torch.exp(0.5 * model.effective_log_variance())
+    elif hasattr(model, "log_variance"):
+        value = torch.exp(0.5 * model.log_variance)
+    else:
+        raise RuntimeError(f"{type(model).__name__} has no Gaussian noise parameter.")
+    value = value.reshape(-1)
+    if value.numel() != 1 or not torch.isfinite(value).all() or torch.any(value <= 0):
+        raise RuntimeError(f"Invalid learned electricity observation noise: {value}.")
+    return value
 
 
 def _make_flow(config: dict, input_dim: int, *, seed: int, device, dtype) -> torch.nn.Module:
@@ -281,9 +260,9 @@ class EmpiricalGaussianPredictive(torch.nn.Module):
         noise_variance = task.noise_std.to(dtype=dtype, device=device).reshape(-1)[0].square()
         scale = covariance.diagonal().mean().clamp_min(torch.finfo(dtype).eps)
         numerical_jitter = max(float(jitter), float(torch.finfo(dtype).eps)) * scale
-        observed_system = observed_covariance + (
-            noise_variance + numerical_jitter
-        ) * torch.eye(prefix_length, dtype=dtype, device=device)
+        observed_system = observed_covariance + (noise_variance + numerical_jitter) * torch.eye(
+            prefix_length, dtype=dtype, device=device
+        )
         observed_cholesky = torch.linalg.cholesky(observed_system)
 
         cross_covariance = covariance[:, :prefix_length]
@@ -386,20 +365,18 @@ class ExactEmpiricalMatheronPredictive(torch.nn.Module):
         ).squeeze(-1)
 
         inducing_posterior_mean = mean[:prefix_length] + inducing_scale @ coefficient_mean
-        inducing_posterior_covariance = (
-            inducing_scale @ coefficient_covariance @ inducing_scale.mT
-        )
+        inducing_posterior_covariance = inducing_scale @ coefficient_covariance @ inducing_scale.mT
         inducing_posterior_covariance = 0.5 * (
             inducing_posterior_covariance + inducing_posterior_covariance.mT
         )
         inducing_eigenvalues, inducing_eigenvectors = torch.linalg.eigh(
             inducing_posterior_covariance
         )
-        inducing_factor = inducing_eigenvectors * inducing_eigenvalues.clamp_min(0.0).sqrt().unsqueeze(0)
+        inducing_factor = inducing_eigenvectors * inducing_eigenvalues.clamp_min(
+            0.0
+        ).sqrt().unsqueeze(0)
 
-        projection = torch.cholesky_solve(
-            cross_covariance.mT, inducing_scale
-        ).mT
+        projection = torch.cholesky_solve(cross_covariance.mT, inducing_scale).mT
         projection[:prefix_length] = identity
 
         # The empirical Matheron residual vanishes at the inducing locations,
@@ -442,9 +419,11 @@ class ExactEmpiricalMatheronPredictive(torch.nn.Module):
             self.inducing_posterior_mean.unsqueeze(0)
             + inducing_noise @ self.inducing_posterior_factor.mT
         )
-        conditional_mean = self.prior_mean.unsqueeze(0) + (
-            inducing_values - self.prior_mean[: self.prefix_length].unsqueeze(0)
-        ) @ self.conditional_projection.mT
+        conditional_mean = (
+            self.prior_mean.unsqueeze(0)
+            + (inducing_values - self.prior_mean[: self.prefix_length].unsqueeze(0))
+            @ self.conditional_projection.mT
+        )
         residual_indices = torch.randint(
             0,
             int(self.empirical_residuals.shape[0]),
@@ -464,6 +443,8 @@ class ExactEmpiricalMatheronPredictive(torch.nn.Module):
         )
         indices = positions.round().long().clamp(0, self.window_length - 1)
         return full_samples[:, indices].unsqueeze(-1)
+
+
 class SeasonalNaivePredictive(torch.nn.Module):
     is_fixed_predictive = True
 
@@ -496,6 +477,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
     train_cfg = _training_config(config)
     output_dim = int(task.y_train.shape[-1])
     noise_std = task.noise_std.to(dtype=dtype, device=device)
+    learn_noise = _learn_observation_noise(config) and method in LEARNABLE_NOISE_METHODS
     if method == "analog":
         return AnalogPriorPredictive(task.prior, seed=seed + 11)
     if method == "empirical_gaussian":
@@ -522,10 +504,10 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             dtype=dtype,
             seed=seed + 22,
         )
-        _fix_model_noise(model, noise_std)
+        _configure_model_noise(model, noise_std, learn=learn_noise)
         return model
     if method == "ftip":
-        prior = task.prior.clone_with_normalization(num_samples=regression_coeffs, seed=seed + 25)
+        prior = task.prior.clone_with_normalization(num_samples=regression_coeffs, seed=seed + 21)
         flow = _make_flow(
             config,
             input_dim=regression_coeffs * output_dim,
@@ -549,7 +531,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             dtype=dtype,
             seed=seed + 27,
         )
-        _fix_model_noise(model, noise_std)
+        _configure_model_noise(model, noise_std, learn=learn_noise)
         return model
     if method == "gmvip_empirical":
         gmvip_cfg = dict(config.get("gmvip", {}))
@@ -567,7 +549,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             posterior_type="gaussian",
             likelihood="regression",
             num_operator_bank_samples=bank_size,
-            learn_noise=False,
+            learn_noise=learn_noise,
             init_log_noise=torch.log(noise_std.clamp_min(1e-8)),
             min_log_noise=math.log(1e-8),
             freeze_base_prior=True,
@@ -621,7 +603,13 @@ def predictive_function_samples(
 
 def fit_model(model, task, config: dict, *, device) -> dict:
     if getattr(model, "is_fixed_predictive", False):
-        return {"train_time_sec": 0.0, "steps": 0, "loss_start": None, "loss_end": None}
+        return {
+            "train_time_sec": 0.0,
+            "steps": 0,
+            "loss_start": None,
+            "loss_end": None,
+            "checkpoint": "fixed_predictive",
+        }
     train_cfg = _training_config(config)
     dataset = TensorDataset(task.X_train, task.y_train)
     full_batch = train_cfg.batch_size == "full"
@@ -655,6 +643,7 @@ def fit_model(model, task, config: dict, *, device) -> dict:
         "steps": len(losses),
         "loss_start": losses[0] if losses else None,
         "loss_end": losses[-1] if losses else None,
+        "checkpoint": "final_step",
     }
 
 
@@ -679,16 +668,25 @@ def evaluate_target(
     out_dir: Path,
 ) -> list[dict]:
     eval_samples = int(_training_config(config).n_mc_eval)
+    if eval_samples != EVALUATION_SAMPLES and not bool(config.get("smoke", False)):
+        raise RuntimeError(
+            f"Standard electricity evaluation requires exactly {EVALUATION_SAMPLES} samples."
+        )
+    evaluation_seed = int(target_seed) + 501
     start = time.time()
     samples_norm = predictive_function_samples(
-        model, method, task.X_plot, eval_samples, target_seed + 501
+        model, method, task.X_plot, eval_samples, evaluation_seed
     )
     samples = _unnormalize(task, samples_norm)
     y_true = _unnormalize(task, task.y_plot_true)
     t_grid = torch.as_tensor(task.metadata["t_grid"], dtype=samples.dtype, device=samples.device)
-    noise_std = torch.as_tensor(
-        [float(task.metadata["sigma_y"])], dtype=samples.dtype, device=samples.device
+    noise_std_norm = _model_noise_std_norm(model, task, config).to(
+        dtype=samples.dtype, device=samples.device
     )
+    physical_scale = torch.as_tensor(
+        [float(task.metadata["y_std"])], dtype=samples.dtype, device=samples.device
+    )
+    noise_std = noise_std_norm * physical_scale
     region_config = config.get("metrics", {}).get("regions")
     if region_config is None:
         region_config = forecast_regions(
@@ -730,6 +728,10 @@ def evaluate_target(
         samples=samples_np,
         mean=samples_np.mean(axis=0),
         std=samples_np.std(axis=0),
+        observation_noise_std=noise_std.detach().cpu().numpy(),
+        observation_noise_std_norm=noise_std_norm.detach().cpu().numpy(),
+        evaluation_seed=np.asarray(evaluation_seed, dtype=np.int64),
+        evaluation_samples=np.asarray(eval_samples, dtype=np.int64),
     )
 
     rows = []
@@ -770,6 +772,10 @@ def evaluate_target(
                 "forecast_start_hour": float(task.metadata["forecast_start_hour"]),
                 "run_seed": int(run_seed),
                 "target_seed": int(target_seed),
+                "evaluation_seed": evaluation_seed,
+                "evaluation_samples": eval_samples,
+                "observation_noise_std_norm": float(noise_std_norm[0].detach().cpu()),
+                "observation_noise_std": float(noise_std[0].detach().cpu()),
                 "region": region,
                 "stress": stress,
                 "stress_prefix_cv": task.metadata.get("stress_prefix_cv"),
@@ -791,8 +797,86 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
     write_csv_rows(path, rows)
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stable_hash(value: dict) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _dataset_manifest(config: dict) -> dict:
+    if bool(config.get("smoke", False)):
+        payload = {
+            "kind": "deterministic_synthetic_smoke",
+            "data": config.get("data", {}),
+            "prior": config.get("prior", {}),
+        }
+        return {**payload, "sha256": _stable_hash(payload)}
+    root = Path(config["data"]["root"]).resolve()
+    processed = root / "processed"
+    files = [
+        processed / "values_float32.npy",
+        processed / "timestamps_ns.npy",
+        processed / "clients.json",
+        processed / "metadata.json",
+        Path("experiments/common/paper_targets.csv"),
+    ]
+    missing = [str(path) for path in files if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"Electricity dataset manifest is incomplete: {missing}")
+    hashes = {path.name: _sha256_file(path) for path in files}
+    return {
+        "root": str(root),
+        "files": hashes,
+        "sha256": _stable_hash(hashes),
+    }
+
+
+def _method_manifest(method: str, config: dict, *, seed: int, basis_size: int) -> dict:
+    learn_noise = _learn_observation_noise(config) and method in LEARNABLE_NOISE_METHODS
+    protocol = {
+        "schema_version": 2,
+        "experiment": "electricity_forecasting",
+        "method": method,
+        "seed": int(seed),
+        "vip_basis_size": int(basis_size),
+        "nll": LEARNED_NOISE_NLL if learn_noise else FIXED_NOISE_NLL,
+        "observation_noise": {
+            "mode": "learned_scalar" if learn_noise else "fixed_scalar",
+            "initialization": "0.05_normalized_units",
+            "reported_units": "physical_load_units",
+        },
+        "checkpoint_selection": "none_final_step_only",
+        "data_usage": {
+            "training": "indices_[0,96)",
+            "validation": "none",
+            "test": "indices_[96,192)",
+        },
+        "evaluation_samples": int(config["training"]["n_mc_eval"]),
+        "config": config,
+        "dataset": _dataset_manifest(config),
+    }
+    return {
+        **protocol,
+        "protocol_hash": _stable_hash(protocol),
+        "environment": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "torch": torch.__version__,
+        },
+        "status": "running",
+        "completed_targets": [],
+    }
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
+    with path.open(newline="", encoding="utf-8-sig") as handle:
         return list(csv.DictReader(handle))
 
 
@@ -826,7 +910,11 @@ def _summarize(rows: list[dict]) -> dict:
                     "q25": float(np.nanquantile(values, 0.25)),
                     "q75": float(np.nanquantile(values, 0.75)),
                     "mean": float(np.nanmean(values)),
-                    "stderr": float(np.nanstd(values) / max(1.0, math.sqrt(values.size))),
+                    "stderr": (
+                        float(np.nanstd(values, ddof=1) / math.sqrt(values.size))
+                        if values.size > 1
+                        else 0.0
+                    ),
                 }
     return summary
 
@@ -852,7 +940,7 @@ def _load_expected_targets(path_value, *, run_seed: int) -> dict[int, tuple[str,
     if path_value is None:
         return None
     path = (
-        Path(__file__).with_name("paper_targets.csv")
+        Path("experiments/common/paper_targets.csv")
         if str(path_value) == "bundled:paper_targets.csv"
         else Path(path_value)
     )
@@ -875,12 +963,19 @@ def _load_expected_targets(path_value, *, run_seed: int) -> dict[int, tuple[str,
 
 
 def _requested_target_ids(args: argparse.Namespace, n_targets: int) -> list[int]:
-    if args.target_ids:
-        ids = [int(value) for value in args.target_ids.split(",") if value.strip()]
-    else:
-        start = 0 if args.target_start is None else int(args.target_start)
-        stop = n_targets if args.target_stop is None else min(int(args.target_stop), n_targets)
-        ids = list(range(start, stop))
+    ids: list[int] = []
+    for token in str(args.target_ids).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if ":" in token:
+            start, stop = token.split(":", 1)
+            ids.extend(range(int(start or 0), int(stop or n_targets)))
+        elif "-" in token:
+            start, stop = token.split("-", 1)
+            ids.extend(range(int(start), int(stop) + 1))
+        else:
+            ids.append(int(token))
     resolved = list(dict.fromkeys(idx for idx in ids if 0 <= idx < n_targets))
     if not resolved:
         raise ValueError("Target selection did not resolve to any valid target ids.")
@@ -891,9 +986,9 @@ def _load_tasks(config: dict, args: argparse.Namespace, *, seed: int, device, dt
     data_cfg = dict(config.get("data", {}))
     prior_cfg = dict(config.get("prior", {}))
     bank_size = int(prior_cfg.get("bank_size", 512))
-    n_targets = int(data_cfg.get("n_targets", 1 if args.synthetic_smoke else 200))
+    n_targets = int(data_cfg.get("n_targets", 1 if args.smoke else 25))
     requested_ids = _requested_target_ids(args, n_targets)
-    if args.synthetic_smoke:
+    if args.smoke:
         tasks = load_synthetic_tasks(
             seed=seed,
             n_targets=n_targets,
@@ -911,7 +1006,7 @@ def _load_tasks(config: dict, args: argparse.Namespace, *, seed: int, device, dt
     if not processed_exists(root):
         raise FileNotFoundError(
             f"Processed ELD data not found under {root!r}. Prepare it with "
-            "`python -m experiments.eld_forecasting.prepare --download` or pass `--raw-path`."
+            "the UCI ElectricityLoadDiagrams20112014 archive before running the benchmark."
         )
     tasks = load_electricity_tasks(
         root,
@@ -966,23 +1061,34 @@ def _mark_stress_tasks(tasks) -> None:
 
 def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=None) -> dict:
     seed = int(args.seed)
-    dtype = torch.float64 if str(args.dtype) == "float64" else torch.float32
+    dtype = torch.float64
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     tasks = tasks or _load_tasks(config, args, seed=seed, device=device, dtype=dtype)
     ids = [int(task.metadata["target_id"]) for task in tasks]
-    out_dir = Path(args.output_dir or "results/eld_forecasting") / method / f"seed_{seed}"
+    basis_size = int(args.vip_basis_size)
+    out_dir = Path(args.output_root) / f"seed_{seed}" / f"S_{basis_size}" / method
     out_dir.mkdir(parents=True, exist_ok=True)
     config_path = out_dir / "config.yaml"
     config_text = yaml.safe_dump(config, sort_keys=False)
-    resume_artifacts = bool(getattr(args, "resume_artifacts", False))
+    resume_artifacts = bool(args.resume)
     if resume_artifacts and config_path.exists():
         if config_path.read_text(encoding="utf-8") != config_text:
-            raise ValueError("Existing ELD artifact config differs; resume in a new output root.")
+            raise ValueError("Existing electricity config differs; resume in a new output root.")
     else:
         config_path.write_text(config_text, encoding="utf-8")
 
     csv_path = out_dir / "metrics_per_target_region.csv"
     runtime_path = out_dir / "runtime.json"
+    manifest_path = out_dir / "manifest.json"
+    expected_manifest = _method_manifest(method, config, seed=seed, basis_size=basis_size)
+    if resume_artifacts and manifest_path.is_file():
+        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if existing_manifest.get("protocol_hash") != expected_manifest["protocol_hash"]:
+            raise ValueError("Existing electricity manifest differs from the requested protocol.")
+        manifest = existing_manifest
+    else:
+        manifest = expected_manifest
+        write_json(manifest_path, manifest)
     if resume_artifacts and csv_path.exists() and runtime_path.exists():
         existing_rows = _read_csv(csv_path)
         existing_runtimes = json.loads(runtime_path.read_text(encoding="utf-8"))
@@ -1007,6 +1113,9 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
         _write_csv(csv_path, rows)
         write_json(runtime_path, runtimes)
         write_json(out_dir / "metrics.json", metrics)
+        manifest["completed_targets"] = completed_ids
+        manifest["status"] = "complete" if set(ids).issubset(completed_ids) else "partial"
+        write_json(manifest_path, manifest)
         return metrics
 
     for task in tasks:
@@ -1026,6 +1135,21 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
                 target_seed=target_seed,
                 out_dir=out_dir,
             )
+            checkpoint_dir = out_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "method": method,
+                    "run_seed": seed,
+                    "target_seed": target_seed,
+                    "target_id": target_idx,
+                    "step": int(train_info["steps"]),
+                    "checkpoint": train_info["checkpoint"],
+                    "model_state_dict": model.state_dict(),
+                    "config": config,
+                },
+                checkpoint_dir / f"target_{target_idx}.pt",
+            )
         for row in target_rows:
             row["train_time_sec"] = float(train_info["train_time_sec"])
             row["train_steps"] = int(train_info["steps"])
@@ -1043,99 +1167,53 @@ def run_method(method: str, config: dict, args: argparse.Namespace, *, tasks=Non
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run ELD empirical-prior forecasting experiments.")
-    parser.add_argument("--preset", choices=tuple(CONFIG_PRESETS), default="eld_smoke")
-    parser.add_argument("--config", default=None)
+    parser = argparse.ArgumentParser(
+        description="Run the canonical electricity benchmark.",
+        epilog=(
+            "Canonical protocol: B=2048, GMVIP M=96, VIP/FTIP S from "
+            "--vip-basis-size (20 reported), 500 steps, 8 training samples, "
+            "1,024 evaluation samples, learned noise for VIP/FTIP/GMVIP, "
+            "and no validation or checkpoint selection. Run seeds 0, 1, and 2."
+        ),
+    )
+    parser.add_argument(
+        "--methods",
+        required=True,
+        help=f"Comma-separated method names. Choices: {','.join(METHODS)}",
+    )
+    parser.add_argument("--vip-basis-size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--method", default=None)
-    parser.add_argument("--split", choices=["validation", "test"], default=None)
+    parser.add_argument("--target-ids", default="0:25")
     parser.add_argument(
-        "--prior-years", default=None, help="Comma-separated empirical-prior years, e.g. 2011,2012."
+        "--learn-observation-noise",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Learn scalar observation noise for trainable methods (default).",
     )
-    parser.add_argument(
-        "--target-years", default=None, help="Comma-separated held-out target years, e.g. 2014."
-    )
-    parser.add_argument("--n-targets", type=int, default=None)
-    parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--n-mc-train", type=int, default=None)
-    parser.add_argument("--n-mc-eval", type=int, default=None)
-    parser.add_argument("--regression-coeffs", type=int, default=None)
-    parser.add_argument("--prior-bank-size", type=int, default=None)
-    parser.add_argument(
-        "--prior-selection",
-        choices=[
-            "calendar",
-            "prefix_nn",
-            "calendar_prefix_nn",
-            "same_client_prefix_nn",
-            "same_client_calendar_prefix_nn",
-            "other_client_prefix_nn",
-            "other_client_calendar_prefix_nn",
-            "other_client_calendar",
-        ],
-        default=None,
-    )
-    parser.add_argument("--num-inducing", type=int, default=None)
-    parser.add_argument("--noise-std-norm", type=float, default=None)
-    parser.add_argument("--gmvip-beta", type=float, default=None)
-    parser.add_argument("--gmvip-posterior-init-log-std", type=float, default=None)
-    parser.add_argument("--target-start", type=int, default=None)
-    parser.add_argument("--target-stop", type=int, default=None)
-    parser.add_argument("--target-ids", default=None)
-    parser.add_argument("--synthetic-smoke", action="store_true")
-    parser.add_argument(
-        "--resume-artifacts",
-        action="store_true",
-        help="Continue an interrupted ELD result root after validating its config.",
-    )
+    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--disable-tqdm", action="store_true")
-    parser.add_argument("--output-dir", default="results/eld_forecasting")
+    parser.add_argument("--output-root", default="results/electricity")
     parser.add_argument("--device", default=None)
-    parser.add_argument("--dtype", choices=["float64", "float32"], default="float64")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
-    config = _load_config(args)
-    if args.method is not None:
-        config["method"] = args.method
-    if args.split is not None:
-        config.setdefault("data", {})["split"] = args.split
-    if args.prior_years is not None:
-        config.setdefault("data", {})["prior_years"] = _parse_years(args.prior_years)
-    if args.target_years is not None:
-        config.setdefault("data", {})["target_years"] = _parse_years(args.target_years)
-    if args.n_targets is not None:
-        config.setdefault("data", {})["n_targets"] = int(args.n_targets)
-    if args.max_steps is not None:
-        config.setdefault("training", {})["max_steps"] = int(args.max_steps)
-    if args.n_mc_train is not None:
-        config.setdefault("training", {})["n_mc_train"] = int(args.n_mc_train)
-    if args.n_mc_eval is not None:
-        config.setdefault("training", {})["n_mc_eval"] = int(args.n_mc_eval)
-    if args.regression_coeffs is not None:
-        config.setdefault("training", {})["regression_coeffs"] = int(args.regression_coeffs)
-    if args.noise_std_norm is not None:
-        config.setdefault("data", {})["noise_std_norm"] = float(args.noise_std_norm)
-    if args.gmvip_beta is not None:
-        config.setdefault("gmvip", {})["beta"] = float(args.gmvip_beta)
-    if args.gmvip_posterior_init_log_std is not None:
-        config.setdefault("gmvip", {})["posterior_init_log_std"] = float(
-            args.gmvip_posterior_init_log_std
-        )
-    if args.prior_bank_size is not None:
-        config.setdefault("prior", {})["bank_size"] = int(args.prior_bank_size)
-    if args.prior_selection is not None:
-        config.setdefault("prior", {})["selection"] = args.prior_selection
-    if args.num_inducing is not None:
-        config.setdefault("gmvip", {})["num_inducing"] = int(args.num_inducing)
+    if int(args.vip_basis_size) <= 1:
+        raise ValueError("--vip-basis-size must be greater than one.")
+    config = copy.deepcopy(SMOKE_CONFIG if args.smoke else DEFAULT_CONFIG)
+    config["method"] = args.methods
+    config["smoke"] = bool(args.smoke)
+    config["training"]["regression_coeffs"] = int(args.vip_basis_size)
+    config["training"]["n_mc_eval"] = (
+        int(config["training"]["n_mc_eval"]) if args.smoke else EVALUATION_SAMPLES
+    )
+    config["likelihood"]["learn_observation_noise"] = bool(args.learn_observation_noise)
     if args.disable_tqdm:
         config.setdefault("training", {})["disable_tqdm"] = True
-    if config.get("experiment") != "eld_forecasting":
-        raise ValueError("This runner only supports experiment: eld_forecasting.")
-    methods = _requested_methods(config.get("method", "gmvip_empirical"))
-    dtype = torch.float64 if str(args.dtype) == "float64" else torch.float32
+    methods = _requested_methods(args.methods)
+    dtype = torch.float64
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     tasks = _load_tasks(config, args, seed=int(args.seed), device=device, dtype=dtype)
     results = {}

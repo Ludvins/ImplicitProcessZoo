@@ -68,7 +68,8 @@ Use `--help` for the complete current configuration:
 ```bash
 python -m experiments.uci.benchmark --help
 python -m experiments.classification.benchmark --help
-python -m experiments.eld_forecasting.run --help
+python -m experiments.eld_forecasting.benchmark --help
+python -m experiments.simulator_forecasting.benchmark --help
 ```
 
 The public tensor prediction contract is:
@@ -91,7 +92,7 @@ including the canonical
 | `experiments.regression.benchmark` | Year, airline, and taxi regression |
 | `experiments.classification.benchmark` | FashionMNIST and CIFAR10 |
 | `experiments.synthetic.plot` | Variational-LLA synthetic plots |
-| `experiments.volterra` | Lotka--Volterra simulator prior |
+| `experiments.volterra` | Lotka--Volterra simulator prior with learned per-output noise |
 | `experiments.simulator_forecasting` | Damped-oscillator forecasting |
 | `experiments.eld_forecasting` | Electricity-load forecasting |
 

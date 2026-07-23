@@ -108,9 +108,7 @@ def test_variant_tags_distinguish_prior_and_inducing_states():
     assert "fixedprior" in _variant_tag(sip_fixed, "sip")
 
     gmvip_full = _args(["--model", "gmvip"])
-    gmvip_inducing_only = _args(
-        ["--model", "gmvip", "--gmvip_path_mode", "inducing_only"]
-    )
+    gmvip_inducing_only = _args(["--model", "gmvip", "--gmvip_path_mode", "inducing_only"])
     assert gmvip_full.gmvip_path_mode == "full"
     assert _variant_tag(gmvip_full, "gmvip") != _variant_tag(gmvip_inducing_only, "gmvip")
     assert "_full_" in _variant_tag(gmvip_full, "gmvip")
@@ -201,26 +199,28 @@ def test_gmvip_and_sip_build_with_learn_z_and_both_prior_states():
 
 def test_gmvip_grid_inducing_initializer_builds_for_multidimensional_uci_inputs():
     dataset = TinyTrainDataset()
-    args = _args([
-        "--model",
-        "gmvip",
-        "--hidden_dims",
-        "4",
-        "--gmvip_operator_type",
-        "empirical",
-        "--gmvip_posterior_type",
-        "gaussian",
-        "--gmvip_num_inducing",
-        "4",
-        "--gmvip_inducing_method",
-        "grid",
-        "--gmvip_num_train_samples",
-        "8",
-        "--gmvip_num_eval_samples",
-        "8",
-        "--gmvip_num_operator_bank_samples",
-        "8",
-    ])
+    args = _args(
+        [
+            "--model",
+            "gmvip",
+            "--hidden_dims",
+            "4",
+            "--gmvip_operator_type",
+            "empirical",
+            "--gmvip_posterior_type",
+            "gaussian",
+            "--gmvip_num_inducing",
+            "4",
+            "--gmvip_inducing_method",
+            "grid",
+            "--gmvip_num_train_samples",
+            "8",
+            "--gmvip_num_eval_samples",
+            "8",
+            "--gmvip_num_operator_bank_samples",
+            "8",
+        ]
+    )
 
     model = build_model(args, dataset)
 

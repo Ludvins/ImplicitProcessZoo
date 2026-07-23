@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .datasets.damped_oscillator import normalize_time
-from .priors import DampedOscillatorPrior
+from experiments.common.oscillator_data import normalize_time
+from experiments.common.oscillator_prior import DampedOscillatorPrior
 
 
 def generate_dataset(

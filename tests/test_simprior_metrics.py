@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 from experiments.common import (
@@ -5,12 +6,13 @@ from experiments.common import (
     phase_lag_error,
     positivity_violation_rate,
 )
-from experiments.volterra.metrics import (
+from experiments.volterra.benchmark import (
+    _summarize,
     crps_from_samples,
-    gaussian_nll_from_samples,
     interval_coverage,
     interval_width,
     lotka_volterra_residual_score,
+    mixture_gaussian_nll,
     nearest_prior_mse,
 )
 
@@ -22,13 +24,36 @@ def test_crps_is_zero_when_all_samples_equal_target():
     assert torch.allclose(crps_from_samples(samples, y), torch.zeros(()))
 
 
-def test_gaussian_nll_is_finite_with_zero_sample_variance():
+def test_mixture_gaussian_nll_is_finite_with_zero_sample_variance():
     y = torch.ones(3, 2)
     samples = y.unsqueeze(0).expand(4, -1, -1)
 
-    nll = gaussian_nll_from_samples(samples, y, noise_var=0.0)
+    nll = mixture_gaussian_nll(samples, y, noise_var=0.0)
 
     assert torch.isfinite(nll)
+
+
+def test_mixture_gaussian_nll_matches_manual_log_mixture():
+    samples = torch.tensor([[[0.0]], [[2.0]]], dtype=torch.float64)
+    target = torch.tensor([[1.0]], dtype=torch.float64)
+    variance = torch.tensor([0.25], dtype=torch.float64)
+    component_logs = -0.5 * (
+        torch.log(2.0 * torch.pi * variance) + (target[0] - samples[:, 0]).square() / variance
+    )
+    expected = -(torch.logsumexp(component_logs, dim=0) - torch.log(torch.tensor(2.0))).mean()
+
+    assert torch.allclose(mixture_gaussian_nll(samples, target, variance), expected)
+
+
+def test_summary_uses_sample_standard_error():
+    rows = [
+        {"method": "vip", "target_id": index, "rmse": value}
+        for index, value in enumerate([1.0, 2.0, 3.0])
+    ]
+    summary = _summarize(rows)
+
+    assert summary["rmse"]["mean"] == 2.0
+    assert np.isclose(summary["rmse"]["stderr"], 1.0 / np.sqrt(3.0))
 
 
 def test_interval_coverage_and_width_for_inside_target():

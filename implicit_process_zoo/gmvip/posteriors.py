@@ -95,9 +95,7 @@ class CholeskyGaussianCoefficientPosterior(nn.Module):
             raise ValueError("output_dim must be positive.")
         self.num_inducing = int(num_inducing)
         self.output_dim = int(output_dim)
-        self.joint_output_covariance = bool(
-            joint_output_covariance and self.output_dim > 1
-        )
+        self.joint_output_covariance = bool(joint_output_covariance and self.output_dim > 1)
         self.min_log_std = min_log_std
         self.max_log_std = max_log_std
         self.covariance_dim = (

@@ -1,7 +1,7 @@
 import torch
 
 from experiments.common import oscillation_period_error
-from experiments.simulator_forecasting.metrics import (
+from experiments.common.oscillator_metrics import (
     coerce_regions,
     crps_from_samples,
     interval_coverage,

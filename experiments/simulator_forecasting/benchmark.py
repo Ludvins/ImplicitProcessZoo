@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
+import hashlib
 import json
 import math
+import platform
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,22 +21,14 @@ from experiments.common import (
     build_flow as build_common_flow,
 )
 from experiments.common import (
-    deep_merge,
     fix_gaussian_noise,
     json_safe,
-    load_yaml,
-    oscillation_period_error,
     write_csv_rows,
 )
-from experiments.simulator_forecasting.datasets import load_damped_oscillator_tasks
-from experiments.simulator_forecasting.generate import generate_dataset
-from experiments.simulator_forecasting.metrics import coerce_regions, metrics_by_region
-from experiments.simulator_forecasting.plots import (
-    plot_metric_by_region,
-    plot_posterior_forecast,
-    plot_prior_samples,
-)
-from experiments.simulator_forecasting.priors import DampedOscillatorPrior
+from experiments.common.oscillator_data import load_damped_oscillator_tasks
+from experiments.common.oscillator_generate import generate_dataset
+from experiments.common.oscillator_metrics import coerce_regions, metrics_by_region
+from experiments.common.oscillator_prior import DampedOscillatorPrior
 from implicit_process_zoo.fbnn import FBNN
 from implicit_process_zoo.ftip import FTIP
 from implicit_process_zoo.gmvip import GeneralizedMatheronVIP
@@ -42,6 +37,7 @@ from implicit_process_zoo.mfvi import MFVI
 from implicit_process_zoo.priors.generative_functions import GP, BayesianNN, BayesLinear
 from implicit_process_zoo.sip import SIP
 from implicit_process_zoo.tfsvi import TFSVI
+from implicit_process_zoo.utils.random import fork_torch_rng
 from implicit_process_zoo.vip import VIP
 
 METHODS = (
@@ -62,6 +58,10 @@ METHODS = (
 METHOD_ALIASES = {
     "gmvip_cov": "gmvip",
 }
+EVALUATION_SAMPLES = 1024
+LEARNABLE_NOISE_METHODS = set(METHODS)
+FIXED_NOISE_NLL = "equal_weight_gaussian_mixture_with_fixed_observation_variance"
+LEARNED_NOISE_NLL = "equal_weight_gaussian_mixture_with_learned_observation_variance"
 
 
 DEFAULT_SIMULATOR_FORECASTING_CONFIG: dict = {
@@ -135,7 +135,7 @@ DEFAULT_SIMULATOR_FORECASTING_CONFIG: dict = {
         "learning_rate": 5.0e-3,
         "max_steps": 10000,
         "n_mc_train": 16,
-        "n_mc_eval": 1000,
+        "n_mc_eval": EVALUATION_SAMPLES,
         "batch_size": "full",
         "hidden_dims": [128, 128, 128],
         "activation": "tanh",
@@ -145,6 +145,9 @@ DEFAULT_SIMULATOR_FORECASTING_CONFIG: dict = {
         "max_grad_norm": 10.0,
         "disable_tqdm": False,
     },
+    "likelihood": {
+        "learn_observation_noise": True,
+    },
     "plots": {
         "skip": False,
         "n_posterior_samples": 20,
@@ -153,29 +156,11 @@ DEFAULT_SIMULATOR_FORECASTING_CONFIG: dict = {
 }
 
 
-DEV_SIMULATOR_FORECASTING_CONFIG: dict = {
-    **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG),
-    "data": {
-        **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG["data"]),
-        "root": "data/simprior/simulator_forecasting_dev",
-        "n_eval_targets": 50,
-        "n_train": [8, 16, 32],
-    },
-    "prior": {"bank_size": 256},
-    "training": {
-        **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG["training"]),
-        "max_steps": 1000,
-        "n_mc_eval": 256,
-        "regression_coeffs": 128,
-    },
-}
-
-
 SMOKE_SIMULATOR_FORECASTING_CONFIG: dict = {
     **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG),
     "data": {
         **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG["data"]),
-        "root": "data/simprior/simulator_forecasting_smoke",
+        "root": "tmp/oscillator_smoke_data",
         "n_eval_targets": 1,
         "n_train": [4],
         "n_test": 61,
@@ -251,22 +236,12 @@ SMOKE_SIMULATOR_FORECASTING_CONFIG: dict = {
 }
 
 
-MISSPECIFIED_SIMULATOR_FORECASTING_CONFIG: dict = {
-    **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG),
-    "data": {
-        **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG["data"]),
-        "root": "data/simprior/simulator_forecasting_misspecified",
-        "misspecified": True,
-    },
-}
-
-
 TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG: dict = {
     **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG),
     "method": "gmvip",
     "data": {
         **copy.deepcopy(DEFAULT_SIMULATOR_FORECASTING_CONFIG["data"]),
-        "root": "data/simprior/simulator_forecasting_tobs15_20targets",
+        "root": "data/simprior/oscillator",
         "n_eval_targets": 20,
         "n_train": [64],
         "n_test": 500,
@@ -300,7 +275,7 @@ TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG: dict = {
         "learning_rate": 5.0e-3,
         "max_steps": 3000,
         "n_mc_train": 16,
-        "n_mc_eval": 1000,
+        "n_mc_eval": EVALUATION_SAMPLES,
         "regression_coeffs": 256,
         "disable_tqdm": True,
     },
@@ -319,49 +294,6 @@ TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG: dict = {
 }
 
 
-TOBS15_VIP_FTIP_GMVIP_FIGURE_CONFIG: dict = {
-    **copy.deepcopy(TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG),
-    "data": {
-        **copy.deepcopy(TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG["data"]),
-        "root": "data/simprior/simulator_forecasting_tobs15",
-        "n_eval_targets": 1,
-        "n_train": [64],
-    },
-    "plots": {
-        "skip": True,
-        "n_posterior_samples": 30,
-        "n_prior_samples": 30,
-    },
-}
-
-
-CONFIG_PRESETS = {
-    "simulator_forecasting_smoke": SMOKE_SIMULATOR_FORECASTING_CONFIG,
-    "simulator_forecasting_dev": DEV_SIMULATOR_FORECASTING_CONFIG,
-    "simulator_forecasting_paper": DEFAULT_SIMULATOR_FORECASTING_CONFIG,
-    "simulator_forecasting_misspecified": MISSPECIFIED_SIMULATOR_FORECASTING_CONFIG,
-    "simulator_forecasting_tobs15_vip_ftip_gmvip_figure": TOBS15_VIP_FTIP_GMVIP_FIGURE_CONFIG,
-    "simulator_forecasting_tobs15_vip_ftip_gmvip_20targets": TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG,
-}
-
-
-def _deep_update(base: dict, override: dict) -> dict:
-    return deep_merge(base, override)
-
-
-def _load_runner_config(args: argparse.Namespace) -> dict:
-    try:
-        config = copy.deepcopy(CONFIG_PRESETS[str(args.preset)])
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown preset {args.preset!r}; expected one of {tuple(CONFIG_PRESETS)}."
-        ) from exc
-    if args.config is not None:
-        config = _deep_update(config, load_yaml(args.config))
-    config["preset"] = str(args.preset)
-    return config
-
-
 def _as_namespace(mapping: dict) -> SimpleNamespace:
     return SimpleNamespace(**mapping)
 
@@ -373,7 +305,7 @@ def _training_config(config: dict) -> SimpleNamespace:
             "learning_rate": training.get("learning_rate", 1e-3),
             "max_steps": training.get("max_steps", 10000),
             "n_mc_train": training.get("n_mc_train", 8),
-            "n_mc_eval": training.get("n_mc_eval", 256),
+            "n_mc_eval": training.get("n_mc_eval", EVALUATION_SAMPLES),
             "batch_size": training.get("batch_size", "full"),
             "hidden_dims": training.get("hidden_dims", [128, 128, 128]),
             "activation": training.get("activation", "tanh"),
@@ -409,8 +341,44 @@ def _fixed_log_variance(noise_std_norm: torch.Tensor) -> torch.Tensor:
     return 2.0 * torch.log(noise_std_norm.clamp_min(1e-8))
 
 
-def _fix_model_noise(model: torch.nn.Module, noise_std_norm: torch.Tensor) -> None:
+def _learn_observation_noise(config: dict) -> bool:
+    return bool(config.get("likelihood", {}).get("learn_observation_noise", True))
+
+
+def _configure_model_noise(
+    model: torch.nn.Module,
+    noise_std_norm: torch.Tensor,
+    *,
+    learn: bool,
+) -> None:
+    if hasattr(model, "log_variance"):
+        value = _fixed_log_variance(noise_std_norm).to(
+            dtype=model.log_variance.dtype,
+            device=model.log_variance.device,
+        )
+        model.log_variance = torch.nn.Parameter(value.detach().clone(), requires_grad=learn)
+        return
     fix_gaussian_noise(model, noise_std_norm)
+
+
+def _model_noise_std_norm(model: torch.nn.Module, task, config: dict) -> torch.Tensor:
+    if not _learn_observation_noise(config):
+        return task.noise_std
+    if getattr(model, "likelihood", None) is not None and hasattr(model.likelihood, "noise_std"):
+        value = model.likelihood.noise_std
+    elif hasattr(model, "effective_log_variance"):
+        value = torch.exp(0.5 * model.effective_log_variance())
+    elif hasattr(model, "log_variance"):
+        value = torch.exp(0.5 * model.log_variance)
+    elif getattr(model, "is_deep_ensemble", False):
+        values = [torch.exp(0.5 * member.log_variance) for member in model.members]
+        value = torch.stack(values).mean(dim=0)
+    else:
+        raise RuntimeError(f"{type(model).__name__} has no Gaussian noise parameter.")
+    value = value.reshape(-1)
+    if value.numel() != 1 or not torch.isfinite(value).all() or torch.any(value <= 0):
+        raise RuntimeError(f"Invalid learned oscillator observation noise: {value}.")
+    return value
 
 
 def _make_bnn(
@@ -568,6 +536,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
     neural_cfg = dict(config.get("neural", {}))
     output_dim = int(task.y_train.shape[-1])
     noise_std_norm = task.noise_std.to(dtype=dtype, device=device)
+    learn_noise = _learn_observation_noise(config) and method in LEARNABLE_NOISE_METHODS
 
     def build_map_member(member_seed: int) -> DeterministicMAP:
         model = DeterministicMAP(
@@ -584,7 +553,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             dtype=dtype,
             seed=member_seed,
         )
-        model.log_variance.requires_grad_(False)
+        model.log_variance.requires_grad_(learn_noise)
         return model
 
     if method == "map":
@@ -624,7 +593,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             device=device,
             dtype=dtype,
         )
-        _fix_model_noise(model, noise_std_norm)
+        _configure_model_noise(model, noise_std_norm, learn=learn_noise)
         return model
 
     if method == "vip":
@@ -648,7 +617,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             dtype=dtype,
             seed=seed + 22,
         )
-        _fix_model_noise(model, noise_std_norm)
+        _configure_model_noise(model, noise_std_norm, learn=learn_noise)
         return model
 
     if method == "ftip":
@@ -656,7 +625,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             y_mean=np.asarray(task.metadata["y_mean"], dtype=np.float64).reshape(1, output_dim),
             y_std=np.asarray(task.metadata["y_std"], dtype=np.float64).reshape(1, output_dim),
             num_samples=int(train_cfg.regression_coeffs),
-            seed=seed + 25,
+            seed=seed + 21,
             sample_drag=False,
         )
         flow = _make_flow(
@@ -682,7 +651,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             dtype=dtype,
             seed=seed + 27,
         )
-        _fix_model_noise(model, noise_std_norm)
+        _configure_model_noise(model, noise_std_norm, learn=learn_noise)
         return model
 
     if method == "sip":
@@ -733,7 +702,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             dtype=dtype,
             seed=seed + 31,
         )
-        _fix_model_noise(model, noise_std_norm)
+        _configure_model_noise(model, noise_std_norm, learn=learn_noise)
         return model
 
     if method in {"gmvip", "gmvip_cov", "gmvip_rbf"}:
@@ -756,7 +725,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             posterior_type="gaussian",
             likelihood="regression",
             num_operator_bank_samples=bank_size,
-            learn_noise=False,
+            learn_noise=learn_noise,
             init_log_noise=torch.log(noise_std_norm.clamp_min(1e-8)),
             min_log_noise=math.log(1e-8),
             freeze_base_prior=True,
@@ -826,7 +795,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             device=device,
             dtype=dtype,
         )
-        _fix_model_noise(model, noise_std_norm)
+        _configure_model_noise(model, noise_std_norm, learn=learn_noise)
         return model
 
     if method in {"tfsvi_observed", "tfsvi_full"}:
@@ -848,7 +817,7 @@ def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
             dtype=dtype,
         )
         model._train_inputs = _context_pool(method, task).detach().clone()
-        _fix_model_noise(model, noise_std_norm)
+        _configure_model_noise(model, noise_std_norm, learn=learn_noise)
         return model
 
     raise ValueError(f"Unknown method {method!r}.")
@@ -915,6 +884,7 @@ def _train_one_model(model, task, config: dict, *, device) -> dict:
         "steps": len(losses),
         "loss_start": losses[0] if losses else None,
         "loss_end": losses[-1] if losses else None,
+        "checkpoint": "final_step",
     }
 
 
@@ -929,6 +899,7 @@ def fit_model(model, method: str, task, config: dict, *, device) -> dict:
             "steps": sum(int(info["steps"]) for info in infos),
             "loss_start": infos[0]["loss_start"] if infos else None,
             "loss_end": infos[-1]["loss_end"] if infos else None,
+            "checkpoint": "final_step",
         }
     return _train_one_model(model, task, config, device=device)
 
@@ -947,23 +918,29 @@ def evaluate_target(
     model, method: str, task, config: dict, *, seed: int, out_dir: Path
 ) -> list[dict]:
     eval_samples = int(_training_config(config).n_mc_eval)
+    if eval_samples != EVALUATION_SAMPLES and not bool(config.get("smoke", False)):
+        raise RuntimeError(
+            f"Standard oscillator evaluation requires exactly {EVALUATION_SAMPLES} samples."
+        )
+    evaluation_seed = int(seed) + 501
     start = time.time()
-    samples_norm = predictive_function_samples(model, method, task.X_plot, eval_samples, seed + 501)
+    samples_norm = predictive_function_samples(
+        model, method, task.X_plot, eval_samples, evaluation_seed
+    )
     samples = _unnormalize(task, samples_norm)
     y_true = _unnormalize(task, task.y_plot_true)
     t_grid = torch.as_tensor(task.metadata["t_grid"], dtype=samples.dtype, device=samples.device)
-    noise_std = torch.as_tensor(
-        [float(task.metadata["sigma_y"])], dtype=samples.dtype, device=samples.device
+    noise_std_norm = _model_noise_std_norm(model, task, config).to(
+        dtype=samples.dtype, device=samples.device
     )
+    physical_scale = torch.as_tensor(
+        task.metadata["y_std"], dtype=samples.dtype, device=samples.device
+    ).reshape(-1)
+    noise_std = noise_std_norm * physical_scale
     regions = _metric_regions(config)
     metric_rows = metrics_by_region(
         samples, y_true, t_grid, noise_std, levels=(0.9, 0.95), regions=regions
     )
-    heldout = t_grid > float(task.metadata["t_obs"])
-    period_error = oscillation_period_error(
-        samples[:, heldout], y_true[heldout], t_grid[heldout], channels=(0,)
-    )
-
     pred_dir = out_dir / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
     train_t = np.asarray(task.metadata["train_t"], dtype=np.float64)
@@ -980,25 +957,11 @@ def evaluate_target(
         std=samples_np.std(axis=0),
         q05=np.quantile(samples_np, 0.05, axis=0),
         q95=np.quantile(samples_np, 0.95, axis=0),
+        observation_noise_std=noise_std.detach().cpu().numpy(),
+        observation_noise_std_norm=noise_std_norm.detach().cpu().numpy(),
+        evaluation_seed=np.asarray(evaluation_seed, dtype=np.int64),
+        evaluation_samples=np.asarray(eval_samples, dtype=np.int64),
     )
-
-    if not bool(config.get("plots", {}).get("skip", False)):
-        fig_dir = out_dir / "figures"
-        try:
-            plot_posterior_forecast(
-                fig_dir
-                / f"posterior_target_{task.metadata['target_id']}_ntrain_{task.metadata['n_train']}",
-                t=np.asarray(task.metadata["t_grid"], dtype=np.float64),
-                y_true=y_true.detach().cpu().numpy(),
-                train_t=train_t,
-                train_y=train_y,
-                samples=samples_np,
-                method=method,
-                n_samples=int(config.get("plots", {}).get("n_posterior_samples", 20)),
-                t_obs=float(task.metadata["t_obs"]),
-            )
-        except ImportError as exc:
-            print(f"Skipping plot generation: {exc}")
 
     rows = []
     for region, values in metric_rows.items():
@@ -1014,8 +977,11 @@ def evaluate_target(
                 "region_start": lo,
                 "region_end": hi,
                 "region_include_left": include_left,
+                "evaluation_seed": evaluation_seed,
+                "evaluation_samples": eval_samples,
+                "observation_noise_std_norm": float(noise_std_norm[0].detach().cpu()),
+                "observation_noise_std": float(noise_std[0].detach().cpu()),
                 "eval_time_sec": time.time() - start,
-                "oscillation_period_error": float(period_error.detach().cpu()),
                 **values,
             }
         )
@@ -1023,17 +989,92 @@ def evaluate_target(
 
 
 def _target_ids(cli_args, n_tasks: int) -> list[int]:
-    if cli_args.target_ids:
-        ids = [int(value) for value in cli_args.target_ids.split(",") if value.strip()]
-    else:
-        start = 0 if cli_args.target_start is None else int(cli_args.target_start)
-        stop = n_tasks if cli_args.target_stop is None else min(int(cli_args.target_stop), n_tasks)
-        ids = list(range(start, stop))
-    return [idx for idx in ids if 0 <= idx < n_tasks]
+    ids: list[int] = []
+    for token in str(cli_args.target_ids).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if ":" in token:
+            start, stop = token.split(":", 1)
+            ids.extend(range(int(start or 0), int(stop or n_tasks)))
+        elif "-" in token:
+            start, stop = token.split("-", 1)
+            ids.extend(range(int(start), int(stop) + 1))
+        else:
+            ids.append(int(token))
+    resolved = list(dict.fromkeys(idx for idx in ids if 0 <= idx < n_tasks))
+    if not resolved:
+        raise ValueError("Target selection did not resolve to any oscillator targets.")
+    return resolved
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
     write_csv_rows(path, rows)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stable_hash(value: dict) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _dataset_manifest(config: dict) -> dict:
+    root = Path(config["data"]["root"]).resolve()
+    paths = [root / "target_paths.npz", root / "metadata.json"]
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"Oscillator dataset manifest is incomplete: {missing}")
+    hashes = {path.name: _sha256_file(path) for path in paths}
+    return {
+        "root": str(root),
+        "files": hashes,
+        "sha256": _stable_hash(hashes),
+    }
+
+
+def _method_manifest(method: str, config: dict, *, seed: int, basis_size: int) -> dict:
+    learn_noise = _learn_observation_noise(config) and method in LEARNABLE_NOISE_METHODS
+    protocol = {
+        "schema_version": 2,
+        "experiment": "damped_oscillator",
+        "method": method,
+        "seed": int(seed),
+        "vip_basis_size": int(basis_size),
+        "nll": LEARNED_NOISE_NLL if learn_noise else FIXED_NOISE_NLL,
+        "observation_noise": {
+            "mode": "learned_scalar" if learn_noise else "fixed_scalar",
+            "initialization": "known_simulator_noise",
+            "reported_units": "physical_output_units",
+        },
+        "checkpoint_selection": "none_final_step_only",
+        "data_usage": {
+            "training": "t<=15",
+            "validation": "none",
+            "near_test": "15<t<=20",
+            "far_test": "20<t<=30",
+        },
+        "evaluation_samples": int(config["training"]["n_mc_eval"]),
+        "config": config,
+        "dataset": _dataset_manifest(config),
+    }
+    return {
+        **protocol,
+        "protocol_hash": _stable_hash(protocol),
+        "environment": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "torch": torch.__version__,
+        },
+        "status": "running",
+        "completed_targets": [],
+    }
 
 
 def _summarize(rows: list[dict]) -> dict:
@@ -1050,7 +1091,6 @@ def _summarize(rows: list[dict]) -> dict:
         "cov95",
         "width90",
         "width95",
-        "oscillation_period_error",
     )
     for key, group in groups.items():
         method, n_train, region = key
@@ -1061,7 +1101,11 @@ def _summarize(rows: list[dict]) -> dict:
             if values.size:
                 summary[name][metric] = {
                     "mean": float(np.nanmean(values)),
-                    "stderr": float(np.nanstd(values) / max(1.0, math.sqrt(values.size))),
+                    "stderr": (
+                        float(np.nanstd(values, ddof=1) / math.sqrt(values.size))
+                        if values.size > 1
+                        else 0.0
+                    ),
                 }
     return summary
 
@@ -1128,7 +1172,7 @@ def _fit_ftip_with_optional_warm_start(
     fine_lr = float(ftip_cfg.get("fine_tune_lr") or train_cfg.learning_rate)
 
     vip_config = _config_with_training(config, max_steps=warm_steps, learning_rate=warm_lr)
-    vip_model = build_model("vip", task, config, seed=seed + 7919, device=device, dtype=dtype)
+    vip_model = build_model("vip", task, config, seed=seed, device=device, dtype=dtype)
     vip_info = fit_model(vip_model, "vip", task, vip_config, device=device)
 
     model.warm_start_from_vip(
@@ -1145,27 +1189,64 @@ def _fit_ftip_with_optional_warm_start(
         "fine_tune_steps": int(ftip_info["steps"]),
         "warm_start_loss_start": vip_info["loss_start"],
         "warm_start_loss_end": vip_info["loss_end"],
+        "checkpoint": "final_step",
     }
 
 
 def run_method(method: str, config: dict, cli_args) -> dict:
     seed = int(cli_args.seed)
-    dtype = torch.float64 if str(cli_args.dtype) == "float64" else torch.float32
+    dtype = torch.float64
     device = torch.device(cli_args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     _ensure_dataset(config, seed)
     data_cfg = dict(config.get("data", {}))
     prior_cfg = dict(config.get("prior", {}))
-    out_dir = (
-        Path(cli_args.output_dir or "results/simprior")
-        / "simulator_forecasting"
-        / method
-        / f"seed_{seed}"
-    )
+    basis_size = int(cli_args.vip_basis_size)
+    out_dir = Path(cli_args.output_root) / f"seed_{seed}" / f"S_{basis_size}" / method
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
-    rows = []
-    runtimes = []
+    manifest_path = out_dir / "manifest.json"
+    expected_manifest = _method_manifest(method, config, seed=seed, basis_size=basis_size)
+    metrics_path = out_dir / "metrics_per_target_region.csv"
+    runtime_path = out_dir / "runtime.json"
+    if cli_args.resume and manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("protocol_hash") != expected_manifest["protocol_hash"]:
+            raise ValueError("Existing oscillator manifest differs from the requested protocol.")
+        if metrics_path.is_file():
+            with metrics_path.open("r", newline="", encoding="utf-8-sig") as handle:
+                rows = list(csv.DictReader(handle))
+        else:
+            rows = []
+        runtimes = (
+            json.loads(runtime_path.read_text(encoding="utf-8")) if runtime_path.is_file() else []
+        )
+    else:
+        manifest = expected_manifest
+        rows = []
+        runtimes = []
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    completed = {(int(row["target_id"]), int(row["n_train"])) for row in runtimes}
+
+    def flush() -> dict:
+        metrics = {"method": method, "seed": seed, "summary": _summarize(rows)}
+        (out_dir / "metrics.json").write_text(
+            json.dumps(_tensor_to_json(metrics), indent=2), encoding="utf-8"
+        )
+        runtime_path.write_text(json.dumps(_tensor_to_json(runtimes), indent=2), encoding="utf-8")
+        _write_csv(metrics_path, rows)
+        completed_targets = sorted({int(row["target_id"]) for row in runtimes})
+        manifest["completed_targets"] = completed_targets
+        manifest["status"] = (
+            "complete"
+            if set(_target_ids(cli_args, int(data_cfg.get("n_eval_targets", 20)))).issubset(
+                completed_targets
+            )
+            else "partial"
+        )
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return metrics
+
     for n_train in _n_train_values(config):
         tasks = load_damped_oscillator_tasks(
             data_cfg.get("root", "data/simprior/simulator_forecasting"),
@@ -1181,18 +1262,39 @@ def run_method(method: str, config: dict, cli_args) -> dict:
         )
         ids = _target_ids(cli_args, len(tasks))
         for target_idx in ids:
+            if (int(target_idx), int(n_train)) in completed:
+                continue
             task = tasks[target_idx]
             model_seed = seed + 1000 * target_idx + 100_000 * int(n_train)
-            model = build_model(method, task, config, seed=model_seed, device=device, dtype=dtype)
-            if method == "ftip":
-                train_info = _fit_ftip_with_optional_warm_start(
-                    model, task, config, seed=model_seed, device=device, dtype=dtype
+            with fork_torch_rng(model_seed):
+                model = build_model(
+                    method, task, config, seed=model_seed, device=device, dtype=dtype
                 )
-            else:
-                train_info = fit_model(model, method, task, config, device=device)
-            target_rows = evaluate_target(
-                model, method, task, config, seed=model_seed, out_dir=out_dir
-            )
+                if method == "ftip":
+                    train_info = _fit_ftip_with_optional_warm_start(
+                        model, task, config, seed=model_seed, device=device, dtype=dtype
+                    )
+                else:
+                    train_info = fit_model(model, method, task, config, device=device)
+                target_rows = evaluate_target(
+                    model, method, task, config, seed=model_seed, out_dir=out_dir
+                )
+                checkpoint_dir = out_dir / "checkpoints"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    {
+                        "method": method,
+                        "seed": seed,
+                        "model_seed": model_seed,
+                        "target_id": target_idx,
+                        "n_train": int(n_train),
+                        "step": int(train_info["steps"]),
+                        "checkpoint": train_info["checkpoint"],
+                        "model_state_dict": model.state_dict(),
+                        "config": config,
+                    },
+                    checkpoint_dir / f"target_{target_idx}_ntrain_{n_train}.pt",
+                )
             for row in target_rows:
                 row["train_time_sec"] = float(train_info["train_time_sec"])
                 row["train_steps"] = int(train_info["steps"])
@@ -1200,88 +1302,70 @@ def run_method(method: str, config: dict, cli_args) -> dict:
                 row["loss_end"] = train_info["loss_end"]
             rows.extend(target_rows)
             runtimes.append({"target_id": target_idx, "n_train": int(n_train), **train_info})
+            flush()
 
-    metrics = {"method": method, "seed": seed, "summary": _summarize(rows)}
-    (out_dir / "metrics.json").write_text(
-        json.dumps(_tensor_to_json(metrics), indent=2), encoding="utf-8"
-    )
-    (out_dir / "runtime.json").write_text(
-        json.dumps(_tensor_to_json(runtimes), indent=2), encoding="utf-8"
-    )
-    _write_csv(out_dir / "metrics_per_target_region.csv", rows)
+    metrics = flush()
 
-    if rows and not bool(config.get("plots", {}).get("skip", False)):
-        try:
-            plot_metric_by_region(out_dir / "figures" / "nlpd_by_region", rows=rows, metric="nlpd")
-            plot_metric_by_region(
-                out_dir / "figures" / "coverage90_by_region", rows=rows, metric="cov90"
-            )
-            first_task = load_damped_oscillator_tasks(
-                data_cfg.get("root", "data/simprior/simulator_forecasting"),
-                seed=seed,
-                n_eval_targets=1,
-                n_train=_n_train_values(config)[0],
-                t_obs=float(data_cfg.get("t_obs", 8.0)),
-                prior_bank_size=prior_cfg.get("bank_size"),
-                device=device,
-                dtype=dtype,
-            )[0]
-            prior_ids = first_task.prior.sample_indices(
-                int(config.get("plots", {}).get("n_prior_samples", 20)), seed=seed + 77
-            )
-            prior_samples = (
-                first_task.prior.evaluate_raw(first_task.X_plot, prior_ids).detach().cpu().numpy()
-            )
-            plot_prior_samples(
-                out_dir / "figures" / "prior_samples",
-                t=np.asarray(first_task.metadata["t_grid"], dtype=np.float64),
-                samples=prior_samples,
-                n_samples=int(config.get("plots", {}).get("n_prior_samples", 20)),
-                t_obs=float(first_task.metadata["t_obs"]),
-            )
-        except ImportError as exc:
-            print(f"Skipping plot generation: {exc}")
     return metrics
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run simulator-prior forecasting experiments.")
-    parser.add_argument(
-        "--preset", choices=tuple(CONFIG_PRESETS), default="simulator_forecasting_dev"
+    parser = argparse.ArgumentParser(
+        description="Run the canonical damped-oscillator benchmark.",
+        epilog=(
+            "Canonical protocol: 20 targets, B=1024, GMVIP M=32, shared "
+            "VIP/FTIP S=256, 3,000 VIP steps, 3,000-step FTIP warm start plus "
+            "3,000 fine-tuning steps, 16 training samples, 1,024 evaluation "
+            "samples, learned noise, and no validation or period metric."
+        ),
     )
-    parser.add_argument("--config", default=None, help="Optional YAML override.")
+    parser.add_argument(
+        "--methods",
+        required=True,
+        help=f"Comma-separated method names. Choices: {','.join(METHODS)}",
+    )
+    parser.add_argument("--vip-basis-size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--method", "--methods", dest="method", default=None)
-    parser.add_argument("--num-inducing", type=int, default=None)
-    parser.add_argument("--prior-bank-size", type=int, default=None)
-    parser.add_argument("--target-start", type=int, default=None)
-    parser.add_argument("--target-stop", type=int, default=None)
-    parser.add_argument("--target-ids", default=None)
-    parser.add_argument("--skip-plots", action="store_true")
+    parser.add_argument("--target-ids", default="0:20")
+    parser.add_argument(
+        "--learn-observation-noise",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Learn scalar observation noise for trainable methods (default).",
+    )
+    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--regenerate-targets", action="store_true")
     parser.add_argument("--disable-tqdm", action="store_true")
-    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--output-root", default="results/oscillator")
     parser.add_argument("--device", default=None)
-    parser.add_argument("--dtype", choices=["float64", "float32"], default="float64")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
-    config = _load_runner_config(args)
-    if args.method is not None:
-        config["method"] = args.method
-    if args.num_inducing is not None:
-        config.setdefault("gmvip", {})["num_inducing"] = int(args.num_inducing)
-    if args.prior_bank_size is not None:
-        config.setdefault("prior", {})["bank_size"] = int(args.prior_bank_size)
-    if args.skip_plots:
-        config.setdefault("plots", {})["skip"] = True
+    if int(args.vip_basis_size) <= 1:
+        raise ValueError("--vip-basis-size must be greater than one.")
+    config = copy.deepcopy(
+        SMOKE_SIMULATOR_FORECASTING_CONFIG if args.smoke else TOBS15_VIP_FTIP_GMVIP_20TARGET_CONFIG
+    )
+    config["method"] = args.methods
+    config["smoke"] = bool(args.smoke)
+    config["training"]["regression_coeffs"] = int(args.vip_basis_size)
+    config["training"]["n_mc_eval"] = (
+        int(config["training"]["n_mc_eval"]) if args.smoke else EVALUATION_SAMPLES
+    )
+    config["likelihood"]["learn_observation_noise"] = bool(args.learn_observation_noise)
+    config["plots"]["skip"] = True
     if args.disable_tqdm:
         config.setdefault("training", {})["disable_tqdm"] = True
-    if config.get("experiment") != "simulator_forecasting":
-        raise ValueError("This runner only supports experiment: simulator_forecasting.")
-    requested = config.get("method", "gmvip")
-    methods = _requested_methods(requested)
+    if args.regenerate_targets:
+        data_root = Path(config["data"]["root"]).resolve()
+        for filename in ("target_paths.npz", "metadata.json"):
+            path = data_root / filename
+            if path.is_file():
+                path.unlink()
+    methods = _requested_methods(args.methods)
     results = {}
     for method in methods:
         if method not in METHODS:

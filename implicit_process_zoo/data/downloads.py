@@ -124,7 +124,10 @@ def extract_expected_members(
             target.parent.mkdir(parents=True, exist_ok=True)
             temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
             try:
-                with archive.open(member_name) as source_handle, temporary.open("wb") as target_handle:
+                with (
+                    archive.open(member_name) as source_handle,
+                    temporary.open("wb") as target_handle,
+                ):
                     shutil.copyfileobj(source_handle, target_handle, length=1024 * 1024)
                 os.replace(temporary, target)
             finally:

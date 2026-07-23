@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from experiments.simulator_forecasting.datasets import normalize_time
-from experiments.simulator_forecasting.priors import DampedOscillatorPrior
+from experiments.common.oscillator_data import normalize_time
+from experiments.common.oscillator_prior import DampedOscillatorPrior
 
 
 def test_damped_oscillator_prior_samples_latents_deterministically():

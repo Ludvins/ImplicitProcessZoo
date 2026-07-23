@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from experiments.simulator_forecasting.datasets import load_damped_oscillator_tasks
-from experiments.simulator_forecasting.generate import generate_dataset
+from experiments.common.oscillator_data import load_damped_oscillator_tasks
+from experiments.common.oscillator_generate import generate_dataset
 
 
 def test_damped_oscillator_task_generation_and_splits(tmp_path):

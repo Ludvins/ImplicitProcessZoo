@@ -1,8 +1,7 @@
 import numpy as np
 import torch
 
-from experiments.volterra.datasets import load_lotka_volterra_tasks
-from experiments.volterra.generate import generate_bank
+from experiments.volterra.benchmark import generate_bank, load_lotka_volterra_tasks
 
 
 def _write_small_lv_dataset(root):
@@ -54,10 +53,13 @@ def test_lotka_volterra_task_splits_and_normalization(tmp_path):
     assert task.y_train.shape == (6, 2)
     assert torch.allclose(task.y_train.mean(dim=0), torch.zeros(2, dtype=torch.float64), atol=1e-12)
 
-    reconstructed_val = task.y_val * y_std + y_mean
-    expected_val = torch.tensor(task.metadata["y_val_physical"], dtype=torch.float64)
     reconstructed_test = task.y_test * y_std + y_mean
     expected_test = torch.tensor(task.metadata["y_test_physical"], dtype=torch.float64)
 
-    assert torch.allclose(reconstructed_val, expected_val)
+    assert not hasattr(task, "X_val")
+    assert not hasattr(task, "y_val")
+    assert "val_indices" not in task.metadata
+    assert "y_val_physical" not in task.metadata
+    test_times = t_grid[np.asarray(task.metadata["test_indices"])]
+    assert np.all((test_times > 20.0) & (test_times <= 30.0))
     assert torch.allclose(reconstructed_test, expected_test)
