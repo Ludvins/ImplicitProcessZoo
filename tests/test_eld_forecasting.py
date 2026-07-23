@@ -1,14 +1,12 @@
 import csv
 import json
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 import torch
 
-from experiments.eld_forecasting import valbank
-from experiments.eld_forecasting.datasets import (
+from experiments.common.electricity_data import (
     ElectricityData,
     WindowIndex,
     WindowSpec,
@@ -16,13 +14,12 @@ from experiments.eld_forecasting.datasets import (
     load_synthetic_tasks,
     stress_diagnostics_for_targets,
 )
-from experiments.eld_forecasting.metrics import forecast_regions, validation_test_regions
-from experiments.eld_forecasting.priors import HistoricalLoadWindowPrior
-from experiments.eld_forecasting.run import (
+from experiments.common.electricity_metrics import forecast_regions
+from experiments.common.electricity_prior import HistoricalLoadWindowPrior
+from experiments.eld_forecasting.benchmark import (
     DEFAULT_CONFIG,
     EmpiricalGaussianPredictive,
     ExactEmpiricalMatheronPredictive,
-    _load_config,
     _load_expected_targets,
     build_model,
     fit_model,
@@ -171,21 +168,22 @@ def test_eld_synthetic_runner_writes_metrics(tmp_path):
     out_root = tmp_path / "results"
     main(
         [
-            "--preset",
-            "eld_smoke",
-            "--method",
+            "--methods",
             "analog,vip,gmvip_empirical",
-            "--synthetic-smoke",
+            "--smoke",
             "--seed",
             "0",
-            "--output-dir",
+            "--target-ids",
+            "0",
+            "--output-root",
             str(out_root),
             "--disable-tqdm",
         ]
     )
 
     for method in ("analog", "vip", "gmvip_empirical"):
-        path = out_root / method / "seed_0" / "metrics_per_target_region.csv"
+        method_dir = out_root / "seed_0" / "S_20" / method
+        path = method_dir / "metrics_per_target_region.csv"
         assert path.exists()
         with path.open("r", newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
@@ -195,15 +193,25 @@ def test_eld_synthetic_runner_writes_metrics(tmp_path):
         assert all("region_start_idx" in row and "region_stop_idx" in row for row in rows)
         assert all("region_include_left" not in row for row in rows)
         assert all("cov80" in row and "width80" in row for row in rows)
-        metrics = json.loads((path.parent / "metrics.json").read_text(encoding="utf-8"))
+        assert all("evaluation_samples" in row for row in rows)
+        assert all("observation_noise_std" in row for row in rows)
+        metrics = json.loads((method_dir / "metrics.json").read_text(encoding="utf-8"))
         assert metrics["run_seed"] == 0
+        manifest = json.loads((method_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["checkpoint_selection"] == "none_final_step_only"
+        expected_noise = "fixed_scalar" if method == "analog" else "learned_scalar"
+        assert manifest["observation_noise"]["mode"] == expected_noise
+        assert (method_dir / "checkpoints" / "target_0.pt").exists()
 
 
-def test_eld_paper_preset_is_the_canonical_experiment():
-    config = _load_config(parse_args(["--preset", "eld_paper"]))
+def test_eld_defaults_are_the_canonical_experiment():
+    config = DEFAULT_CONFIG
+    args = parse_args(["--methods", "analog,vip,ftip,gmvip_empirical"])
 
-    assert config == DEFAULT_CONFIG
-    assert config["method"] == "analog,vip,ftip,gmvip_empirical"
+    assert args.target_ids == "0:25"
+    assert args.vip_basis_size == 20
+    assert args.learn_observation_noise is True
+    assert not hasattr(args, "validation")
     assert config["data"]["n_targets"] == 25
     assert config["data"]["window_length"] == 192
     assert config["data"]["prefix_length"] == 96
@@ -211,10 +219,14 @@ def test_eld_paper_preset_is_the_canonical_experiment():
     assert config["data"]["target_years"] == [2014]
     assert config["prior"] == {"bank_size": 2048, "selection": "calendar_prefix_nn"}
     assert config["gmvip"]["num_inducing"] == 96
+    assert config["ftip"]["flow_depth"] == 1
+    assert "warm_start_from_vip" not in config["ftip"]
+    assert config["training"]["learning_rate"] == 5.0e-3
     assert config["training"]["max_steps"] == 500
     assert config["training"]["n_mc_train"] == 8
-    assert config["training"]["n_mc_eval"] == 256
+    assert config["training"]["n_mc_eval"] == 1024
     assert config["training"]["regression_coeffs"] == 20
+    assert config["likelihood"]["learn_observation_noise"] is True
     assert config["metrics"]["levels"] == [0.8, 0.9, 0.95]
     assert config["metrics"]["regions"] == {"test_forecast": {"start": 96, "stop": 192}}
     expected = _load_expected_targets(config["data"]["target_manifest"], run_seed=0)
@@ -251,27 +263,27 @@ def test_stress_diagnostics_are_ranked_against_complete_target_set():
 def test_eld_artifact_resume_skips_complete_targets_and_rejects_config_changes(tmp_path):
     out_root = tmp_path / "resumable"
     argv = [
-        "--preset",
-        "eld_smoke",
-        "--method",
+        "--methods",
         "analog",
-        "--synthetic-smoke",
+        "--smoke",
         "--seed",
         "0",
-        "--output-dir",
+        "--target-ids",
+        "0",
+        "--output-root",
         str(out_root),
         "--disable-tqdm",
     ]
     main(argv)
-    prediction = out_root / "analog" / "seed_0" / "predictions" / "target_0.npz"
+    prediction = out_root / "seed_0" / "S_20" / "analog" / "predictions" / "target_0.npz"
     original_mtime = prediction.stat().st_mtime_ns
 
-    result = main([*argv, "--resume-artifacts"])
+    result = main([*argv, "--resume"])
 
     assert prediction.stat().st_mtime_ns == original_mtime
     assert result["analog"]["targets"] == [0]
-    with pytest.raises(ValueError, match="config differs"):
-        main([*argv, "--resume-artifacts", "--prior-bank-size", "17"])
+    with pytest.raises(ValueError, match="config|manifest"):
+        main([*argv, "--resume", "--no-learn-observation-noise"])
 
 
 def test_eld_regions_are_half_open_nonoverlapping_and_dynamic():
@@ -284,64 +296,6 @@ def test_eld_regions_are_half_open_nonoverlapping_and_dynamic():
     smoke = forecast_regions(window_points=48, prefix_points=8)
     assert smoke["observed_prefix"]["stop"] == smoke["full_forecast"]["start"]
     assert "next_day_forecast" not in smoke
-
-    split = validation_test_regions(window_points=192, train_points=60, context_points=80)
-    assert split["validation"] == {"start": 60, "stop": 80}
-    assert split["final_test"] == {"start": 80, "stop": 192}
-    assert split["same_day_test"] == {"start": 80, "stop": 96}
-    assert split["next_day_test"] == {"start": 96, "stop": 192}
-
-
-def test_validation_candidates_share_target_seed(monkeypatch):
-    args = valbank.parse_args([])
-    args.candidate_prior_selections = "calendar,prefix_nn"
-    observed_seeds = []
-
-    def fake_make_task(*_args, prior_selection, seed, **_kwargs):
-        observed_seeds.append(seed)
-        return SimpleNamespace(
-            metadata={
-                "client_id": "client",
-                "start_time": "time",
-                "rule": prior_selection,
-                "prior_candidate_count": 4,
-                "prior_requested_candidate_count": 4,
-                "prior_fallback_tier": 0,
-                "prior_actual_calendar_constraint": prior_selection == "calendar",
-                "prior_actual_client_constraint": "any",
-            }
-        )
-
-    monkeypatch.setattr(valbank, "_make_task", fake_make_task)
-    monkeypatch.setattr(valbank.base_run, "build_model", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(
-        valbank.base_run,
-        "fit_model",
-        lambda *_args, **_kwargs: {"train_time_sec": 0.0, "steps": 0},
-    )
-    monkeypatch.setattr(
-        valbank,
-        "_score_validation",
-        lambda _model, _method, task, _config, **_kwargs: {
-            "crps": 0.0 if task.metadata["rule"] == "prefix_nn" else 1.0
-        },
-    )
-
-    selected, rows = valbank._select_prior_rules(
-        [object()],
-        None,
-        None,
-        args=args,
-        device=torch.device("cpu"),
-        dtype=torch.float64,
-        train_points=60,
-        window_points=192,
-        window_index=None,
-    )
-    assert len(set(observed_seeds)) == 1
-    assert selected == {0: "prefix_nn"}
-    assert all(row["candidate_rule_count"] == 2 for row in rows)
-
 
 def test_window_index_vectorized_selection_records_fallback_and_caches():
     values = np.asarray(

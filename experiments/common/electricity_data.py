@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from .priors import HistoricalLoadWindowPrior
+from experiments.common.electricity_prior import HistoricalLoadWindowPrior
 
 
 @dataclass(frozen=True)
@@ -208,9 +208,9 @@ def load_processed(root: str | Path, *, mmap: bool = True) -> ElectricityData:
     processed = root / "processed"
     if not processed_exists(root):
         raise FileNotFoundError(
-            "Processed ELD data not found. Run "
-            "`python -m experiments.eld_forecasting.prepare --root data/electricity_load_diagrams "
-            "--raw-path path/to/LD2011_2014.txt` or add `--download`."
+            "Processed ELD data not found under data/electricity_load_diagrams/processed. "
+            "Restore values_float32.npy, timestamps_ns.npy, and clients.json before running "
+            "the benchmark."
         )
     values = np.load(processed / "values_float32.npy", mmap_mode="r" if mmap else None)
     timestamps_ns = np.load(processed / "timestamps_ns.npy")
@@ -601,19 +601,14 @@ def load_electricity_tasks(
     )
     explicit_prior_years = _year_set(prior_years)
     explicit_target_years = _year_set(target_years)
+    if split != "test":
+        raise ValueError("The canonical electricity benchmark supports only the test split.")
     if explicit_prior_years is not None and explicit_target_years is not None:
         resolved_prior_years = explicit_prior_years
         resolved_target_years = explicit_target_years
-    elif split == "validation":
-        resolved_target_years = {2013}
-        resolved_prior_years = {2011, 2012}
-    elif split == "test":
+    else:
         resolved_target_years = {2014}
         resolved_prior_years = {2011, 2012, 2013}
-    else:
-        raise ValueError(
-            "split must be 'validation' or 'test' unless both prior_years and target_years are provided."
-        )
     if not resolved_prior_years.isdisjoint(resolved_target_years):
         raise ValueError(
             "prior_years and target_years must be disjoint to avoid leakage; "

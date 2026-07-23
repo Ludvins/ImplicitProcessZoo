@@ -10,7 +10,7 @@ DAY_POINTS = 96
 
 
 def forecast_regions(window_points: int, prefix_points: int) -> dict[str, dict[str, int]]:
-    """Build half-open observed/forecast regions for any ELD preset."""
+    """Build half-open observed/forecast regions for an ELD protocol."""
     window_points = int(window_points)
     prefix_points = int(prefix_points)
     if not 0 < prefix_points < window_points:
@@ -29,38 +29,6 @@ def forecast_regions(window_points: int, prefix_points: int) -> dict[str, dict[s
         regions,
         window_points,
         partition_names=("observed_prefix", "full_forecast"),
-        cover=(0, window_points),
-    )
-    return regions
-
-
-def validation_test_regions(
-    window_points: int,
-    train_points: int,
-    context_points: int,
-) -> dict[str, dict[str, int]]:
-    """Build train/validation/test half-open regions for validation-bank runs."""
-    window_points = int(window_points)
-    train_points = int(train_points)
-    context_points = int(context_points)
-    if not 0 < train_points < context_points < window_points:
-        raise ValueError("train, validation, and final-test partitions must all be nonempty.")
-    regions = {
-        "training_context": {"start": 0, "stop": train_points},
-        "validation": {"start": train_points, "stop": context_points},
-        "observed_context": {"start": 0, "stop": context_points},
-        "final_test": {"start": context_points, "stop": window_points},
-    }
-    same_day_stop = min(DAY_POINTS, window_points)
-    if context_points < same_day_stop:
-        regions["same_day_test"] = {"start": context_points, "stop": same_day_stop}
-    next_day_start = max(DAY_POINTS, context_points)
-    if next_day_start < window_points:
-        regions["next_day_test"] = {"start": next_day_start, "stop": window_points}
-    validate_region_partition(
-        regions,
-        window_points,
-        partition_names=("training_context", "validation", "final_test"),
         cover=(0, window_points),
     )
     return regions
