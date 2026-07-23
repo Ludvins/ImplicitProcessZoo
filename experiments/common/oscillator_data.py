@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from experiments.simulator_forecasting.interfaces import ForecastingTask
-from experiments.simulator_forecasting.priors import DampedOscillatorPrior
+from experiments.common.oscillator_interfaces import ForecastingTask
+from experiments.common.oscillator_prior import DampedOscillatorPrior
 
 
 def normalize_time(t: np.ndarray | torch.Tensor, t_max: float = 30.0) -> np.ndarray:
