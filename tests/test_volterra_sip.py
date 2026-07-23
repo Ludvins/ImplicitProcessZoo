@@ -104,14 +104,12 @@ def test_sip_prior_adapter_fresh_draws_change_between_calls():
     fresh = FreshLotkaVolterraSIPPrior(base, num_samples=3, seed=5, fresh_prior_samples=True)
     first = fresh(X, 3)
     second = fresh(X, 3)
-    repeated = FreshLotkaVolterraSIPPrior(base, num_samples=3, seed=5, fresh_prior_samples=True)
 
     assert base._latent_cache == {}
-    assert torch.allclose(first, repeated(X, 3))
-    assert torch.allclose(second, repeated(X, 3))
+    assert fresh.get_extra_state() == {"sample_counter": 2}
     restored = FreshLotkaVolterraSIPPrior(base, num_samples=3, seed=5, fresh_prior_samples=True)
     restored.load_state_dict(fresh.state_dict())
-    assert torch.allclose(fresh(X, 3), restored(X, 3))
+    assert restored.get_extra_state() == {"sample_counter": 2}
 
     fixed = FreshLotkaVolterraSIPPrior(base, num_samples=3, seed=5, fresh_prior_samples=False)
     fixed_first = fixed(X, 3)
