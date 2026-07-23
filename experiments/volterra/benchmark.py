@@ -1260,8 +1260,7 @@ class FreshLotkaVolterraSIPPrior(torch.nn.Module):
         self.num_samples = int(num_samples)
         self.seed = int(seed)
         self.fresh_prior_samples = bool(fresh_prior_samples)
-        self.generator = torch.Generator(device=base_prior.device)
-        self.generator.manual_seed(self.seed)
+        self._sample_counter = 0
 
     @property
     def input_dim(self) -> int:
@@ -1283,16 +1282,8 @@ class FreshLotkaVolterraSIPPrior(torch.nn.Module):
         sample_count = self.num_samples if num_samples is None else int(num_samples)
         seed = self.seed
         if self.fresh_prior_samples:
-            seed = int(
-                torch.randint(
-                    0,
-                    torch.iinfo(torch.int32).max,
-                    (),
-                    generator=self.generator,
-                    dtype=torch.int64,
-                    device=self.device,
-                ).item()
-            )
+            seed += self._sample_counter
+            self._sample_counter += 1
         latents = self.base_prior.sample_latents(
             sample_count, seed=seed, cache=not self.fresh_prior_samples
         )
@@ -1305,6 +1296,12 @@ class FreshLotkaVolterraSIPPrior(torch.nn.Module):
 
     def freeze_parameters(self) -> None:
         self.base_prior.freeze_parameters()
+
+    def get_extra_state(self) -> dict:
+        return {"sample_counter": int(self._sample_counter)}
+
+    def set_extra_state(self, state: dict) -> None:
+        self._sample_counter = int(state.get("sample_counter", 0))
 
 
 def build_model(method: str, task, config: dict, *, seed: int, device, dtype):
@@ -1580,7 +1577,8 @@ def vip_pathwise_samples(model: VIP, X: torch.Tensor, samples: int) -> torch.Ten
 
 def _capture_sampling_state(model) -> dict:
     generators = []
-    counters = []
+    tensor_counters = []
+    integer_counters = []
     seen = set()
     for module in model.modules():
         generator = getattr(module, "generator", None)
@@ -1589,12 +1587,15 @@ def _capture_sampling_state(model) -> dict:
             generators.append((generator, generator.get_state()))
         counter = getattr(module, "_sample_counter", None)
         if torch.is_tensor(counter):
-            counters.append((counter, counter.detach().clone()))
+            tensor_counters.append((counter, counter.detach().clone()))
+        elif isinstance(counter, int):
+            integer_counters.append((module, counter))
     return {
         "cpu": torch.random.get_rng_state(),
         "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
         "generators": generators,
-        "counters": counters,
+        "tensor_counters": tensor_counters,
+        "integer_counters": integer_counters,
     }
 
 
@@ -1604,8 +1605,10 @@ def _restore_sampling_state(state: dict) -> None:
         torch.cuda.set_rng_state_all(state["cuda"])
     for generator, generator_state in state["generators"]:
         generator.set_state(generator_state)
-    for counter, counter_state in state["counters"]:
+    for counter, counter_state in state["tensor_counters"]:
         counter.copy_(counter_state)
+    for module, counter in state["integer_counters"]:
+        module._sample_counter = counter
 
 
 def predictive_function_samples(
