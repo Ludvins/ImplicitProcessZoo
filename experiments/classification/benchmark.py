@@ -47,7 +47,11 @@ from implicit_process_zoo.priors.generative_functions import (
 )
 from implicit_process_zoo.sip import SIP
 from implicit_process_zoo.tfsvi import TFSVI
-from implicit_process_zoo.utils import build_training_checkpoint, save_training_checkpoint
+from implicit_process_zoo.utils import (
+    build_training_checkpoint,
+    prepare_model_for_fit,
+    save_training_checkpoint,
+)
 from implicit_process_zoo.utils.metrics import MetricsClassification
 from implicit_process_zoo.utils.utils import infinite_loader
 from implicit_process_zoo.vip import VIP
@@ -1048,14 +1052,7 @@ def evaluate_classification(
 
 
 def initialize_function_context(model, model_type, train_loader):
-    if model_type == "fbnn" and hasattr(model, "_fill_reservoir"):
-        model._fill_reservoir(train_loader)
-    if model_type == "tfsvi" and hasattr(model, "_train_inputs"):
-        device = torch.device(model.device)
-        chunks = []
-        for inputs, _ in train_loader:
-            chunks.append(inputs.to(device=device, dtype=model.dtype))
-        model._train_inputs = torch.cat(chunks, dim=0)
+    prepare_model_for_fit(model, train_loader)
 
 
 def train_with_metrics(

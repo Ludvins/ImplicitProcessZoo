@@ -42,6 +42,7 @@ from implicit_process_zoo.utils import (
     build_training_checkpoint,
     load_training_checkpoint,
     load_warm_start_state,
+    prepare_model_for_fit,
     restore_training_checkpoint,
     save_training_checkpoint,
 )
@@ -1706,11 +1707,7 @@ def train_with_metrics(
             scheduler,
         )
 
-    # TFSVI samples its KL context set from `model._train_inputs`; populate
-    # it here since we bypass `model.fit()` and call `_train_step` directly.
-    if model_type == "tfsvi":
-        all_X = [inp for inp, _ in train_loader]
-        model._train_inputs = torch.cat(all_X, dim=0).to(device)
+    prepare_model_for_fit(model, train_loader)
 
     if hasattr(model, "prepare_for_training"):
         model.prepare_for_training(train_loader)

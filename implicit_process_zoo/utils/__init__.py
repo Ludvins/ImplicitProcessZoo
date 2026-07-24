@@ -10,7 +10,12 @@ from .checkpoints import (
 )
 from .prediction import batched_predict_samples
 from .random import standard_normal_samples
-from .training import fit_loop, make_cosine_scheduler, validate_fit_mode
+from .training import (
+    fit_loop,
+    make_cosine_scheduler,
+    prepare_model_for_fit,
+    validate_fit_mode,
+)
 
 __all__ = [
     "CHECKPOINT_SCHEMA_VERSION",
@@ -25,5 +30,6 @@ __all__ = [
     "standard_normal_samples",
     "fit_loop",
     "make_cosine_scheduler",
+    "prepare_model_for_fit",
     "validate_fit_mode",
 ]

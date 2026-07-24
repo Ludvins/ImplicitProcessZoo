@@ -78,6 +78,18 @@ def _model_device(model: torch.nn.Module) -> torch.device:
             return torch.device("cpu")
 
 
+def prepare_model_for_fit(model: torch.nn.Module, train_loader: Iterable) -> None:
+    """Run a model's optional whole-loader preparation hook.
+
+    Custom experiment loops that call ``_train_step`` directly should invoke
+    this helper once before their first optimizer step, matching
+    :func:`fit_loop`.
+    """
+    prepare = getattr(model, "_prepare_fit", None)
+    if prepare is not None:
+        prepare(train_loader)
+
+
 def fit_loop(
     model: torch.nn.Module,
     train_loader: Iterable,
@@ -118,9 +130,7 @@ def fit_loop(
     """
     validate_fit_mode(epochs=epochs, iterations=iterations)
     ensure_module_generators(model)
-    prepare = getattr(model, "_prepare_fit", None)
-    if prepare is not None:
-        prepare(train_loader)
+    prepare_model_for_fit(model, train_loader)
 
     device = _model_device(model)
     model.train()

@@ -72,6 +72,11 @@ def test_build_train_predict_smoke_methods(tmp_path):
         samples = predictive_function_samples(model, method, task.X_plot[:5], 3, seed=456)
 
         assert info["steps"] >= 1
+        if method.startswith("fbnn"):
+            assert model._reservoir is not None
+            assert model._reservoir.shape[0] == task.X_train.shape[0]
+        if method == "sip":
+            assert model._step == info["steps"]
         assert samples.shape == (3, 5, 1)
         assert torch.isfinite(samples).all()
 

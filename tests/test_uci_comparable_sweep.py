@@ -1,10 +1,12 @@
 import numpy as np
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 from experiments.uci.benchmark import (
     _variant_tag,
     build_model,
     parse_args,
+    train_with_metrics,
 )
 
 
@@ -225,3 +227,40 @@ def test_gmvip_grid_inducing_initializer_builds_for_multidimensional_uci_inputs(
     model = build_model(args, dataset)
 
     assert model.Z.shape == (4, 2)
+
+
+def test_custom_uci_loop_runs_prepare_fit_hook(monkeypatch):
+    class PreparingModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(1.0, dtype=torch.float64))
+            self.prepared_loader = None
+
+        def _prepare_fit(self, train_loader):
+            self.prepared_loader = train_loader
+
+        def _train_step(self, optimizer, inputs, target):
+            optimizer.zero_grad()
+            loss = ((self.weight * inputs) - target).square().mean()
+            loss.backward()
+            optimizer.step()
+            return loss
+
+    inputs = torch.ones(4, 1, dtype=torch.float64)
+    targets = torch.zeros(4, 1, dtype=torch.float64)
+    loader = DataLoader(TensorDataset(inputs, targets), batch_size=2)
+    model = PreparingModel()
+    args = _args(["--model", "fbnn"])
+    monkeypatch.setenv("IPZOO_DISABLE_TQDM", "1")
+
+    train_with_metrics(
+        model,
+        loader,
+        train_test_dataset=None,
+        validation_dataset=None,
+        args=args,
+        iterations=1,
+        model_type="fbnn",
+    )
+
+    assert model.prepared_loader is loader

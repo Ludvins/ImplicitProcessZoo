@@ -201,6 +201,27 @@ class TestSIPLoss:
 
 
 class TestSIPTraining:
+    def test_direct_train_step_updates_critic_and_schedule(self, bnn, regression_data):
+        Z = _make_inducing()
+        model = SIP(
+            bnn,
+            Z,
+            OUTPUT_DIM,
+            "regression",
+            NUM_DATA,
+            num_prior_samples=10,
+            device=DEVICE,
+            dtype=DTYPE,
+            seed=SEED,
+        )
+        optimizer = torch.optim.Adam(model.vi_parameters(), lr=1.0e-3)
+        X, y = regression_data
+
+        model._train_step(optimizer, X[:BATCH_SIZE], y[:BATCH_SIZE])
+
+        assert model._step == 1
+        assert len(model.critic_losses) == 1
+
     def test_fit_epochs(self, bnn, regression_loader):
         Z = _make_inducing()
         model = SIP(

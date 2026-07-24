@@ -665,11 +665,6 @@ class SIP(nn.Module):
             scheduler=scheduler,
         )
 
-    def _before_fit_step(self, _X, _y):
-        """Update the SIP critic before each variational optimizer step."""
-        self._train_critic()
-        self._step += 1
-
     def _train_step(self, optimizer, X, y):
         if y.ndim == 1:
             y = y.unsqueeze(-1)
@@ -678,6 +673,8 @@ class SIP(nn.Module):
         if self.dtype != y.dtype:
             y = y.to(self.dtype)
 
+        self._train_critic()
+        self._step += 1
         optimizer.zero_grad()
         loss = self.nelbo(X, y)
         loss.backward()

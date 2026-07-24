@@ -37,6 +37,7 @@ from implicit_process_zoo.mfvi import MFVI
 from implicit_process_zoo.priors.generative_functions import GP, BayesianNN, BayesLinear
 from implicit_process_zoo.sip import SIP
 from implicit_process_zoo.tfsvi import TFSVI
+from implicit_process_zoo.utils import prepare_model_for_fit
 from implicit_process_zoo.utils.random import fork_torch_rng
 from implicit_process_zoo.vip import VIP
 
@@ -855,10 +856,7 @@ def _train_one_model(model, task, config: dict, *, device) -> dict:
     full_batch = train_cfg.batch_size == "full"
     batch_size = len(dataset) if full_batch else int(train_cfg.batch_size)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=not full_batch, num_workers=0)
-    if hasattr(model, "_fill_reservoir"):
-        model._fill_reservoir(loader)
-    if hasattr(model, "_train_inputs") and model._train_inputs is None:
-        model._train_inputs = task.X_train.detach().clone()
+    prepare_model_for_fit(model, loader)
     params = model.vi_parameters() if hasattr(model, "vi_parameters") else model.parameters()
     params = [param for param in params if param.requires_grad]
     optimizer = torch.optim.Adam(params, lr=float(train_cfg.learning_rate))

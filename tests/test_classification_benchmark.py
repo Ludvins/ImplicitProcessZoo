@@ -113,6 +113,9 @@ def test_classification_methods_run_one_train_step(model_type):
     y = torch.as_tensor(dataset.targets[:4], dtype=torch.float64)
     loader = DataLoader(TensorDataset(X, y), batch_size=4)
     classification_benchmark.initialize_function_context(model, model_type, loader)
+    if model_type == "fbnn":
+        assert model._reservoir is not None
+        assert model._reservoir.shape[0] == X.shape[0]
     optimizer = torch.optim.Adam(
         [param for param in model.parameters() if param.requires_grad],
         lr=1e-3,
@@ -121,6 +124,8 @@ def test_classification_methods_run_one_train_step(model_type):
     loss = model._train_step(optimizer, X, y)
 
     assert torch.isfinite(loss.detach())
+    if model_type == "sip":
+        assert model._step == 1
 
 
 def test_classification_variant_filenames_do_not_collide():
