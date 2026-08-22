@@ -9,7 +9,7 @@ reporting, plots, and artifact conventions.
 | `uci` | UCI-style scalar regression |
 | `regression` | Year, airline, and taxi large regression |
 | `classification` | FashionMNIST and CIFAR10 classification |
-| `synthetic` | Variational-LLA scalar regression plots |
+| `synthetic` | Synthetic scalar-regression plots |
 | `volterra` | Lotka--Volterra simulator-prior regression with learned per-output noise |
 | `simulator_forecasting` | Damped-oscillator forecasting |
 | `eld_forecasting` | Electricity-load empirical-prior forecasting |

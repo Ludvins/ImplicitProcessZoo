@@ -1,10 +1,9 @@
 # Synthetic plots
 
 `experiments.synthetic.plot` trains scalar-regression methods on the fixed
-Variational-LLA synthetic dataset and writes publication-style predictive
-plots.
+synthetic dataset and writes publication-style predictive plots.
 
-The dataset is always `variational_lla`. The runner reuses model/training flags
+The dataset is always `synthetic`. The runner reuses model/training flags
 from the UCI benchmark and adds plot ordering, panels, density bands,
 predictive intervals, and output-format controls.
 
@@ -16,7 +15,51 @@ python -m experiments.synthetic.plot \
   --models all --iterations 2000 --device cuda
 ```
 
-Outputs default to `results/synthetic_plot`. The runner saves method results,
+## HMC reference
+
+The synthetic runner also provides an opt-in weight-space HMC reference. Install
+the pinned Hamiltorch backend and compare it with GMVIP using:
+
+```bash
+python -m pip install -e ".[experiments,hmc]"
+
+python -m experiments.synthetic.plot \
+  --models gmvip hmc
+```
+
+Plain `--models all` retains the eight standard methods. Use `--models all hmc`
+to add the more expensive HMC panel explicitly.
+
+HMC follows the transition and prediction settings in BayesiPy's
+`Synthetic_1D_regression.ipynb`: one float64 Hamiltorch chain on CUDA, 1,000
+draws with `burn=-1`, step size \(5\times10^{-4}\), 500 leapfrog steps per
+draw, and a fixed diagonal inverse mass of \(0.1\). The
+\(1\)-\(10\)-\(10\)-\(1\) BNN
+weights and biases have independent standard-normal priors. As in the other
+synthetic runs, HMC uses raw inputs and normalized targets. The normalized
+observation-noise scale is sampled fully Bayesianly through
+\(\log\sigma_y\sim\mathcal N(-2.5,1)\); the variational methods instead optimize
+their noise parameters.
+
+The existing synthetic BNN architecture, posterior, and MAP-based
+initialization are retained; only the notebook's HMC transition settings and
+posterior-prediction construction are copied.
+
+The HMC panel uses the same representation as GMVIP: every posterior function
+draw is plotted with its corresponding \(\pm2\sigma_y\) observation-noise band.
+The runner uses all 1,000 draws and saves the raw
+posterior, full-grid mixture components, chain/draw indices, configuration, and
+diagnostics in `hmc_posterior_samples.npz` and `hmc_summary.json`.
+On CUDA, the exact autograd calculation is captured in a CUDA graph to remove
+per-leapfrog launch overhead; the HMC trajectory and Metropolis decision are
+unchanged.
+
+The notebook protocol has only one chain, so split-\(\hat R\) and cross-chain
+ESS cannot be computed. Acceptance and energy-divergence information are saved
+for auditing, but the HMC panel is presented as a visual reference rather than
+a convergence-certified posterior.
+
+Outputs default to `results`. The runner saves method results,
 prediction grids, and rendered figures for the selected model set.
 
 ## Label-free prior-fidelity diagnostic

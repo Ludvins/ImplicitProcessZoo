@@ -184,46 +184,6 @@ class CustomDataset(Dataset):
         return len(train_indexes)
 
 
-class Synthetic_Dataset(CustomDataset):
-    def __init__(self):
-        self.type = "regression"
-        self.output_dim = 1
-
-        data = np.load("../data/synthetic.npy")
-        inputs, targets = data[:, 0], data[:, 1]
-
-        test_inputs = np.linspace(np.min(inputs) - 5, np.max(inputs) + 5, 200)
-
-        self.train = Training_Dataset(
-            inputs[..., np.newaxis],
-            targets[..., np.newaxis],
-            normalize_targets=False,
-            normalize_inputs=False,
-        )
-
-        self.full = Test_Dataset(
-            test_inputs[..., np.newaxis],
-            None,
-            self.train.inputs_mean,
-            self.train.inputs_std,
-        )
-        self.test = Test_Dataset(
-            test_inputs[..., np.newaxis],
-            None,
-            self.train.inputs_mean,
-            self.train.inputs_std,
-        )
-
-    def __len__(self):
-        return len(self.train)
-
-    def get_split(self, *args):
-        return self.train, self.full, self.test
-
-    def len_train(self, test_size):
-        return len(self.train)
-
-
 class Constant_Dataset(CustomDataset):
     def __init__(self):
         self.type = "regression"
@@ -490,17 +450,17 @@ class SPGPSnelson_Dataset(CustomDataset):
         return len(self.train)
 
 
-class VariationalLLA_Dataset(CustomDataset):
-    """Synthetic regression data from ``Ludvins/Variational-LLA``."""
+class Synthetic_Dataset(CustomDataset):
+    """Fixed 400-point scalar synthetic regression dataset."""
 
     def __init__(self):
         self.type = "regression"
         self.output_dim = 1
 
-        data_path = os.path.join(data_base, "variational_lla", "data.npy")
+        data_path = os.path.join(data_base, "synthetic", "data.npy")
         if not os.path.exists(data_path):
             raise FileNotFoundError(
-                "Missing Variational-LLA data file. Expected "
+                "Missing synthetic regression data file. Expected "
                 f"{data_path!r}. Download it from "
                 "https://raw.githubusercontent.com/Ludvins/Variational-LLA/"
                 "898ec63da3c1aa9c79f3c7d9d802453f83f80466/data/data.npy"
@@ -508,7 +468,7 @@ class VariationalLLA_Dataset(CustomDataset):
 
         data = np.load(data_path).astype(np.float64)
         if data.ndim != 2 or data.shape[1] != 2:
-            raise ValueError(f"Expected Variational-LLA data with shape [N, 2], got {data.shape}")
+            raise ValueError(f"Expected synthetic data with shape [N, 2], got {data.shape}")
 
         order = np.argsort(data[:, 0])
         data = data[order]
@@ -1463,7 +1423,10 @@ class Pedestrian_Dataset(Dataset):
 
 
 def get_dataset(dataset_name):
-    aliases = {"yatch": "yacht", "heterocedastic": "heteroscedastic"}
+    aliases = {
+        "yatch": "yacht",
+        "heterocedastic": "heteroscedastic",
+    }
     if dataset_name in aliases:
         canonical = aliases[dataset_name]
         warnings.warn(
@@ -1480,8 +1443,6 @@ def get_dataset(dataset_name):
         "gap": Gap_Dataset,
         "spgp_snelson": SPGPSnelson_Dataset,
         "snelson": SPGPSnelson_Dataset,
-        "variational_lla": VariationalLLA_Dataset,
-        "valla": VariationalLLA_Dataset,
         "heteroscedastic": Heteroscedastic_Dataset,
         "skewed": Skewed_Dataset,
         "boston": Boston_Dataset,

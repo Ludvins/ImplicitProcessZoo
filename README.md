@@ -91,7 +91,7 @@ including the canonical
 | `experiments.uci.benchmark` | UCI scalar regression |
 | `experiments.regression.benchmark` | Year, airline, and taxi regression |
 | `experiments.classification.benchmark` | FashionMNIST and CIFAR10 |
-| `experiments.synthetic.plot` | Variational-LLA synthetic plots |
+| `experiments.synthetic.plot` | Synthetic scalar-regression plots |
 | `experiments.volterra` | Lotka--Volterra simulator prior with learned per-output noise |
 | `experiments.simulator_forecasting` | Damped-oscillator forecasting |
 | `experiments.eld_forecasting` | Electricity-load forecasting |

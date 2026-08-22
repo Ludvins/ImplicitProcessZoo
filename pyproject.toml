@@ -41,6 +41,9 @@ experiments = [
 ]
 vision = ["torchvision>=0.21"]
 tracking = ["wandb>=0.19"]
+hmc = [
+  "hamiltorch @ git+https://github.com/AdamCobb/hamiltorch.git@19b627b2aabc77c1b4b78db0f860372eb1bf9778",
+]
 docs = [
   "mkdocs-material>=9.6",
   "mkdocstrings[python]>=0.29",

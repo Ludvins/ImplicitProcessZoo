@@ -11,7 +11,7 @@ Canonical UCI regression names are `boston`, `concrete`, `energy`, `kin8nm`,
 `heterocedastic` are deprecated aliases for `yacht` and `heteroscedastic`.
 
 The broader loaders also support diagnostic scalar datasets such as `gap`,
-`bimodal`, `skewed`, `heteroscedastic`, `snelson`, and `variational_lla`;
+`bimodal`, `skewed`, `heteroscedastic`, `snelson`, and `synthetic`;
 large regression (`year`, `airline`, `taxi`); vision/classification datasets;
 and trajectory tasks used by the simulator-prior experiments.
 

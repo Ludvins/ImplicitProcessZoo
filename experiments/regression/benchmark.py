@@ -1,7 +1,7 @@
 """Large scalar-regression benchmark.
 
 This entrypoint reuses the UCI regression training code for the larger
-Variational-LLA-style regression datasets: Year, Airline, and Taxi.
+regression datasets: Year, Airline, and Taxi.
 
 Example:
     python -m experiments.regression.benchmark --model gmvip --dataset year

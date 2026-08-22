@@ -1,4 +1,4 @@
-"""Train selected models on the Variational-LLA synthetic dataset and plot predictions.
+"""Train selected models on the fixed synthetic regression dataset and plot predictions.
 
 Examples
 --------
@@ -6,7 +6,7 @@ python -m experiments.synthetic.plot --models mfvi fbnn vip tfsvi ftip gmvip
 python -m experiments.synthetic.plot --models all --iterations 2000 --device cuda
 
 All model/training options from ``experiments.uci.benchmark`` are accepted. This
-entrypoint fixes the dataset to ``variational_lla`` and adds plotting-specific
+entrypoint fixes the dataset to ``synthetic`` and adds plotting-specific
 options.
 """
 
@@ -44,6 +44,11 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime.
     ImageFont = None
 
 from experiments.benchmark_utils import pretty_model_name
+from experiments.synthetic.hmc import (
+    HMCConfig,
+    hamiltorch_missing_reason,
+    run_hmc_reference,
+)
 from experiments.uci.benchmark import (
     REGRESSION_MODELS,
     _ckpt_path,
@@ -59,6 +64,7 @@ from experiments.uci.benchmark import (
 from implicit_process_zoo.utils.dataset import Test_Dataset, Training_Dataset, get_dataset
 
 DEFAULT_MODELS = ["map", "mfvi", "vip", "fbnn", "sip", "tfsvi", "ftip", "gmvip"]
+SYNTHETIC_MODELS = [*REGRESSION_MODELS, "hmc"]
 SYNTHETIC_WEIGHT_LOG_SIGMA_INIT = {
     "mfvi": -5.0,
     "fbnn": -3.0,
@@ -100,8 +106,8 @@ SYNTHETIC_TFSVI_FLAGS = {
     "tfsvi_num_train_samples": ("--tfsvi_num_train_samples",),
     "iterations": ("--iterations", "--epochs", "--default_iterations", "--tfsvi_steps"),
 }
-SYNTHETIC_DATASET_NAME = "variational_lla"
-SYNTHETIC_DATASET_LABEL = "Variational-LLA"
+SYNTHETIC_DATASET_NAME = "synthetic"
+SYNTHETIC_DATASET_LABEL = "Synthetic"
 STEP_OVERRIDE_MODELS = list(REGRESSION_MODELS)
 SAMPLE_BAND_MODELS = {
     "sip",
@@ -111,6 +117,7 @@ SAMPLE_BAND_MODELS = {
     "mfvi",
     "tfsvi",
     "vip",
+    "hmc",
 }
 PREDICTIVE_INTERVAL_MODELS = {"vip"}
 MODEL_COLORS = {
@@ -122,6 +129,7 @@ MODEL_COLORS = {
     "gmvip": "#bcbd22",
     "sip": "#e377c2",
     "map": "#4d4d4d",
+    "hmc": "#8c564b",
 }
 DATA_PANEL_SCATTER_STYLE = {
     "s": 4,
@@ -198,7 +206,7 @@ def _flag_supplied(synthetic_args, *flags):
 def parse_synthetic_args(argv=None):
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
-        description="Variational-LLA predictive-distribution plotter.",
+        description="Synthetic predictive-distribution plotter.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog=(
             "All remaining model/training flags are forwarded to "
@@ -209,8 +217,11 @@ def parse_synthetic_args(argv=None):
         "--models",
         nargs="+",
         default=DEFAULT_MODELS,
-        choices=REGRESSION_MODELS + ["all"],
-        help="Models to train and plot.",
+        choices=SYNTHETIC_MODELS + ["all"],
+        help=(
+            "Models to train and plot. HMC is opt-in: plain 'all' retains the "
+            "eight variational/MAP methods, while 'all hmc' adds HMC."
+        ),
     )
     parser.add_argument(
         "--default_iterations",
@@ -274,7 +285,7 @@ def parse_synthetic_args(argv=None):
         metavar=("YMIN", "YMAX"),
         help=(
             "Fixed shared y-axis limits for all panels. The default matches "
-            "the GMVIP-style Variational-LLA panel scale."
+            "the GMVIP-style synthetic panel scale."
         ),
     )
     parser.add_argument(
@@ -291,9 +302,9 @@ def parse_synthetic_args(argv=None):
     )
     parser.add_argument("--max_cols", type=int, default=4)
     parser.add_argument("--dpi", type=int, default=220)
-    parser.add_argument("--figure_name", default="variational_lla_predictive_distributions.png")
-    parser.add_argument("--pdf_name", default="variational_lla_predictive_distributions.pdf")
-    parser.add_argument("--results_name", default="variational_lla_predictive_distributions.json")
+    parser.add_argument("--figure_name", default="synthetic_predictive_distributions.png")
+    parser.add_argument("--pdf_name", default="synthetic_predictive_distributions.pdf")
+    parser.add_argument("--results_name", default="synthetic_predictive_distributions.json")
     parser.add_argument(
         "--include_data_panel",
         action=argparse.BooleanOptionalAction,
@@ -307,7 +318,7 @@ def parse_synthetic_args(argv=None):
         "--overlay_data",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Overlay observed Variational-LLA data points on each model panel.",
+        help="Overlay observed synthetic data points on each model panel.",
     )
     parser.add_argument(
         "--plot_predictive_mean",
@@ -326,7 +337,7 @@ def parse_synthetic_args(argv=None):
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Use the tuned Variational-LLA Matheron/GMVIP plotting defaults "
+            "Use the tuned synthetic Matheron/GMVIP plotting defaults "
             "for GMVIP unless overridden: empirical operator, raw inputs for "
             "GMVIP-only runs, fixed train-quantile Z, M=256, S_train=128, "
             "S_eval=256, 30k iterations."
@@ -338,6 +349,36 @@ def parse_synthetic_args(argv=None):
         default=False,
         help="Keep training later models if one model fails.",
     )
+    hmc = parser.add_argument_group("HMC / Hamiltorch")
+    hmc.add_argument("--hmc_chains", type=int, default=1)
+    hmc.add_argument("--hmc_warmup_steps", type=int, default=0)
+    hmc.add_argument("--hmc_num_samples", type=int, default=1000)
+    hmc.add_argument("--hmc_num_predictive_samples", type=int, default=1000)
+    hmc.add_argument("--hmc_step_size", type=float, default=0.0005)
+    hmc.add_argument(
+        "--hmc_num_steps",
+        type=int,
+        default=500,
+        help="Fixed leapfrog steps per Hamiltorch proposal.",
+    )
+    hmc.add_argument(
+        "--hmc_inverse_mass",
+        type=float,
+        default=0.1,
+        help="Shared diagonal inverse mass used by the BayesiPy notebook protocol.",
+    )
+    hmc.add_argument("--hmc_map_warmstart_steps", type=int, default=1000)
+    hmc.add_argument("--hmc_map_warmstart_lr", type=float, default=0.003)
+    hmc.add_argument("--hmc_initialization_jitter", type=float, default=0.01)
+    hmc.add_argument(
+        "--hmc_device",
+        choices=["cpu", "cuda"],
+        default="cuda",
+        help="Device used by HMC independently of the shared variational-model device.",
+    )
+    hmc.add_argument("--hmc_noise_log_loc", type=float, default=-2.5)
+    hmc.add_argument("--hmc_noise_log_scale", type=float, default=1.0)
+    hmc.add_argument("--hmc_divergence_energy_threshold", type=float, default=1000.0)
 
     synthetic_args, forwarded = parser.parse_known_args(raw_argv)
     synthetic_args._supplied_flags = _flag_names(raw_argv)
@@ -348,8 +389,39 @@ def parse_synthetic_args(argv=None):
             f"synthetic_plot fixes --dataset {SYNTHETIC_DATASET_NAME} "
             "and uses --models; remove " + ", ".join(used_forbidden)
         )
+    if synthetic_args.hmc_chains <= 0:
+        parser.error("--hmc_chains must be positive.")
+    if synthetic_args.hmc_warmup_steps < 0:
+        parser.error("--hmc_warmup_steps must be non-negative.")
+    if synthetic_args.hmc_num_samples <= 0:
+        parser.error("--hmc_num_samples must be positive.")
+    retained_hmc = synthetic_args.hmc_chains * synthetic_args.hmc_num_samples
+    if not 0 < synthetic_args.hmc_num_predictive_samples <= retained_hmc:
+        parser.error(
+            "--hmc_num_predictive_samples must be positive and no larger than "
+            "--hmc_chains * --hmc_num_samples."
+        )
+    if synthetic_args.hmc_step_size <= 0.0:
+        parser.error("--hmc_step_size must be positive.")
+    if synthetic_args.hmc_num_steps <= 0:
+        parser.error("--hmc_num_steps must be positive.")
+    if synthetic_args.hmc_inverse_mass <= 0.0:
+        parser.error("--hmc_inverse_mass must be positive.")
+    if synthetic_args.hmc_map_warmstart_steps < 0:
+        parser.error("--hmc_map_warmstart_steps must be non-negative.")
+    if synthetic_args.hmc_map_warmstart_lr <= 0.0:
+        parser.error("--hmc_map_warmstart_lr must be positive.")
+    if synthetic_args.hmc_initialization_jitter < 0.0:
+        parser.error("--hmc_initialization_jitter must be non-negative.")
+    if synthetic_args.hmc_noise_log_scale <= 0.0:
+        parser.error("--hmc_noise_log_scale must be positive.")
+    if synthetic_args.hmc_divergence_energy_threshold <= 0.0:
+        parser.error("--hmc_divergence_energy_threshold must be positive.")
 
-    uci_args = parse_uci_args(["--model", "map", "--dataset", SYNTHETIC_DATASET_NAME, *forwarded])
+    # Reuse UCI model/training flags without adding the synthetic-only dataset
+    # to the public UCI benchmark choices.
+    uci_args = parse_uci_args(["--model", "map", "--dataset", "boston", *forwarded])
+    uci_args.dataset = SYNTHETIC_DATASET_NAME
     if not uci_args._iters_user_supplied:
         uci_args.iterations = synthetic_args.default_iterations
         uci_args.epochs = None
@@ -368,7 +440,10 @@ def parse_synthetic_args(argv=None):
 
 def resolve_models(models):
     if "all" in models:
-        return list(DEFAULT_MODELS)
+        ordered = list(DEFAULT_MODELS)
+        if "hmc" in models:
+            ordered.append("hmc")
+        return ordered
     seen = set()
     ordered = []
     for model in models:
@@ -379,6 +454,8 @@ def resolve_models(models):
 
 
 def missing_model_reason(model_type):
+    if model_type == "hmc":
+        return hamiltorch_missing_reason()
     return None
 
 
@@ -449,6 +526,35 @@ def args_for_run(base_args, synthetic_args, model_type):
         args.vip_iterations = int(vip_steps)
         args.vip_epochs = None
     return args
+
+
+def hmc_config_from_args(base_args, synthetic_args):
+    """Build the synthetic HMC configuration without altering UCI arguments."""
+
+    disable_progress = os.environ.get("IPZOO_DISABLE_TQDM", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return HMCConfig(
+        chains=int(synthetic_args.hmc_chains),
+        warmup_steps=int(synthetic_args.hmc_warmup_steps),
+        num_samples=int(synthetic_args.hmc_num_samples),
+        num_predictive_samples=int(synthetic_args.hmc_num_predictive_samples),
+        step_size=float(synthetic_args.hmc_step_size),
+        num_steps=int(synthetic_args.hmc_num_steps),
+        inverse_mass=float(synthetic_args.hmc_inverse_mass),
+        map_warmstart_steps=int(synthetic_args.hmc_map_warmstart_steps),
+        map_warmstart_lr=float(synthetic_args.hmc_map_warmstart_lr),
+        initialization_jitter=float(synthetic_args.hmc_initialization_jitter),
+        device=str(synthetic_args.hmc_device),
+        noise_log_loc=float(synthetic_args.hmc_noise_log_loc),
+        noise_log_scale=float(synthetic_args.hmc_noise_log_scale),
+        divergence_energy_threshold=float(synthetic_args.hmc_divergence_energy_threshold),
+        seed=0,
+        disable_progress=disable_progress,
+    )
 
 
 def make_train_loader(train_dataset, args):
@@ -1250,12 +1356,35 @@ def main(argv=None):
         missing = missing_model_reason(model_type)
         if missing is not None:
             failures[model_type] = missing
-            if requested_all or synthetic_args.continue_on_error:
+            if (requested_all and model_type != "hmc") or synthetic_args.continue_on_error:
                 print(f"  [skip] {model_type}: {missing}")
                 continue
             raise ImportError(missing)
-        model_args = args_for_run(base_args, synthetic_args, model_type)
         try:
+            if model_type == "hmc":
+                hmc_config = hmc_config_from_args(base_args, synthetic_args)
+                result, hmc_predictive = run_hmc_reference(
+                    train_x=np.asarray(train_dataset.inputs, dtype=np.float64),
+                    train_y=np.asarray(train_dataset.targets, dtype=np.float64),
+                    x_grid=x_grid.detach().cpu().numpy().astype(np.float64),
+                    y_mean=float(np.asarray(train_dataset.targets_mean).reshape(-1)[0]),
+                    y_std=float(np.asarray(train_dataset.targets_std).reshape(-1)[0]),
+                    output_dir=output_dir,
+                    config=hmc_config,
+                    dataset_name=dataset_name,
+                )
+                results.append(result)
+                predictions[model_type] = PredictiveGrid(
+                    means=hmc_predictive.means,
+                    stds=hmc_predictive.stds,
+                    mixture_mean=hmc_predictive.mixture_mean,
+                    mixture_std=hmc_predictive.mixture_std,
+                    metrics={},
+                )
+                plotted_models.append(model_type)
+                continue
+
+            model_args = args_for_run(base_args, synthetic_args, model_type)
             result, model = train_one_model(
                 dataset_name,
                 model_type,
