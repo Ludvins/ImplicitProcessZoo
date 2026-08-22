@@ -10,12 +10,17 @@ Run any module from the repository root with `python -m`, for example:
 
 ```bash
 python -m experiments.uci.benchmark --help
+python -m experiments.dynasent.benchmark --help
 python -m experiments.volterra.benchmark --help
 python -m experiments.simulator_forecasting.benchmark --help
 python -m experiments.simulator_forecasting.plot --help
 python -m experiments.eld_forecasting.benchmark --help
 python -m experiments.eld_forecasting.plot --help
 ```
+
+The DynaSent benchmark compares all eight classification methods with linear
+heads over frozen CLIP text embeddings. See `experiments/dynasent/README.md` for
+the Round-1 fitting and Round-2 shift protocol.
 
 The standard Lotka--Volterra run learns separate prey and predator observation
 noise scales for trainable methods:

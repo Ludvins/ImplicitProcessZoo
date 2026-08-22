@@ -114,6 +114,7 @@ nav:
       - UCI regression: experiments/uci.md
       - Large regression: experiments/large-regression.md
       - Classification: experiments/classification.md
+      - DynaSent classification: experiments/dynasent.md
       - Synthetic: experiments/synthetic.md
       - Lotka-Volterra: experiments/volterra.md
       - Simulator forecasting: experiments/simulator-forecasting.md
