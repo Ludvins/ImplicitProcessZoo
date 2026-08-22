@@ -14,6 +14,7 @@ from implicit_process_zoo.priors.function_bank import (
 )
 from implicit_process_zoo.priors.generative_functions import BayesianNN, BayesLinear
 from implicit_process_zoo.utils.empirical_covariance import empirical_cross_cov, empirical_mean
+from implicit_process_zoo.utils.likelihood import inv_probit
 from implicit_process_zoo.utils.linalg import right_cholesky_solve, safe_cholesky
 
 DTYPE = torch.float64
@@ -51,6 +52,12 @@ def _toy_classification_data(num_points=12, num_classes=3):
     return X, y
 
 
+def _toy_binary_data(num_points=12, column=False):
+    X = torch.linspace(-1.8, 1.8, num_points, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    y = (X[:, 0] > 0).to(dtype=DTYPE)
+    return X, y.unsqueeze(-1) if column else y
+
+
 def _make_model(
     operator_type="rbf",
     posterior_type="gaussian",
@@ -80,6 +87,52 @@ def _make_model(
         flow_num_layers=2,
     )
     return model
+
+
+def _make_binary_model(
+    operator_type="rbf",
+    posterior_type="gaussian",
+    num_inducing=5,
+    num_operator_bank_samples=12,
+    seed=0,
+    train_prior=False,
+    learn_Z=False,
+    likelihood_argument="likelihood",
+):
+    Z = torch.linspace(-1.5, 1.5, num_inducing, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    prior = _make_prior(num_samples=num_operator_bank_samples, seed=seed)
+    if train_prior:
+        prior.defreeze_parameters()
+    if operator_type == "empirical":
+        mean_mode = "prior_sample"
+        inducing_scale = "prior_cholesky"
+    else:
+        mean_mode = "zero"
+        inducing_scale = "rbf_cholesky"
+    likelihood_kwargs = {likelihood_argument: "binary"}
+    return GeneralizedMatheronVIP(
+        base_prior=prior,
+        inducing_points=Z,
+        operator_type=operator_type,
+        posterior_type=posterior_type,
+        output_dim=1,
+        num_operator_bank_samples=num_operator_bank_samples,
+        freeze_base_prior=not train_prior,
+        detach_prior_samples=not train_prior,
+        learn_Z=learn_Z,
+        jitter=1e-5,
+        shrinkage=0.02,
+        mean_mode=mean_mode,
+        inducing_scale=inducing_scale,
+        learn_kernel=False,
+        operator_bank_seed=seed + 100,
+        num_train_samples=4,
+        max_grad_norm=None,
+        flow_depth=2,
+        flow_hidden_dim=32,
+        flow_num_layers=2,
+        **likelihood_kwargs,
+    )
 
 
 def _make_vector_model(
@@ -177,6 +230,183 @@ def test_supported_configs_instantiate_and_removed_posterior_raises():
 
     with pytest.raises(ValueError, match="path_mode"):
         _make_model(path_mode="unsupported", seed=7)
+
+
+@pytest.mark.parametrize("likelihood_argument", ["likelihood", "likelihood_type"])
+def test_binary_configuration_accepts_direct_and_alias_likelihood(likelihood_argument):
+    model = _make_binary_model(likelihood_argument=likelihood_argument, seed=41)
+
+    assert model.likelihood_type == "binary"
+    assert model.output_dim == 1
+    assert model.num_classes is None
+    assert model.likelihood is None
+    with pytest.raises(AttributeError):
+        _ = model.noise_std
+
+
+def test_binary_configuration_rejects_vector_output():
+    Z = torch.linspace(-1.5, 1.5, 5, dtype=DTYPE, device=DEVICE).unsqueeze(-1)
+    with pytest.raises(ValueError, match="output_dim=1"):
+        GeneralizedMatheronVIP(
+            base_prior=_make_prior(num_samples=12, seed=42),
+            inducing_points=Z,
+            likelihood="binary",
+            output_dim=2,
+        )
+
+
+def test_binary_target_shapes_scaling_and_alpha_objective():
+    model = _make_binary_model(seed=43)
+    X, y = _toy_binary_data(num_points=10)
+
+    flat_elbo, flat_metrics = model.elbo(
+        X,
+        y,
+        num_samples=4,
+        num_data=X.shape[0],
+        seed=143,
+    )
+    column_elbo, _ = model.elbo(
+        X,
+        y.unsqueeze(-1),
+        num_samples=4,
+        num_data=X.shape[0],
+        seed=143,
+    )
+    _, doubled_metrics = model.elbo(
+        X,
+        y,
+        num_samples=4,
+        num_data=2 * X.shape[0],
+        seed=143,
+    )
+    alpha_elbo, alpha_metrics = model.elbo(
+        X,
+        y,
+        num_samples=4,
+        num_data=X.shape[0],
+        seed=143,
+        data_alpha=1.0,
+    )
+
+    assert torch.allclose(flat_elbo, column_elbo)
+    assert torch.allclose(
+        doubled_metrics["expected_log_lik"],
+        2.0 * flat_metrics["expected_log_lik"],
+    )
+    assert torch.isfinite(alpha_elbo)
+    assert torch.allclose(alpha_metrics["data_alpha"], torch.tensor(1.0, dtype=DTYPE))
+    assert "noise" not in flat_metrics
+    assert "noise_std" not in flat_metrics
+
+    with pytest.raises(ValueError, match=r"\[N\] or \[N, 1\]"):
+        model.elbo(X, y.repeat(2, 1).T, num_samples=2)
+
+
+@pytest.mark.parametrize("operator_type", ["empirical", "rbf"])
+@pytest.mark.parametrize("posterior_type", ["gaussian", "realnvp"])
+def test_binary_elbo_backward_reaches_posterior_prior_and_inducing_locations(
+    operator_type,
+    posterior_type,
+):
+    model = _make_binary_model(
+        operator_type=operator_type,
+        posterior_type=posterior_type,
+        seed=44,
+        train_prior=True,
+        learn_Z=True,
+    )
+    X, y = _toy_binary_data(num_points=9)
+
+    loss, diagnostics = model.elbo_loss(
+        X,
+        y,
+        num_samples=4,
+        num_data=X.shape[0],
+        beta=0.1,
+        data_alpha=1.0,
+        seed=144,
+    )
+    loss.backward()
+
+    posterior_grads = [
+        parameter.grad
+        for parameter in model.posterior.parameters()
+        if parameter.requires_grad and parameter.grad is not None
+    ]
+    prior_grads = [
+        parameter.grad
+        for parameter in model.base_prior.parameters()
+        if parameter.requires_grad and parameter.grad is not None
+    ]
+
+    assert torch.isfinite(loss)
+    assert torch.isfinite(diagnostics["expected_log_lik"])
+    assert torch.isfinite(diagnostics["kl"])
+    assert "noise" not in diagnostics
+    if posterior_type == "realnvp":
+        assert torch.isfinite(diagnostics["flow_logdet_mean"])
+    assert posterior_grads
+    assert prior_grads
+    assert all(torch.isfinite(grad).all() for grad in posterior_grads)
+    assert all(torch.isfinite(grad).all() for grad in prior_grads)
+    assert sum(grad.abs().sum() for grad in posterior_grads) > 0
+    assert sum(grad.abs().sum() for grad in prior_grads) > 0
+    assert model.operator.Z_param.grad is not None
+    assert torch.isfinite(model.operator.Z_param.grad).all()
+    assert model.operator.Z_param.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("operator_type", ["empirical", "rbf"])
+def test_binary_prediction_contract(operator_type):
+    model = _make_binary_model(operator_type=operator_type, seed=45)
+    X, _ = _toy_binary_data(num_points=8)
+
+    latent = model.predict_f_samples(X, num_samples=5, seed=145)
+    probabilities = model.predict_y_samples(X, num_samples=5, seed=145)
+    repeated = model.predict(X, num_samples=5, seed=145)
+    prior_latent = model.forward_prior(X, num_samples=5)
+    summary = model.predict_summary(X, num_samples=7)
+    mean, std = model(X)
+
+    assert latent.shape == (5, X.shape[0], 1)
+    assert probabilities.shape == (5, X.shape[0], 1)
+    assert torch.equal(probabilities, repeated)
+    assert torch.equal(probabilities[..., 0], inv_probit(latent[..., 0]))
+    assert torch.isfinite(latent).all()
+    assert prior_latent.shape == (5, X.shape[0], 1)
+    assert torch.isfinite(prior_latent).all()
+    assert torch.isfinite(probabilities).all()
+    assert torch.all((probabilities >= 0.0) & (probabilities <= 1.0))
+    assert summary["f_mean"].shape == (X.shape[0],)
+    assert summary["f_var"].shape == (X.shape[0],)
+    assert summary["probs"].shape == (X.shape[0],)
+    assert torch.equal(summary["probs"], summary["y_mean"])
+    assert torch.allclose(
+        summary["y_var"],
+        summary["y_mean"] * (1.0 - summary["y_mean"]),
+    )
+    assert mean.shape == (X.shape[0], 1)
+    assert std.shape == (X.shape[0], 1)
+    assert torch.all((mean >= 0.0) & (mean <= 1.0))
+    assert torch.all(std >= 0.0)
+
+
+def test_binary_train_step_records_classification_diagnostics():
+    model = _make_binary_model(seed=46)
+    X, y = _toy_binary_data(num_points=12, column=True)
+    loader = DataLoader(TensorDataset(X, y), batch_size=6, shuffle=False)
+    model.prepare_for_training(loader)
+    optimizer = torch.optim.Adam(model.vi_parameters(), lr=1e-3)
+
+    loss = model._train_step(optimizer, X[:6], y[:6])
+
+    assert torch.isfinite(loss)
+    assert model.num_data == len(loader.dataset)
+    assert len(model.data_terms) == 1
+    assert len(model.function_terms) == 1
+    assert "noise" not in model.last_train_metrics
+    assert "noise_std" not in model.last_train_metrics
 
 
 @pytest.mark.parametrize("operator_type", ["empirical", "rbf"])

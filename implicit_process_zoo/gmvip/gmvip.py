@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from ..priors.function_bank import CoherentPriorFunctionSampler
-from ..utils.likelihood import multiclass_logp
+from ..utils.likelihood import bernoulli_logp, inv_probit, multiclass_logp
 from ..utils.random import preserve_constructor_rng
 from .likelihoods import GaussianRegressionLikelihood
 from .operators import EmpiricalCovarianceMatheronOperator, RBFCardinalMatheronOperator
@@ -32,6 +32,9 @@ class GeneralizedMatheronVIP(nn.Module):
     uses q(a) = N(m, L_q L_q^T), giving a closed-form coefficient KL. The
     RealNVP variant uses affine coupling layers over a and estimates the same
     latent-variable KL with reparameterized Monte Carlo samples.
+
+    Binary classification uses a scalar latent function with the shared
+    inverse-probit Bernoulli observation model.
 
     """
 
@@ -88,8 +91,10 @@ class GeneralizedMatheronVIP(nn.Module):
         if inducing_points.ndim != 2:
             raise ValueError("inducing_points must have shape [M, D].")
         likelihood = self._normalize_likelihood(likelihood, likelihood_type)
-        if likelihood not in ("regression", "multiclass"):
-            raise ValueError(f"likelihood must be 'regression' or 'multiclass', got '{likelihood}'")
+        if likelihood not in ("regression", "binary", "multiclass"):
+            raise ValueError(
+                f"likelihood must be 'regression', 'binary', or 'multiclass', got '{likelihood}'"
+            )
         if likelihood == "multiclass":
             if num_classes is None:
                 raise ValueError("num_classes is required for multiclass likelihood")
@@ -99,6 +104,9 @@ class GeneralizedMatheronVIP(nn.Module):
                 raise ValueError("output_dim must equal num_classes for multiclass likelihood")
             if posterior_type == "realnvp":
                 raise NotImplementedError("RealNVP q(a) is not supported for multiclass GMVIP.")
+        elif likelihood == "binary":
+            if int(output_dim) != 1:
+                raise ValueError("Binary GMVIP requires output_dim=1.")
         elif int(output_dim) > 1 and posterior_type == "realnvp":
             raise NotImplementedError(
                 "RealNVP q(a) is not supported for vector-output regression GMVIP."
@@ -281,6 +289,12 @@ class GeneralizedMatheronVIP(nn.Module):
                 raise ValueError("Multiclass targets must have shape [N], [N, 1], or [N, K].")
             return y.long()
         y = y.to(dtype=self.Z.dtype, device=self.Z.device)
+        if self.likelihood_type == "binary":
+            if y.ndim == 2 and y.shape[-1] == 1:
+                y = y[..., 0]
+            if y.ndim != 1:
+                raise ValueError("Binary targets must have shape [N] or [N, 1].")
+            return y
         if self.output_dim == 1 and y.ndim == 2 and y.shape[-1] == 1:
             y = y[..., 0]
         if self.output_dim == 1:
@@ -477,6 +491,10 @@ class GeneralizedMatheronVIP(nn.Module):
             return self._elbo_gaussian(
                 X_batch, y_batch, num_samples, num_data, beta, seed=seed, data_alpha=data_alpha
             )
+        if self.likelihood_type == "binary":
+            return self._elbo_binary(
+                X_batch, y_batch, num_samples, num_data, beta, seed=seed, data_alpha=data_alpha
+            )
         return self._elbo_multiclass(
             X_batch, y_batch, num_samples, num_data, beta, seed=seed, data_alpha=data_alpha
         )
@@ -511,6 +529,55 @@ class GeneralizedMatheronVIP(nn.Module):
         if coefficient_displacement is None:
             coefficient_displacement = self.posterior.loc.square().mean()
         metrics = self._base_metrics(elbo, expected_log_lik, kl, beta, data_alpha=data_alpha)
+        metrics.update(
+            {
+                "q_std_mean": q_std_mean.detach(),
+                "coefficient_displacement": coefficient_displacement.detach(),
+            }
+        )
+        for key in ("flow_logdet_mean", "flow_kl_std"):
+            if key in diagnostics:
+                metrics[key] = diagnostics[key].detach()
+        return elbo, metrics
+
+    def _elbo_binary(
+        self,
+        X_batch: torch.Tensor,
+        y_batch: torch.Tensor,
+        num_samples: int,
+        num_data: int | None,
+        beta: float,
+        seed: int | None = None,
+        data_alpha: float = 0.0,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        X_batch = self._as_model_input(X_batch)
+        y_batch = self._as_target(y_batch)
+        f_samples, kl_terms, diagnostics = self.sample_posterior_values_with_kl(
+            X_batch,
+            int(num_samples),
+            seed=seed,
+        )
+        if f_samples.ndim != 2:
+            raise RuntimeError("Binary GMVIP posterior samples must have shape [S, N].")
+        log_prob = bernoulli_logp(f_samples, y_batch)
+        expected_log_lik = self._alpha_sample_log_likelihood(log_prob, data_alpha=data_alpha)
+        if num_data is not None:
+            expected_log_lik = expected_log_lik * (float(num_data) / float(X_batch.shape[0]))
+        kl = kl_terms.mean()
+        elbo = expected_log_lik - float(beta) * kl
+        q_std_mean = diagnostics.get("q_std_mean")
+        if q_std_mean is None:
+            q_std_mean = self.posterior.std.mean()
+        coefficient_displacement = diagnostics.get("coefficient_displacement")
+        if coefficient_displacement is None:
+            coefficient_displacement = self.posterior.loc.square().mean()
+        metrics = self._base_metrics(
+            elbo,
+            expected_log_lik,
+            kl,
+            beta,
+            data_alpha=data_alpha,
+        )
         metrics.update(
             {
                 "q_std_mean": q_std_mean.detach(),
@@ -657,14 +724,27 @@ class GeneralizedMatheronVIP(nn.Module):
         Returns
         -------
         dict of str to torch.Tensor
-            Samples and predictive moments. Multiclass results additionally
-            contain logits and class probabilities.
+            Samples and predictive moments. Binary results contain posterior
+            probabilities, while multiclass results additionally contain
+            logits and class probabilities.
         """
         was_training = self.training
         self.eval()
         try:
             X = self._as_model_input(X)
             f_samples = self.sample_posterior_values(X, int(num_samples))
+            if self.likelihood_type == "binary":
+                f_mean = f_samples.mean(dim=0)
+                f_var = f_samples.var(dim=0, unbiased=False)
+                probs = inv_probit(f_samples).mean(dim=0)
+                return {
+                    "f_samples": f_samples,
+                    "f_mean": f_mean,
+                    "f_var": f_var,
+                    "probs": probs,
+                    "y_mean": probs,
+                    "y_var": probs * (1.0 - probs),
+                }
             if self.likelihood_type == "multiclass":
                 f_mean = f_samples.mean(dim=0)
                 f_var = f_samples.var(dim=0, unbiased=False)
@@ -714,12 +794,14 @@ class GeneralizedMatheronVIP(nn.Module):
         Returns
         -------
         torch.Tensor
-            Observation samples or multiclass logits with shape
+            Observation samples, binary probabilities, or multiclass logits
             ``[S, N, D]``.
         """
         samples = self.sample_posterior_values(X, int(num_samples), seed=seed)
         if self.likelihood_type == "multiclass":
             return samples
+        if self.likelihood_type == "binary":
+            return inv_probit(samples).unsqueeze(-1)
         if seed is None:
             noise = torch.randn_like(samples)
         else:
@@ -754,6 +836,8 @@ class GeneralizedMatheronVIP(nn.Module):
         if self.likelihood_type == "multiclass":
             return self.predict_f_samples(X, 128), None
         pred = self.predict_summary(X, num_samples=128, include_noise=True)
+        if self.likelihood_type == "binary":
+            return pred["y_mean"].unsqueeze(-1), pred["y_var"].sqrt().unsqueeze(-1)
         if self.output_dim > 1:
             return pred["y_mean"], pred["y_var"].sqrt()
         return pred["y_mean"].unsqueeze(-1), pred["y_var"].sqrt().unsqueeze(-1)

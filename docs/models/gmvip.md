@@ -43,6 +43,21 @@ Lengthscales and output scale may be learned or fixed. The canonical RBF
 setting uses $\mu_Z=0$ and
 $D_Z=\operatorname{chol}(K_{\mathrm{RBF}}(Z,Z))$.
 
+## Likelihoods
+
+GMVIP supports Gaussian regression, binary classification, and multiclass
+classification. Binary models use one latent output and the shared jittered
+inverse-probit Bernoulli model,
+
+$$
+p(y=1\mid f)=\Phi_\epsilon(f).
+$$
+
+For binary models, `predict_f_samples` returns latent values and
+`predict_y_samples` returns inverse-probit probabilities, both with shape
+`[S, N, 1]`. The prediction summary reports the posterior mean probability and
+Bernoulli variance $p(1-p)$.
+
 The maximized objective is
 
 $$
